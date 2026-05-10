@@ -142,3 +142,15 @@ body {
     @apply font-sans;
   }
 }
+
+/* Glassmorphism utilities */
+.glass {
+  background: oklch(1 0 0 / 60%);
+  backdrop-filter: blur(16px) saturate(180%);
+  border: 1px solid oklch(1 0 0 / 20%);
+}
+
+.dark .glass {
+  background: oklch(0.2 0 0 / 50%);
+  border-color: oklch(1 0 0 / 8%);
+}

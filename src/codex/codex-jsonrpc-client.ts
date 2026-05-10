@@ -2,8 +2,11 @@
  * JSON-RPC client for communicating with codex app-server over stdio.
  * Handles request/response correlation, server-initiated requests, and notifications.
  */
+import { Logger } from '@nestjs/common';
 import { ChildProcess } from 'node:child_process';
 import { EventEmitter } from 'node:events';
+import { createWriteStream, mkdirSync, type WriteStream } from 'node:fs';
+import { join } from 'node:path';
 import type {
   InitializeParams,
   InitializeResponse,
@@ -46,18 +49,29 @@ export interface CodexJsonRpcClientEvents {
 }
 
 const DEFAULT_REQUEST_TIMEOUT_MS = 30_000;
+const LOG_DIR = join(globalThis.process.cwd(), 'logs');
+
+function createJsonlStream(): WriteStream {
+  mkdirSync(LOG_DIR, { recursive: true });
+  return createWriteStream(join(LOG_DIR, 'codex-jsonrpc.jsonl'), {
+    flags: 'a',
+  });
+}
 
 export class CodexJsonRpcClient extends EventEmitter<CodexJsonRpcClientEvents> {
+  private readonly logger = new Logger(CodexJsonRpcClient.name);
   private nextId = 1;
   private readonly pending = new Map<RequestId, PendingRequest>();
   private buffer = '';
   private closed = false;
+  private readonly jsonlStream: WriteStream;
 
   constructor(
     private readonly process: ChildProcess,
     private readonly requestTimeoutMs = DEFAULT_REQUEST_TIMEOUT_MS,
   ) {
     super();
+    this.jsonlStream = createJsonlStream();
     this.setupStdio();
   }
 
@@ -69,7 +83,10 @@ export class CodexJsonRpcClient extends EventEmitter<CodexJsonRpcClientEvents> {
    * @returns Server's initialize response with codexHome, platform info, etc.
    */
   async initialize(params: InitializeParams): Promise<InitializeResponse> {
-    const result = await this.request<InitializeResponse>('initialize', params);
+    const result = await this.request<InitializeResponse>(
+      'initialize',
+      params,
+    );
     this.notify('initialized', {});
     return result;
   }
@@ -107,6 +124,7 @@ export class CodexJsonRpcClient extends EventEmitter<CodexJsonRpcClientEvents> {
         timer,
       });
 
+      this.writeJsonl('out', message);
       this.send(message);
     });
   }
@@ -120,6 +138,7 @@ export class CodexJsonRpcClient extends EventEmitter<CodexJsonRpcClientEvents> {
   notify(method: string, params?: unknown): void {
     if (this.closed) return;
     const message: JsonRpcNotification = { method, params };
+    this.writeJsonl('out', message);
     this.send(message);
   }
 
@@ -131,7 +150,9 @@ export class CodexJsonRpcClient extends EventEmitter<CodexJsonRpcClientEvents> {
    */
   respondToServerRequest(id: RequestId, result: unknown): void {
     if (this.closed) return;
-    this.send({ id, result });
+    const message = { id, result };
+    this.writeJsonl('out', message);
+    this.send(message);
   }
 
   /**
@@ -147,10 +168,12 @@ export class CodexJsonRpcClient extends EventEmitter<CodexJsonRpcClientEvents> {
     message: string,
   ): void {
     if (this.closed) return;
-    this.send({ id, error: { code, message } });
+    const msg = { id, error: { code, message } };
+    this.writeJsonl('out', msg);
+    this.send(msg);
   }
 
-  /** Kills the underlying app-server process. */
+  /** Kills the underlying app-server process and closes the log stream. */
   destroy(): void {
     this.closed = true;
     for (const [, pending] of this.pending) {
@@ -158,7 +181,14 @@ export class CodexJsonRpcClient extends EventEmitter<CodexJsonRpcClientEvents> {
       pending.reject(new Error('Client destroyed'));
     }
     this.pending.clear();
+    this.jsonlStream.end();
     this.process.kill();
+  }
+
+  /** Writes a raw JSONL line: {"ts","dir","msg"} — each line is valid JSON. */
+  private writeJsonl(dir: 'in' | 'out', msg: unknown): void {
+    const line = JSON.stringify({ ts: new Date().toISOString(), dir, msg });
+    this.jsonlStream.write(line + '\n');
   }
 
   private setupStdio(): void {
@@ -173,7 +203,7 @@ export class CodexJsonRpcClient extends EventEmitter<CodexJsonRpcClientEvents> {
 
     stderr.setEncoding('utf-8');
     stderr.on('data', (chunk: string) => {
-      this.emit('error', new Error(`codex stderr: ${chunk.trim()}`));
+      this.logger.warn(`codex stderr: ${chunk.trim()}`);
     });
 
     this.process.on('close', (code, signal) => {
@@ -185,6 +215,7 @@ export class CodexJsonRpcClient extends EventEmitter<CodexJsonRpcClientEvents> {
         );
       }
       this.pending.clear();
+      this.jsonlStream.end();
       this.emit('close', code, signal);
     });
   }
@@ -192,7 +223,6 @@ export class CodexJsonRpcClient extends EventEmitter<CodexJsonRpcClientEvents> {
   private onData(chunk: string): void {
     this.buffer += chunk;
     const lines = this.buffer.split('\n');
-    // Keep incomplete last line in buffer
     this.buffer = lines.pop() ?? '';
 
     for (const line of lines) {
@@ -200,13 +230,11 @@ export class CodexJsonRpcClient extends EventEmitter<CodexJsonRpcClientEvents> {
       if (!trimmed) continue;
       try {
         const message = JSON.parse(trimmed) as JsonRpcMessage;
+        this.writeJsonl('in', message);
         this.handleMessage(message);
       } catch {
-        this.emit(
-          'error',
-          new Error(
-            `Failed to parse JSON-RPC message: ${trimmed.slice(0, 200)}`,
-          ),
+        this.logger.warn(
+          `Failed to parse JSON-RPC message: ${trimmed.slice(0, 200)}`,
         );
       }
     }

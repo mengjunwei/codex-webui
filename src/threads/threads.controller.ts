@@ -26,6 +26,7 @@ export class ThreadsController {
       approvalPolicy?: string;
     },
   ) {
+    console.log('[ThreadsController] startThread called', body);
     return this.threadsService.startThread({
       model: body.model,
       cwd: body.cwd,
