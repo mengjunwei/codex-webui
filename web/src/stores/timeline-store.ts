@@ -85,6 +85,8 @@ interface TimelineState {
   /** All known threads for the sidebar list. */
   threads: Thread[];
   threadId: string | null;
+  /** Working directory of the current thread. */
+  threadCwd: string | null;
   timeline: TimelineEntry[];
   loading: boolean;
   expandedReasoning: Set<string>;
@@ -129,6 +131,7 @@ function switchSocketSubscription(
 export const useTimelineStore = create<TimelineState>((set, get) => ({
   threads: [],
   threadId: null,
+  threadCwd: null,
   timeline: [],
   loading: false,
   expandedReasoning: new Set<string>(),
@@ -150,6 +153,7 @@ export const useTimelineStore = create<TimelineState>((set, get) => ({
       switchSocketSubscription(oldId, newId);
       set((s) => ({
         threadId: newId,
+        threadCwd: res.cwd ?? null,
         timeline: [],
         loading: false,
         expandedReasoning: new Set<string>(),
@@ -175,6 +179,7 @@ export const useTimelineStore = create<TimelineState>((set, get) => ({
     switchSocketSubscription(oldId, targetId);
     set({
       threadId: targetId,
+      threadCwd: null,
       timeline: [],
       loading: false,
       expandedReasoning: new Set<string>(),
@@ -183,9 +188,10 @@ export const useTimelineStore = create<TimelineState>((set, get) => ({
     try {
       const res = await api.resumeThread(targetId);
       const turns = res.thread.turns ?? [];
-      if (turns.length > 0) {
-        set({ timeline: turnsToTimeline(turns) });
-      }
+      set({
+        threadCwd: res.cwd ?? null,
+        ...(turns.length > 0 ? { timeline: turnsToTimeline(turns) } : {}),
+      });
     } catch {
       // Thread might already be loaded — that's fine
     }

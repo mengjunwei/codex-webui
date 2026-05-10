@@ -27,6 +27,7 @@ export interface Thread {
 export interface ThreadStartResponse {
   thread: Thread;
   model: string;
+  cwd?: string;
 }
 
 export interface ThreadListResponse {
@@ -60,6 +61,7 @@ export interface ThreadWithTurns extends Thread {
 export interface ThreadResumeResponse {
   thread: ThreadWithTurns;
   model: string;
+  cwd?: string;
 }
 
 export interface TurnStartResponse {
@@ -74,6 +76,28 @@ export interface Model {
 export interface ModelListResponse {
   data: Model[];
   nextCursor: string | null;
+}
+
+export interface FileEntry {
+  name: string;
+  path: string;
+  type: 'file' | 'directory';
+  size?: number;
+  mtime?: number;
+}
+
+export interface FileReadResponse {
+  content: string;
+  size: number;
+}
+
+export interface FileMetadata {
+  path: string;
+  name: string;
+  type: 'file' | 'directory' | 'symlink' | 'other';
+  size: number;
+  mtime: number;
+  permissions: string;
 }
 
 export const api = {
@@ -117,5 +141,41 @@ export const api = {
 
   listModels() {
     return request<ModelListResponse>('/models');
+  },
+
+  // --- Files ---
+
+  getFileTree(root: string) {
+    return request<FileEntry[]>(`/files/tree?root=${encodeURIComponent(root)}`);
+  },
+
+  readFile(path: string) {
+    return request<FileReadResponse>(
+      `/files/read?path=${encodeURIComponent(path)}`,
+    );
+  },
+
+  writeFile(path: string, content: string, expectedMtime?: number) {
+    return request<{ mtime: number }>('/files/write', {
+      method: 'POST',
+      body: JSON.stringify({ path, content, expectedMtime }),
+    });
+  },
+
+  getFileMetadata(path: string) {
+    return request<FileMetadata>(
+      `/files/metadata?path=${encodeURIComponent(path)}`,
+    );
+  },
+
+  getWorkspaceRoots() {
+    return request<{ roots: string[] }>('/files/roots');
+  },
+
+  addWorkspaceRoot(root: string) {
+    return request<{ ok: boolean }>('/files/roots', {
+      method: 'POST',
+      body: JSON.stringify({ root }),
+    });
   },
 };

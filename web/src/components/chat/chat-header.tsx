@@ -1,8 +1,9 @@
-import { Moon, Sun } from 'lucide-react';
+import { FolderOpen, Moon, Sun } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { Separator } from '@/components/ui/separator';
 import { useConnectionStore } from '@/stores/connection-store';
+import { useFilesStore } from '@/stores/files-store';
 
 interface Props {
   dark: boolean;
@@ -11,6 +12,8 @@ interface Props {
 
 export function ChatHeader({ dark, onToggleDark }: Props) {
   const connected = useConnectionStore((s) => s.connected);
+  const panelOpen = useFilesStore((s) => s.panelOpen);
+  const setPanelOpen = useFilesStore((s) => s.setPanelOpen);
 
   return (
     <>
@@ -31,6 +34,15 @@ export function ChatHeader({ dark, onToggleDark }: Props) {
           />
           {connected ? 'Connected' : 'Disconnected'}
         </Badge>
+        <Button
+          size="icon"
+          variant="ghost"
+          className="h-8 w-8"
+          onClick={() => setPanelOpen(!panelOpen)}
+          title="Toggle file explorer"
+        >
+          <FolderOpen className="h-4 w-4" />
+        </Button>
         <Button
           size="icon"
           variant="ghost"

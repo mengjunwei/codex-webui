@@ -30,6 +30,7 @@
     "@nestjs/serve-static": "^5.0.5",
     "@nestjs/swagger": "^11.4.2",
     "@nestjs/websockets": "^11.1.19",
+    "chokidar": "^5.0.0",
     "fastify": "^5.8.5",
     "reflect-metadata": "^0.2.2",
     "rxjs": "^7.8.1",
