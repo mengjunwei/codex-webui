@@ -26,7 +26,6 @@ export class ThreadsController {
       approvalPolicy?: string;
     },
   ) {
-    console.log('[ThreadsController] startThread called', body);
     return this.threadsService.startThread({
       model: body.model,
       cwd: body.cwd,
@@ -63,6 +62,12 @@ export class ThreadsController {
     @Query('includeTurns') includeTurns?: string,
   ) {
     return this.threadsService.readThread(threadId, includeTurns === 'true');
+  }
+
+  @Post(':threadId/resume')
+  @ApiOperation({ summary: 'Resume a thread and subscribe to events' })
+  async resumeThread(@Param('threadId') threadId: string) {
+    return this.threadsService.resumeThread(threadId);
   }
 
   @Post(':threadId/turns')

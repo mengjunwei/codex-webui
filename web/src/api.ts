@@ -19,6 +19,9 @@ async function request<T>(path: string, options?: RequestInit): Promise<T> {
 export interface Thread {
   id: string;
   name?: string | null;
+  preview?: string;
+  createdAt?: number;
+  updatedAt?: number;
 }
 
 export interface ThreadStartResponse {
@@ -31,8 +34,32 @@ export interface ThreadListResponse {
   nextCursor: string | null;
 }
 
+export interface TurnItemData {
+  type: string;
+  id: string;
+  text?: string;
+  content?: Array<{ type: string; text?: string }>;
+  summary?: string[];
+  phase?: string;
+  server?: string;
+  tool?: string;
+  arguments?: unknown;
+  result?: unknown;
+}
+
 export interface Turn {
   id: string;
+  items?: TurnItemData[];
+  status?: string;
+}
+
+export interface ThreadWithTurns extends Thread {
+  turns?: Turn[];
+}
+
+export interface ThreadResumeResponse {
+  thread: ThreadWithTurns;
+  model: string;
 }
 
 export interface TurnStartResponse {
@@ -79,6 +106,13 @@ export const api = {
       `/threads/${threadId}/turns/${turnId}/interrupt`,
       { method: 'POST' },
     );
+  },
+
+  resumeThread(threadId: string) {
+    return request<ThreadResumeResponse>(`/threads/${threadId}/resume`, {
+      method: 'POST',
+      body: JSON.stringify({}),
+    });
   },
 
   listModels() {

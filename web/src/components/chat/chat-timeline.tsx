@@ -28,7 +28,7 @@ export function ChatTimeline() {
   }, [timeline]);
 
   return (
-    <ScrollArea className="flex-1">
+    <ScrollArea className="min-h-0 flex-1">
       <div className="mx-auto max-w-3xl px-4 py-6 md:px-6">
         {timeline.length === 0 && (
           <motion.div

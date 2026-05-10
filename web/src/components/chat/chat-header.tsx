@@ -1,9 +1,8 @@
-import { Moon, Plus, Sun } from 'lucide-react';
+import { Moon, Sun } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { Separator } from '@/components/ui/separator';
 import { useConnectionStore } from '@/stores/connection-store';
-import { useTimelineStore } from '@/stores/timeline-store';
 
 interface Props {
   dark: boolean;
@@ -12,7 +11,6 @@ interface Props {
 
 export function ChatHeader({ dark, onToggleDark }: Props) {
   const connected = useConnectionStore((s) => s.connected);
-  const createThread = useTimelineStore((s) => s.createThread);
 
   return (
     <>
@@ -33,15 +31,6 @@ export function ChatHeader({ dark, onToggleDark }: Props) {
           />
           {connected ? 'Connected' : 'Disconnected'}
         </Badge>
-        <Button
-          size="sm"
-          variant="outline"
-          className="gap-1.5"
-          onClick={() => void createThread()}
-        >
-          <Plus className="h-4 w-4" />
-          <span className="hidden sm:inline">New Thread</span>
-        </Button>
         <Button
           size="icon"
           variant="ghost"

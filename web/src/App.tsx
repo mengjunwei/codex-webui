@@ -3,6 +3,7 @@ import { TooltipProvider } from '@/components/ui/tooltip';
 import { ChatHeader } from '@/components/chat/chat-header';
 import { ChatTimeline } from '@/components/chat/chat-timeline';
 import { ChatInput } from '@/components/chat/chat-input';
+import { ThreadSidebar } from '@/components/chat/thread-sidebar';
 import { useCodexSocket } from '@/hooks/use-codex-socket';
 
 function App() {
@@ -19,10 +20,13 @@ function App() {
 
   return (
     <TooltipProvider>
-      <div className="flex h-dvh flex-col bg-background">
-        <ChatHeader dark={dark} onToggleDark={() => setDark((d) => !d)} />
-        <ChatTimeline />
-        <ChatInput value={input} onChange={setInput} />
+      <div className="flex h-dvh overflow-hidden bg-background">
+        <ThreadSidebar />
+        <div className="flex min-h-0 min-w-0 flex-1 flex-col">
+          <ChatHeader dark={dark} onToggleDark={() => setDark((d) => !d)} />
+          <ChatTimeline />
+          <ChatInput value={input} onChange={setInput} />
+        </div>
       </div>
     </TooltipProvider>
   );

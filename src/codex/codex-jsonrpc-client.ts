@@ -83,10 +83,7 @@ export class CodexJsonRpcClient extends EventEmitter<CodexJsonRpcClientEvents> {
    * @returns Server's initialize response with codexHome, platform info, etc.
    */
   async initialize(params: InitializeParams): Promise<InitializeResponse> {
-    const result = await this.request<InitializeResponse>(
-      'initialize',
-      params,
-    );
+    const result = await this.request<InitializeResponse>('initialize', params);
     this.notify('initialized', {});
     return result;
   }

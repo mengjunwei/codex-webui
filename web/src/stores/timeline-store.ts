@@ -3,21 +3,98 @@
  * Manages threads, turns, items, and their streaming updates.
  */
 import { create } from 'zustand';
-import { api } from '../api';
+import { api, type Thread, type TurnItemData, type Turn } from '../api';
 import { getSocket } from '../socket';
 import type { TimelineEntry, TurnItem } from '../types/timeline';
 
+/** Converts a persisted turn item to a TurnItem for rendering. */
+function parseTurnItem(item: TurnItemData): TurnItem | null {
+  switch (item.type) {
+    case 'userMessage':
+      return null; // Handled separately as TimelineEntry.user
+    case 'reasoning':
+      return {
+        type: 'reasoning',
+        itemId: item.id,
+        content: item.summary?.join('\n') ?? '',
+        completed: true,
+      };
+    case 'agentMessage':
+      return {
+        type: 'agentMessage',
+        itemId: item.id,
+        content: item.text ?? '',
+        completed: true,
+      };
+    case 'mcpToolCall':
+      return {
+        type: 'mcpToolCall',
+        itemId: item.id,
+        content: item.result ? JSON.stringify(item.result, null, 2).slice(0, 500) : '',
+        completed: true,
+        toolServer: (item.server as string) ?? '',
+        toolName: (item.tool as string) ?? '',
+        toolArgs: item.arguments ? JSON.stringify(item.arguments, null, 2) : '',
+      };
+    case 'commandExecution':
+      return {
+        type: 'commandExecution',
+        itemId: item.id,
+        content: item.text ?? '',
+        completed: true,
+      };
+    default:
+      return null;
+  }
+}
+
+/** Converts persisted turns into timeline entries. */
+function turnsToTimeline(turns: Turn[]): TimelineEntry[] {
+  const entries: TimelineEntry[] = [];
+
+  for (const turn of turns) {
+    if (!turn.items) continue;
+
+    // Extract user message first
+    const userMsg = turn.items.find((it) => it.type === 'userMessage');
+    if (userMsg) {
+      const text =
+        userMsg.content?.[0]?.text ?? userMsg.text ?? '';
+      entries.push({ kind: 'user', content: text });
+    }
+
+    // Build turn block from remaining items
+    const turnItems = turn.items
+      .map(parseTurnItem)
+      .filter((it): it is TurnItem => it !== null);
+
+    if (turnItems.length > 0) {
+      entries.push({
+        kind: 'turn',
+        turnId: turn.id,
+        items: turnItems,
+        completed: turn.status === 'completed',
+      });
+    }
+  }
+
+  return entries;
+}
+
 interface TimelineState {
+  /** All known threads for the sidebar list. */
+  threads: Thread[];
   threadId: string | null;
   timeline: TimelineEntry[];
   loading: boolean;
   expandedReasoning: Set<string>;
 
+  fetchThreads: () => Promise<void>;
   createThread: () => Promise<void>;
+  switchThread: (threadId: string) => Promise<void>;
   sendMessage: (text: string) => Promise<void>;
   toggleReasoning: (itemId: string) => void;
 
-  /** Internal: update or create a turn entry in the timeline. */
   updateCurrentTurn: (
     turnId: string,
     updater: (
@@ -26,7 +103,6 @@ interface TimelineState {
     ) => { items: TurnItem[]; completed: boolean },
   ) => void;
 
-  /** Internal: update a specific item within a turn. */
   updateTurnItem: (
     turnId: string,
     itemId: string,
@@ -38,17 +114,47 @@ interface TimelineState {
   collapseReasoning: (itemId: string) => void;
 }
 
+/** Unsubscribe from the current thread and subscribe to a new one. */
+function switchSocketSubscription(
+  oldThreadId: string | null,
+  newThreadId: string,
+) {
+  const socket = getSocket();
+  if (oldThreadId) {
+    socket.emit('thread.unsubscribe', { threadId: oldThreadId });
+  }
+  socket.emit('thread.subscribe', { threadId: newThreadId });
+}
+
 export const useTimelineStore = create<TimelineState>((set, get) => ({
+  threads: [],
   threadId: null,
   timeline: [],
   loading: false,
   expandedReasoning: new Set<string>(),
 
+  fetchThreads: async () => {
+    try {
+      const res = await api.listThreads();
+      set({ threads: res.data });
+    } catch {
+      // Silently fail — sidebar will show empty
+    }
+  },
+
   createThread: async () => {
     try {
+      const { threadId: oldId } = get();
       const res = await api.createThread({});
-      set({ threadId: res.thread.id, timeline: [] });
-      getSocket().emit('thread.subscribe', { threadId: res.thread.id });
+      const newId = res.thread.id;
+      switchSocketSubscription(oldId, newId);
+      set((s) => ({
+        threadId: newId,
+        timeline: [],
+        loading: false,
+        expandedReasoning: new Set<string>(),
+        threads: [res.thread, ...s.threads],
+      }));
     } catch (err) {
       set((s) => ({
         timeline: [
@@ -59,6 +165,29 @@ export const useTimelineStore = create<TimelineState>((set, get) => ({
           },
         ],
       }));
+    }
+  },
+
+  switchThread: async (targetId: string) => {
+    const { threadId: oldId } = get();
+    if (oldId === targetId) return;
+
+    switchSocketSubscription(oldId, targetId);
+    set({
+      threadId: targetId,
+      timeline: [],
+      loading: false,
+      expandedReasoning: new Set<string>(),
+    });
+
+    try {
+      const res = await api.resumeThread(targetId);
+      const turns = res.thread.turns ?? [];
+      if (turns.length > 0) {
+        set({ timeline: turnsToTimeline(turns) });
+      }
+    } catch {
+      // Thread might already be loaded — that's fine
     }
   },
 

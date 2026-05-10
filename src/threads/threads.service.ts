@@ -51,6 +51,19 @@ export class ThreadsService {
   }
 
   /**
+   * Resumes a persisted thread and subscribes to its events.
+   *
+   * @param threadId - The thread identifier
+   * @returns The resumed thread with resolved settings
+   */
+  async resumeThread(threadId: string): Promise<v2.ThreadResumeResponse> {
+    return this.codex.request<v2.ThreadResumeResponse>('thread/resume', {
+      threadId,
+      persistExtendedHistory: true,
+    });
+  }
+
+  /**
    * Starts a new turn (user message + agent response cycle).
    *
    * @param params - Turn start parameters (threadId, input, model overrides, etc.)
