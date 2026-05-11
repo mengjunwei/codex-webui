@@ -1,36 +1,40 @@
 /**
  * Zustand store for chat timeline state.
- * Manages threads, turns, items, and their streaming updates.
+ * Manages realtime/UI state: active thread, timeline entries, approvals.
+ * REST data (thread list, models) is managed by TanStack Query.
  */
 import { create } from 'zustand';
-import { api, type Thread, type TurnItemData, type Turn } from '../api';
 import { getSocket } from '../socket';
 import type { TimelineEntry, TurnItem } from '../types/timeline';
 import type { ApprovalRequest } from '../types/approval';
+import type { ThreadDto, TurnDto } from '../generated/api';
 
 /** Converts a persisted turn item to a TurnItem for rendering. */
-function parseTurnItem(item: TurnItemData): TurnItem | null {
-  switch (item.type) {
+function parseTurnItem(item: Record<string, unknown>): TurnItem | null {
+  const type = item.type as string;
+  const id = item.id as string;
+
+  switch (type) {
     case 'userMessage':
-      return null; // Handled separately as TimelineEntry.user
+      return null;
     case 'reasoning':
       return {
         type: 'reasoning',
-        itemId: item.id,
-        content: item.summary?.join('\n') ?? '',
+        itemId: id,
+        content: ((item.summary as string[]) ?? []).join('\n'),
         completed: true,
       };
     case 'agentMessage':
       return {
         type: 'agentMessage',
-        itemId: item.id,
-        content: item.text ?? '',
+        itemId: id,
+        content: (item.text as string) ?? '',
         completed: true,
       };
     case 'mcpToolCall':
       return {
         type: 'mcpToolCall',
-        itemId: item.id,
+        itemId: id,
         content: item.result ? JSON.stringify(item.result, null, 2).slice(0, 500) : '',
         completed: true,
         toolServer: (item.server as string) ?? '',
@@ -40,20 +44,18 @@ function parseTurnItem(item: TurnItemData): TurnItem | null {
     case 'commandExecution':
       return {
         type: 'commandExecution',
-        itemId: item.id,
-        content: item.aggregatedOutput ?? item.text ?? '',
+        itemId: id,
+        content: (item.aggregatedOutput as string) ?? (item.text as string) ?? '',
         completed: true,
-        command: item.command,
-        exitCode: item.exitCode,
+        command: item.command as string | undefined,
+        exitCode: item.exitCode as number | undefined,
       };
     case 'fileChange': {
-      const changes = (item as unknown as Record<string, unknown>).changes as
-        | Array<{ file?: string }>
-        | undefined;
+      const changes = item.changes as Array<{ file?: string }> | undefined;
       return {
         type: 'fileChange',
-        itemId: item.id,
-        content: item.text ?? '',
+        itemId: id,
+        content: (item.text as string) ?? '',
         completed: true,
         filePath: changes?.[0]?.file,
       };
@@ -64,22 +66,20 @@ function parseTurnItem(item: TurnItemData): TurnItem | null {
 }
 
 /** Converts persisted turns into timeline entries. */
-function turnsToTimeline(turns: Turn[]): TimelineEntry[] {
+function turnsToTimeline(turns: TurnDto[]): TimelineEntry[] {
   const entries: TimelineEntry[] = [];
 
   for (const turn of turns) {
-    if (!turn.items) continue;
+    const items = (turn.items ?? []) as Array<Record<string, unknown>>;
 
-    // Extract user message first
-    const userMsg = turn.items.find((it) => it.type === 'userMessage');
+    const userMsg = items.find((it) => it.type === 'userMessage');
     if (userMsg) {
-      const text =
-        userMsg.content?.[0]?.text ?? userMsg.text ?? '';
+      const content = userMsg.content as Array<{ type: string; text?: string }> | undefined;
+      const text = content?.[0]?.text ?? (userMsg.text as string) ?? '';
       entries.push({ kind: 'user', content: text });
     }
 
-    // Build turn block from remaining items
-    const turnItems = turn.items
+    const turnItems = items
       .map(parseTurnItem)
       .filter((it): it is TurnItem => it !== null);
 
@@ -96,51 +96,6 @@ function turnsToTimeline(turns: Turn[]): TimelineEntry[] {
   return entries;
 }
 
-interface TimelineState {
-  /** All known threads for the sidebar list. */
-  threads: Thread[];
-  threadId: string | null;
-  /** Working directory of the current thread. */
-  threadCwd: string | null;
-  timeline: TimelineEntry[];
-  loading: boolean;
-  expandedReasoning: Set<string>;
-  /** Pending/resolved approval requests, keyed by itemId for easy lookup. */
-  approvals: Record<string, ApprovalRequest>;
-
-  fetchThreads: () => Promise<void>;
-  createThread: () => Promise<void>;
-  switchThread: (threadId: string) => Promise<void>;
-  sendMessage: (text: string) => Promise<void>;
-  toggleReasoning: (itemId: string) => void;
-
-  updateCurrentTurn: (
-    turnId: string,
-    updater: (
-      items: TurnItem[],
-      completed: boolean,
-    ) => { items: TurnItem[]; completed: boolean },
-  ) => void;
-
-  updateTurnItem: (
-    turnId: string,
-    itemId: string,
-    updater: (existing: TurnItem | undefined) => TurnItem,
-  ) => void;
-
-  /** Updates the turn-level unified diff. */
-  updateTurnDiff: (turnId: string, diff: string) => void;
-
-  setLoading: (loading: boolean) => void;
-  expandReasoning: (itemId: string) => void;
-  collapseReasoning: (itemId: string) => void;
-
-  /** Adds a pending approval request. */
-  addApproval: (approval: ApprovalRequest) => void;
-  /** Marks an approval as accepted or declined. */
-  resolveApproval: (itemId: string, decision: 'accepted' | 'declined') => void;
-}
-
 /** Unsubscribe from the current thread and subscribe to a new one. */
 function switchSocketSubscription(
   oldThreadId: string | null,
@@ -153,8 +108,47 @@ function switchSocketSubscription(
   socket.emit('thread.subscribe', { threadId: newThreadId });
 }
 
+interface TimelineState {
+  threadId: string | null;
+  /** Working directory of the current thread. */
+  threadCwd: string | null;
+  timeline: TimelineEntry[];
+  loading: boolean;
+  expandedReasoning: Set<string>;
+  /** Pending/resolved approval requests, keyed by itemId for easy lookup. */
+  approvals: Record<string, ApprovalRequest>;
+
+  /** Sets the active thread, subscribes socket, resets timeline. */
+  setActiveThread: (threadId: string, cwd?: string | null) => void;
+  /** Hydrates timeline from persisted turns (e.g. after resume). */
+  hydrateTimeline: (turns: TurnDto[], cwd?: string | null) => void;
+  /** Adds a user message to the timeline (optimistic). */
+  addUserMessage: (text: string) => void;
+  /** Adds a system error to the timeline. */
+  addSystemError: (message: string) => void;
+
+  toggleReasoning: (itemId: string) => void;
+  updateCurrentTurn: (
+    turnId: string,
+    updater: (
+      items: TurnItem[],
+      completed: boolean,
+    ) => { items: TurnItem[]; completed: boolean },
+  ) => void;
+  updateTurnItem: (
+    turnId: string,
+    itemId: string,
+    updater: (existing: TurnItem | undefined) => TurnItem,
+  ) => void;
+  updateTurnDiff: (turnId: string, diff: string) => void;
+  setLoading: (loading: boolean) => void;
+  expandReasoning: (itemId: string) => void;
+  collapseReasoning: (itemId: string) => void;
+  addApproval: (approval: ApprovalRequest) => void;
+  resolveApproval: (itemId: string, decision: 'accepted' | 'declined') => void;
+}
+
 export const useTimelineStore = create<TimelineState>((set, get) => ({
-  threads: [],
   threadId: null,
   threadCwd: null,
   timeline: [],
@@ -162,91 +156,42 @@ export const useTimelineStore = create<TimelineState>((set, get) => ({
   expandedReasoning: new Set<string>(),
   approvals: {},
 
-  fetchThreads: async () => {
-    try {
-      const res = await api.listThreads();
-      set({ threads: res.data });
-    } catch {
-      // Silently fail — sidebar will show empty
-    }
-  },
-
-  createThread: async () => {
-    try {
-      const { threadId: oldId } = get();
-      const res = await api.createThread({});
-      const newId = res.thread.id;
-      switchSocketSubscription(oldId, newId);
-      set((s) => ({
-        threadId: newId,
-        threadCwd: res.cwd ?? null,
-        timeline: [],
-        loading: false,
-        expandedReasoning: new Set<string>(),
-        threads: [res.thread, ...s.threads],
-      }));
-    } catch (err) {
-      set((s) => ({
-        timeline: [
-          ...s.timeline,
-          {
-            kind: 'system' as const,
-            content: `Error: ${(err as Error).message}`,
-          },
-        ],
-      }));
-    }
-  },
-
-  switchThread: async (targetId: string) => {
+  setActiveThread: (threadId: string, cwd?: string | null) => {
     const { threadId: oldId } = get();
-    if (oldId === targetId) return;
-
-    switchSocketSubscription(oldId, targetId);
+    if (oldId === threadId) return;
+    switchSocketSubscription(oldId, threadId);
     set({
-      threadId: targetId,
-      threadCwd: null,
+      threadId,
+      threadCwd: cwd ?? null,
       timeline: [],
       loading: false,
       expandedReasoning: new Set<string>(),
       approvals: {},
     });
-
-    try {
-      const res = await api.resumeThread(targetId);
-      const turns = res.thread.turns ?? [];
-      set({
-        threadCwd: res.cwd ?? null,
-        ...(turns.length > 0 ? { timeline: turnsToTimeline(turns) } : {}),
-      });
-    } catch {
-      // Thread might already be loaded — that's fine
-    }
   },
 
-  sendMessage: async (text: string) => {
-    const { threadId, loading } = get();
-    if (!threadId || !text.trim() || loading) return;
+  hydrateTimeline: (turns: TurnDto[], cwd?: string | null) => {
+    set({
+      threadCwd: cwd ?? get().threadCwd,
+      ...(turns.length > 0 ? { timeline: turnsToTimeline(turns) } : {}),
+    });
+  },
 
+  addUserMessage: (text: string) => {
     set((s) => ({
       timeline: [...s.timeline, { kind: 'user' as const, content: text }],
       loading: true,
     }));
+  },
 
-    try {
-      await api.sendMessage(threadId, text);
-    } catch (err) {
-      set((s) => ({
-        timeline: [
-          ...s.timeline,
-          {
-            kind: 'system' as const,
-            content: `Error: ${(err as Error).message}`,
-          },
-        ],
-        loading: false,
-      }));
-    }
+  addSystemError: (message: string) => {
+    set((s) => ({
+      timeline: [
+        ...s.timeline,
+        { kind: 'system' as const, content: `Error: ${message}` },
+      ],
+      loading: false,
+    }));
   },
 
   toggleReasoning: (itemId: string) => {
@@ -348,3 +293,5 @@ export const useTimelineStore = create<TimelineState>((set, get) => ({
     });
   },
 }));
+
+export type { ThreadDto, TurnDto };

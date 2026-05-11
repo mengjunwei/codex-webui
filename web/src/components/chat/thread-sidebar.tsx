@@ -1,11 +1,16 @@
 /**
  * Left sidebar with global actions (top) and thread list (bottom).
  */
-import { useEffect } from 'react';
 import { FolderOpen, MessageSquare, Plus, Terminal } from 'lucide-react';
+import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { Button } from '@/components/ui/button';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { Separator } from '@/components/ui/separator';
+import {
+  threadsListThreadsOptions,
+  threadsStartThreadMutation,
+  threadsResumeThreadMutation,
+} from '@/generated/api/@tanstack/react-query.gen';
 import { useTimelineStore } from '@/stores/timeline-store';
 import { cn } from '@/lib/utils';
 
@@ -17,15 +22,38 @@ interface Props {
 }
 
 export function ThreadSidebar({ activeView, onViewChange }: Props) {
-  const threads = useTimelineStore((s) => s.threads);
   const threadId = useTimelineStore((s) => s.threadId);
-  const fetchThreads = useTimelineStore((s) => s.fetchThreads);
-  const createThread = useTimelineStore((s) => s.createThread);
-  const switchThread = useTimelineStore((s) => s.switchThread);
+  const setActiveThread = useTimelineStore((s) => s.setActiveThread);
+  const hydrateTimeline = useTimelineStore((s) => s.hydrateTimeline);
+  const addSystemError = useTimelineStore((s) => s.addSystemError);
+  const queryClient = useQueryClient();
 
-  useEffect(() => {
-    void fetchThreads();
-  }, [fetchThreads]);
+  const { data: threadList } = useQuery({
+    ...threadsListThreadsOptions(),
+  });
+  const threads = threadList?.data ?? [];
+
+  const createThread = useMutation({
+    ...threadsStartThreadMutation(),
+    onSuccess: (res) => {
+      setActiveThread(res.thread.id, res.cwd);
+      void queryClient.invalidateQueries({ queryKey: threadsListThreadsOptions().queryKey });
+    },
+    onError: (err) => addSystemError(String(err.message)),
+  });
+
+  const resumeThread = useMutation({
+    ...threadsResumeThreadMutation(),
+    onSuccess: (res) => {
+      hydrateTimeline(res.thread.turns, res.cwd);
+    },
+  });
+
+  const handleSwitchThread = (targetId: string) => {
+    if (targetId === threadId) return;
+    setActiveThread(targetId);
+    resumeThread.mutate({ path: { threadId: targetId } });
+  };
 
   return (
     <aside className="flex w-64 shrink-0 flex-col border-r border-border bg-muted/30">
@@ -71,7 +99,7 @@ export function ThreadSidebar({ activeView, onViewChange }: Props) {
           variant="ghost"
           className="h-6 w-6"
           onClick={() => {
-            void createThread();
+            createThread.mutate({ body: {} });
             onViewChange('chat');
           }}
         >
@@ -86,7 +114,7 @@ export function ThreadSidebar({ activeView, onViewChange }: Props) {
               key={thread.id}
               type="button"
               onClick={() => {
-                void switchThread(thread.id);
+                handleSwitchThread(thread.id);
                 onViewChange('chat');
               }}
               className={cn(

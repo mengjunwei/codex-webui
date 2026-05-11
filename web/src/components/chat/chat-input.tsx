@@ -3,8 +3,10 @@
  */
 import { useCallback, useRef } from 'react';
 import { Send, TerminalSquare } from 'lucide-react';
+import { useMutation } from '@tanstack/react-query';
 import { Button } from '@/components/ui/button';
 import { Textarea } from '@/components/ui/textarea';
+import { threadsStartTurnMutation } from '@/generated/api/@tanstack/react-query.gen';
 import { useTimelineStore } from '@/stores/timeline-store';
 
 interface Props {
@@ -19,14 +21,25 @@ interface Props {
 export function ChatInput({ value, onChange, panelOpen, onTogglePanel }: Props) {
   const threadId = useTimelineStore((s) => s.threadId);
   const loading = useTimelineStore((s) => s.loading);
-  const sendMessage = useTimelineStore((s) => s.sendMessage);
+  const addUserMessage = useTimelineStore((s) => s.addUserMessage);
+  const addSystemError = useTimelineStore((s) => s.addSystemError);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
 
+  const startTurn = useMutation({
+    ...threadsStartTurnMutation(),
+    onError: (err) => addSystemError(String(err.message)),
+  });
+
   const handleSend = useCallback(() => {
-    if (!value.trim()) return;
-    void sendMessage(value.trim());
+    if (!value.trim() || !threadId || loading) return;
+    const text = value.trim();
+    addUserMessage(text);
     onChange('');
-  }, [value, onChange, sendMessage]);
+    startTurn.mutate({
+      path: { threadId },
+      body: { input: [{ type: 'text' as const, text }] },
+    });
+  }, [value, onChange, threadId, loading, addUserMessage, startTurn]);
 
   const handleKeyDown = useCallback(
     (e: React.KeyboardEvent) => {

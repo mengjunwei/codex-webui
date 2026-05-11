@@ -21,6 +21,13 @@ export class ApiKeyGuard implements CanActivate {
   }
 
   canActivate(context: ExecutionContext): boolean {
+    if (context.getType() !== 'ws') {
+      const request = context.switchToHttp().getRequest<FastifyRequest>();
+      if (this.isPublicSwaggerPath(request.url)) {
+        return true;
+      }
+    }
+
     const token =
       context.getType() === 'ws'
         ? this.getSocketToken(context.switchToWs().getClient<Socket>())
@@ -54,6 +61,17 @@ export class ApiKeyGuard implements CanActivate {
     }
 
     return this.extractBearerToken(client.handshake.headers.authorization);
+  }
+
+  /** Swagger UI and generated spec are public so local SDK generation can run. */
+  private isPublicSwaggerPath(url: string | undefined): boolean {
+    const path = url?.split('?')[0] ?? '';
+    return (
+      path === '/api/docs' ||
+      path.startsWith('/api/docs/') ||
+      path === '/api/docs-json' ||
+      path === '/api/docs-yaml'
+    );
   }
 
   private extractBearerToken(

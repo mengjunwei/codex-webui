@@ -11,32 +11,49 @@ import {
   Query,
 } from '@nestjs/common';
 import {
+  ApiBadRequestResponse,
   ApiBearerAuth,
+  ApiBody,
+  ApiCreatedResponse,
+  ApiExtraModels,
+  ApiOkResponse,
   ApiOperation,
   ApiQuery,
   ApiTags,
+  ApiUnauthorizedResponse,
 } from '@nestjs/swagger';
+import { ApiErrorResponseDto, OkResponseDto } from '../common/dto/api-responses.dto';
+import type { v2 } from '../codex/codex-schema';
 import { ThreadsService } from './threads.service';
+import {
+  CODEX_V2_EXTRA_MODELS,
+  CreateThreadDto,
+  StartTurnDto,
+  ThreadListResponseDto,
+  ThreadReadResponseDto,
+  ThreadResumeResponseDto,
+  ThreadStartResponseDto,
+  TurnStartResponseDto,
+} from './dto/threads.dto';
 
 @ApiTags('threads')
 @ApiBearerAuth()
+@ApiExtraModels(...CODEX_V2_EXTRA_MODELS, ApiErrorResponseDto, OkResponseDto)
+@ApiUnauthorizedResponse({ type: ApiErrorResponseDto })
 @Controller('threads')
 export class ThreadsController {
   constructor(private readonly threadsService: ThreadsService) {}
 
   @Post()
   @ApiOperation({ summary: 'Create a new thread' })
-  async startThread(
-    @Body()
-    body: {
-      model?: string;
-      cwd?: string;
-      approvalPolicy?: string;
-    },
-  ) {
+  @ApiBody({ type: CreateThreadDto })
+  @ApiCreatedResponse({ type: ThreadStartResponseDto })
+  @ApiBadRequestResponse({ type: ApiErrorResponseDto })
+  async startThread(@Body() body: CreateThreadDto) {
     return this.threadsService.startThread({
       model: body.model,
       cwd: body.cwd,
+      approvalPolicy: body.approvalPolicy as v2.ThreadStartParams['approvalPolicy'],
       experimentalRawEvents: false,
       persistExtendedHistory: true,
     });
@@ -48,6 +65,8 @@ export class ThreadsController {
   @ApiQuery({ name: 'limit', required: false, type: Number })
   @ApiQuery({ name: 'archived', required: false, type: Boolean })
   @ApiQuery({ name: 'searchTerm', required: false })
+  @ApiOkResponse({ type: ThreadListResponseDto })
+  @ApiBadRequestResponse({ type: ApiErrorResponseDto })
   async listThreads(
     @Query('cursor') cursor?: string,
     @Query('limit') limit?: string,
@@ -70,6 +89,7 @@ export class ThreadsController {
   @Get(':threadId')
   @ApiOperation({ summary: 'Read a thread by ID' })
   @ApiQuery({ name: 'includeTurns', required: false, type: Boolean })
+  @ApiOkResponse({ type: ThreadReadResponseDto })
   async readThread(
     @Param('threadId') threadId: string,
     @Query('includeTurns') includeTurns?: string,
@@ -79,15 +99,19 @@ export class ThreadsController {
 
   @Post(':threadId/resume')
   @ApiOperation({ summary: 'Resume a thread and subscribe to events' })
+  @ApiCreatedResponse({ type: ThreadResumeResponseDto })
   async resumeThread(@Param('threadId') threadId: string) {
     return this.threadsService.resumeThread(threadId);
   }
 
   @Post(':threadId/turns')
   @ApiOperation({ summary: 'Start a new turn (send message)' })
+  @ApiBody({ type: StartTurnDto })
+  @ApiCreatedResponse({ type: TurnStartResponseDto })
+  @ApiBadRequestResponse({ type: ApiErrorResponseDto })
   async startTurn(
     @Param('threadId') threadId: string,
-    @Body() body: { input: Array<{ type: string; text?: string }> },
+    @Body() body: StartTurnDto,
   ) {
     if (!Array.isArray(body.input) || body.input.length === 0) {
       throw new BadRequestException('input must be a non-empty array');
@@ -100,6 +124,7 @@ export class ThreadsController {
 
   @Post(':threadId/turns/:turnId/interrupt')
   @ApiOperation({ summary: 'Interrupt an in-progress turn' })
+  @ApiCreatedResponse({ type: OkResponseDto })
   async interruptTurn(
     @Param('threadId') threadId: string,
     @Param('turnId') turnId: string,

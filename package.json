@@ -13,6 +13,7 @@
     "start:dev": "pnpm ensure:codex-schema && nest start --watch",
     "start:debug": "pnpm ensure:codex-schema && nest start --debug --watch",
     "start:prod": "node dist/main",
+    "generate:api": "pnpm --dir web generate:api",
     "lint": "pnpm ensure:codex-schema && eslint \"{src,apps,libs,test}/**/*.ts\" --fix",
     "test": "pnpm ensure:codex-schema && jest",
     "test:watch": "jest --watch",

@@ -1,6 +1,6 @@
 /**
  * Recursive file tree component with lazy-loading directories.
- * Includes breadcrumb navigation and delete support.
+ * Uses TanStack Query for data, Zustand for UI state.
  */
 import {
   ChevronRight,
@@ -11,7 +11,13 @@ import {
   Loader2,
   Trash2,
 } from 'lucide-react';
+import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { ScrollArea } from '@/components/ui/scroll-area';
+import {
+  filesReadTreeOptions,
+  filesDeletePathMutation,
+  filesReadTreeQueryKey,
+} from '@/generated/api/@tanstack/react-query.gen';
 import { useFilesStore } from '@/stores/files-store';
 import { cn } from '@/lib/utils';
 
@@ -22,7 +28,6 @@ interface FileTreeProps {
 
 export function FileTree({ onFileClick }: FileTreeProps = {}) {
   const rootDir = useFilesStore((s) => s.rootDir);
-  const tree = useFilesStore((s) => s.tree);
   const selectedFile = useFilesStore((s) => s.selectedFile);
   const navigateUp = useFilesStore((s) => s.navigateUp);
 
@@ -42,7 +47,7 @@ export function FileTree({ onFileClick }: FileTreeProps = {}) {
       <div className="flex shrink-0 items-center gap-1 border-b border-border px-2 py-1">
         <button
           type="button"
-          onClick={() => void navigateUp()}
+          onClick={() => navigateUp()}
           className="rounded p-0.5 text-muted-foreground hover:bg-accent/50 hover:text-foreground"
           title="Go up"
         >
@@ -57,7 +62,6 @@ export function FileTree({ onFileClick }: FileTreeProps = {}) {
         <div className="py-1">
           <DirectoryContents
             dirPath={rootDir}
-            tree={tree}
             depth={0}
             selectedFile={selectedFile}
             onFileClick={onFileClick}
@@ -70,20 +74,34 @@ export function FileTree({ onFileClick }: FileTreeProps = {}) {
 
 interface DirectoryContentsProps {
   dirPath: string;
-  tree: Map<string, { name: string; path: string; type: string; expanded?: boolean }[]>;
   depth: number;
   selectedFile: string | null;
   onFileClick?: (filePath: string) => void;
 }
 
-function DirectoryContents({ dirPath, tree, depth, selectedFile, onFileClick }: DirectoryContentsProps) {
+function DirectoryContents({ dirPath, depth, selectedFile, onFileClick }: DirectoryContentsProps) {
   const toggleDirectory = useFilesStore((s) => s.toggleDirectory);
   const defaultSelectFile = useFilesStore((s) => s.selectFile);
-  const deletePath = useFilesStore((s) => s.deletePath);
-  const handleFileClick = onFileClick ?? ((p: string) => void defaultSelectFile(p));
+  const expandedDirs = useFilesStore((s) => s.expandedDirs);
+  const queryClient = useQueryClient();
+  const handleFileClick = onFileClick ?? ((p: string) => defaultSelectFile(p));
 
-  const children = tree.get(dirPath);
-  if (!children) {
+  const { data: children, isLoading } = useQuery({
+    ...filesReadTreeOptions({ query: { root: dirPath } }),
+  });
+
+  const deletePath = useMutation({
+    ...filesDeletePathMutation(),
+    onSuccess: (_res, variables) => {
+      const deletedPath = variables.query!.path;
+      void queryClient.invalidateQueries({ queryKey: filesReadTreeQueryKey({ query: { root: dirPath } }) });
+      if (selectedFile === deletedPath || selectedFile?.startsWith(`${deletedPath}/`)) {
+        defaultSelectFile(null);
+      }
+    },
+  });
+
+  if (isLoading) {
     return (
       <div
         className="flex items-center gap-1 py-1 text-xs text-muted-foreground"
@@ -95,11 +113,13 @@ function DirectoryContents({ dirPath, tree, depth, selectedFile, onFileClick }: 
     );
   }
 
+  if (!children) return null;
+
   return (
     <>
       {children.map((entry) => {
         if (entry.type === 'directory') {
-          const isExpanded = entry.expanded ?? false;
+          const isExpanded = expandedDirs.has(entry.path);
           return (
             <div key={entry.path}>
               <TreeRow
@@ -109,12 +129,11 @@ function DirectoryContents({ dirPath, tree, depth, selectedFile, onFileClick }: 
                 expanded={isExpanded}
                 selected={false}
                 onClick={() => toggleDirectory(entry.path)}
-                onDelete={() => void deletePath(entry.path)}
+                onDelete={() => deletePath.mutate({ query: { path: entry.path } })}
               />
               {isExpanded && (
                 <DirectoryContents
                   dirPath={entry.path}
-                  tree={tree}
                   depth={depth + 1}
                   selectedFile={selectedFile}
                   onFileClick={onFileClick}
@@ -131,7 +150,7 @@ function DirectoryContents({ dirPath, tree, depth, selectedFile, onFileClick }: 
             name={entry.name}
             selected={entry.path === selectedFile}
             onClick={() => handleFileClick(entry.path)}
-            onDelete={() => void deletePath(entry.path)}
+            onDelete={() => deletePath.mutate({ query: { path: entry.path } })}
           />
         );
       })}

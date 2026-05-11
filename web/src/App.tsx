@@ -12,7 +12,7 @@ import { LoginPage } from '@/components/login';
 import { useCodexSocket } from '@/hooks/use-codex-socket';
 import { useTimelineStore } from '@/stores/timeline-store';
 import { useFilesStore } from '@/stores/files-store';
-import { api } from '@/api';
+import { filesGetRoots, filesAddRoot } from '@/generated/api';
 import { getApiToken, setApiToken, clearApiToken } from '@/auth-token';
 import { resetSocket } from '@/socket';
 
@@ -37,20 +37,22 @@ function App() {
   useEffect(() => {
     const token = getApiToken();
     if (!token) return;
-    api.getWorkspaceRoots().then((res) => {
-      setAuthenticated(true);
-      setHomeDir(res.homeDir);
-    }).catch(() => {
-      clearApiToken();
-    });
+    filesGetRoots({ throwOnError: true })
+      .then(({ data }) => {
+        setAuthenticated(true);
+        setHomeDir(data.homeDir);
+      })
+      .catch(() => {
+        clearApiToken();
+      });
   }, []);
 
   const handleLogin = useCallback(async (apiKey: string): Promise<boolean> => {
     setApiToken(apiKey);
     try {
-      const res = await api.getWorkspaceRoots();
-      setHomeDir(res.homeDir);
-      resetSocket(); // Reconnect with new token
+      const { data } = await filesGetRoots({ throwOnError: true });
+      setHomeDir(data.homeDir);
+      resetSocket();
       setAuthenticated(true);
       return true;
     } catch {
@@ -65,10 +67,14 @@ function App() {
 
   // Sync file tree root based on current view
   useEffect(() => {
-    if (globalView === 'chat') {
-      void setRootDir(threadCwd);
-    } else if (globalView === 'files' && homeDir) {
-      void setRootDir(homeDir);
+    const dir = globalView === 'chat' ? threadCwd : globalView === 'files' ? homeDir : null;
+    if (dir) {
+      // Register as workspace root, then update store
+      void filesAddRoot({ body: { root: dir }, throwOnError: true })
+        .then(() => setRootDir(dir))
+        .catch(() => { /* root rejected — keep previous state */ });
+    } else {
+      setRootDir(null);
     }
   }, [globalView, threadCwd, homeDir, setRootDir]);
 

@@ -1,20 +1,54 @@
 /**
  * File viewer/editor using Monaco Editor.
- * Supports viewing, editing, and saving files with mtime conflict detection.
+ * Uses TanStack Query for file content, Zustand for selection state.
  */
-import { useCallback, useRef } from 'react';
+import { useCallback, useRef, useEffect } from 'react';
 import Editor, { type OnMount } from '@monaco-editor/react';
 import { Loader2, Save } from 'lucide-react';
+import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { Button } from '@/components/ui/button';
+import {
+  filesReadFileOptions,
+  filesGetMetadataOptions,
+  filesWriteFileMutation,
+  filesReadFileQueryKey,
+} from '@/generated/api/@tanstack/react-query.gen';
 import { useFilesStore } from '@/stores/files-store';
 
 export function FileViewer() {
   const selectedFile = useFilesStore((s) => s.selectedFile);
-  const fileContent = useFilesStore((s) => s.fileContent);
-  const loadingFile = useFilesStore((s) => s.loadingFile);
-  const saveFile = useFilesStore((s) => s.saveFile);
+  const fileMtime = useFilesStore((s) => s.fileMtime);
+  const setFileMtime = useFilesStore((s) => s.setFileMtime);
+  const queryClient = useQueryClient();
 
   const editorRef = useRef<Parameters<OnMount>[0] | null>(null);
+
+  const { data: fileData, isLoading } = useQuery({
+    ...filesReadFileOptions({ query: { path: selectedFile! } }),
+    enabled: !!selectedFile,
+  });
+
+  const { data: metadata } = useQuery({
+    ...filesGetMetadataOptions({ query: { path: selectedFile! } }),
+    enabled: !!selectedFile,
+  });
+
+  // Track mtime for conflict detection
+  useEffect(() => {
+    if (metadata?.mtime != null) {
+      setFileMtime(metadata.mtime);
+    }
+  }, [metadata?.mtime, setFileMtime]);
+
+  const writeFile = useMutation({
+    ...filesWriteFileMutation(),
+    onSuccess: (res) => {
+      setFileMtime(res.mtime);
+      void queryClient.invalidateQueries({
+        queryKey: filesReadFileQueryKey({ query: { path: selectedFile! } }),
+      });
+    },
+  });
 
   const handleMount: OnMount = (editor) => {
     editorRef.current = editor;
@@ -22,10 +56,16 @@ export function FileViewer() {
 
   const handleSave = useCallback(() => {
     const value = editorRef.current?.getValue();
-    if (value !== undefined) {
-      void saveFile(value);
+    if (value !== undefined && selectedFile) {
+      writeFile.mutate({
+        body: {
+          path: selectedFile,
+          content: value,
+          expectedMtime: fileMtime ?? undefined,
+        },
+      });
     }
-  }, [saveFile]);
+  }, [selectedFile, fileMtime, writeFile]);
 
   if (!selectedFile) {
     return (
@@ -35,7 +75,7 @@ export function FileViewer() {
     );
   }
 
-  if (loadingFile) {
+  if (isLoading) {
     return (
       <div className="flex flex-1 items-center justify-center gap-2 text-sm text-muted-foreground">
         <Loader2 className="h-4 w-4 animate-spin" />
@@ -67,7 +107,7 @@ export function FileViewer() {
       <div className="relative min-h-0 flex-1">
         <Editor
           key={selectedFile}
-          value={fileContent ?? ''}
+          value={fileData?.content ?? ''}
           language={language}
           theme="vs-dark"
           height="100%"
