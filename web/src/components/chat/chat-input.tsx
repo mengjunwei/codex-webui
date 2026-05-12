@@ -22,10 +22,12 @@ interface Props {
 export function ChatInput({ value, onChange, panelOpen, onTogglePanel }: Props) {
   const { t } = useTranslation();
   const threadId = useTimelineStore((s) => s.threadId);
+  const threadMode = useTimelineStore((s) => s.threadMode);
   const loading = useTimelineStore((s) => s.loading);
   const addUserMessage = useTimelineStore((s) => s.addUserMessage);
   const addSystemError = useTimelineStore((s) => s.addSystemError);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const readOnly = threadMode === 'readOnly';
 
   const startTurn = useMutation({
     ...threadsStartTurnMutation(),
@@ -33,7 +35,7 @@ export function ChatInput({ value, onChange, panelOpen, onTogglePanel }: Props) 
   });
 
   const handleSend = useCallback(() => {
-    if (!value.trim() || !threadId || loading) return;
+    if (!value.trim() || !threadId || loading || readOnly) return;
     const text = value.trim();
     addUserMessage(text);
     onChange('');
@@ -41,7 +43,7 @@ export function ChatInput({ value, onChange, panelOpen, onTogglePanel }: Props) 
       path: { threadId },
       body: { input: [{ type: 'text' as const, text }] },
     });
-  }, [value, onChange, threadId, loading, addUserMessage, startTurn]);
+  }, [value, onChange, threadId, loading, readOnly, addUserMessage, startTurn]);
 
   const handleKeyDown = useCallback(
     (e: React.KeyboardEvent) => {
@@ -55,6 +57,11 @@ export function ChatInput({ value, onChange, panelOpen, onTogglePanel }: Props) 
 
   return (
     <footer className="glass sticky bottom-0 z-10 px-4 py-3 md:px-6">
+      {readOnly && (
+        <p className="mb-2 rounded-lg bg-muted px-3 py-2 text-center text-xs text-muted-foreground">
+          {t('Archived threads are read-only. Unarchive or fork to continue.')}
+        </p>
+      )}
       <div className="relative">
         <Textarea
           ref={textareaRef}
@@ -62,11 +69,13 @@ export function ChatInput({ value, onChange, panelOpen, onTogglePanel }: Props) 
           onChange={(e) => onChange(e.target.value)}
           onKeyDown={handleKeyDown}
           placeholder={
-            threadId
-              ? t('Type a message... (Enter to send)')
-              : t('Create a thread first')
+            readOnly
+              ? t('Archived thread is read-only')
+              : threadId
+                ? t('Type a message... (Enter to send)')
+                : t('Create a thread first')
           }
-          disabled={!threadId || loading}
+          disabled={!threadId || loading || readOnly}
           rows={1}
           className="max-h-32 min-h-0 resize-none rounded-xl bg-background/60 pb-10 pr-4 pt-2.5 backdrop-blur-sm transition-all duration-200 focus:ring-2 focus:ring-primary/30"
         />
@@ -78,7 +87,7 @@ export function ChatInput({ value, onChange, panelOpen, onTogglePanel }: Props) 
               variant={panelOpen ? 'secondary' : 'ghost'}
               className="h-7 gap-1.5 rounded-lg px-2.5 text-xs"
               onClick={onTogglePanel}
-              disabled={!threadId}
+              disabled={!threadId || readOnly}
               title={t('Terminal')}
             >
               <TerminalSquare className="h-3.5 w-3.5" />
@@ -91,7 +100,7 @@ export function ChatInput({ value, onChange, panelOpen, onTogglePanel }: Props) 
             <Button
               size="icon"
               className="h-7 w-7 rounded-lg transition-transform duration-200 hover:scale-105 active:scale-95"
-              disabled={!threadId || !value.trim() || loading}
+              disabled={!threadId || !value.trim() || loading || readOnly}
               onClick={handleSend}
             >
               <Send className="h-3.5 w-3.5" />

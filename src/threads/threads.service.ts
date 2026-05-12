@@ -82,4 +82,82 @@ export class ThreadsService {
   async interruptTurn(threadId: string, turnId: string): Promise<void> {
     await this.codex.request('turn/interrupt', { threadId, turnId });
   }
+
+  /**
+   * Archives a thread so it no longer appears in the active thread list.
+   *
+   * @param threadId - The thread identifier
+   */
+  async archiveThread(threadId: string): Promise<void> {
+    await this.codex.request<v2.ThreadArchiveResponse>('thread/archive', {
+      threadId,
+    });
+  }
+
+  /**
+   * Restores an archived thread back into the active thread list.
+   *
+   * @param threadId - The thread identifier
+   * @returns The restored thread
+   */
+  async unarchiveThread(threadId: string): Promise<v2.ThreadUnarchiveResponse> {
+    return this.codex.request<v2.ThreadUnarchiveResponse>('thread/unarchive', {
+      threadId,
+    });
+  }
+
+  /**
+   * Starts context compaction for a thread.
+   *
+   * @param threadId - The thread identifier
+   */
+  async compactThread(threadId: string): Promise<void> {
+    await this.codex.request<v2.ThreadCompactStartResponse>(
+      'thread/compact/start',
+      { threadId },
+    );
+  }
+
+  /**
+   * Forks a thread into a new live thread with extended history persistence.
+   *
+   * @param threadId - The source thread identifier
+   * @returns The forked thread and resolved settings
+   */
+  async forkThread(threadId: string): Promise<v2.ThreadForkResponse> {
+    return this.codex.request<v2.ThreadForkResponse>('thread/fork', {
+      threadId,
+      persistExtendedHistory: true,
+    });
+  }
+
+  /**
+   * Rolls back turns from the end of a thread history.
+   *
+   * @param threadId - The thread identifier
+   * @param numTurns - Number of turns to remove from the end
+   * @returns The updated thread with turns populated
+   */
+  async rollbackThread(
+    threadId: string,
+    numTurns: number,
+  ): Promise<v2.ThreadRollbackResponse> {
+    return this.codex.request<v2.ThreadRollbackResponse>('thread/rollback', {
+      threadId,
+      numTurns,
+    });
+  }
+
+  /**
+   * Updates the user-facing name for a thread.
+   *
+   * @param threadId - The thread identifier
+   * @param name - Non-empty display name
+   */
+  async setThreadName(threadId: string, name: string): Promise<void> {
+    await this.codex.request<v2.ThreadSetNameResponse>('thread/name/set', {
+      threadId,
+      name,
+    });
+  }
 }

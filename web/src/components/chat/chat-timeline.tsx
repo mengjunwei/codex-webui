@@ -1,12 +1,33 @@
 /**
  * Renders the scrollable message timeline.
  */
-import { useEffect, useRef } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { AnimatePresence, motion } from 'framer-motion';
-import { Bot, Loader2 } from 'lucide-react';
+import { Bot, Loader2, Pencil } from 'lucide-react';
+import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from '@/components/ui/alert-dialog';
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipTrigger,
+} from '@/components/ui/tooltip';
 import { ScrollArea } from '@/components/ui/scroll-area';
+import {
+  threadsListThreadsQueryKey,
+  threadsRollbackThreadMutation,
+} from '@/generated/api/@tanstack/react-query.gen';
 import { useTimelineStore } from '@/stores/timeline-store';
+import type { TimelineEntry } from '@/types/timeline';
 import { TurnBlock } from './turn-block';
 import { MarkdownRenderer } from './markdown-renderer';
 
@@ -19,12 +40,44 @@ const entryVariants = {
   },
 };
 
-export function ChatTimeline() {
+/** Counts how many turns need to be rolled back when editing this user message. */
+function computeRollbackTurns(timeline: TimelineEntry[], userIndex: number): number {
+  const turnEntries = timeline
+    .slice(userIndex)
+    .filter((e): e is Extract<TimelineEntry, { kind: 'turn' }> => e.kind === 'turn');
+  return turnEntries.length;
+}
+
+interface Props {
+  onEditMessage?: (message: string) => void;
+}
+
+export function ChatTimeline({ onEditMessage }: Props) {
   const { t } = useTranslation();
   const timeline = useTimelineStore((s) => s.timeline);
   const threadId = useTimelineStore((s) => s.threadId);
+  const threadMode = useTimelineStore((s) => s.threadMode);
   const loading = useTimelineStore((s) => s.loading);
+  const hydrateTimeline = useTimelineStore((s) => s.hydrateTimeline);
   const bottomRef = useRef<HTMLDivElement>(null);
+  const [rollbackTarget, setRollbackTarget] = useState<{
+    numTurns: number;
+    content: string;
+  } | null>(null);
+  const queryClient = useQueryClient();
+
+  const rollbackThread = useMutation({
+    ...threadsRollbackThreadMutation(),
+    onSuccess: (res) => {
+      const content = rollbackTarget?.content;
+      hydrateTimeline(res.thread.turns, res.thread.cwd);
+      setRollbackTarget(null);
+      void queryClient.invalidateQueries({ queryKey: threadsListThreadsQueryKey() });
+      if (content) onEditMessage?.(content);
+    },
+  });
+
+  const canRollback = threadMode === 'live' && !loading && !rollbackThread.isPending;
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
@@ -62,17 +115,35 @@ export function ChatTimeline() {
         <AnimatePresence initial={false}>
           {timeline.map((entry, i) => {
             if (entry.kind === 'user') {
+              const numTurns = computeRollbackTurns(timeline, i);
               return (
                 <motion.div
                   key={i}
                   variants={entryVariants}
                   initial="hidden"
                   animate="visible"
-                  className="mb-4 flex justify-end"
+                  className="group/user mb-4 flex flex-col items-end"
                 >
                   <div className="max-w-2xl rounded-2xl bg-blue-600 px-4 py-3 text-white shadow-md [&_a]:text-blue-200 [&_a]:underline [&_code]:bg-white/15">
                     <MarkdownRenderer content={entry.content} completed={true} />
                   </div>
+                  {canRollback && numTurns > 0 && (
+                    <Tooltip>
+                      <TooltipTrigger asChild>
+                        <button
+                          type="button"
+                          aria-label={t('Edit this message')}
+                          className="mt-1 flex cursor-pointer items-center gap-1 rounded px-2 py-1 text-xs text-muted-foreground opacity-0 transition-opacity hover:bg-accent hover:text-foreground focus:opacity-100 group-hover/user:opacity-100"
+                          onClick={() => setRollbackTarget({ numTurns, content: entry.content })}
+                        >
+                          <Pencil className="h-3 w-3" />
+                        </button>
+                      </TooltipTrigger>
+                      <TooltipContent side="bottom">
+                        {t('Edit this message')}
+                      </TooltipContent>
+                    </Tooltip>
+                  )}
                 </motion.div>
               );
             }
@@ -105,6 +176,32 @@ export function ChatTimeline() {
 
         <div ref={bottomRef} />
       </div>
+
+      <AlertDialog open={rollbackTarget !== null} onOpenChange={(open) => !open && setRollbackTarget(null)}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>{t('Edit this message?')}</AlertDialogTitle>
+            <AlertDialogDescription>
+              {t('This will remove this turn and all subsequent turns. File changes will NOT be reverted.')}
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>{t('Cancel')}</AlertDialogCancel>
+            <AlertDialogAction
+              disabled={rollbackThread.isPending}
+              onClick={() => {
+                if (!threadId || !rollbackTarget || rollbackTarget.numTurns < 1) return;
+                rollbackThread.mutate({
+                  path: { threadId },
+                  body: { numTurns: rollbackTarget.numTurns },
+                });
+              }}
+            >
+              {t('Confirm')}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </ScrollArea>
   );
 }

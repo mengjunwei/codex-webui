@@ -127,7 +127,7 @@ function App() {
 
           {globalView === 'chat' && (
             <>
-              <ChatTimeline />
+              <ChatTimeline onEditMessage={setInput} />
 
               {sessionPanelOpen && threadCwd && (
                 <div

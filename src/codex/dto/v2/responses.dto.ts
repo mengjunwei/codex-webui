@@ -44,6 +44,9 @@ export class ThreadStartResponseDto {
 /** v2 ThreadResumeResponse mirror. */
 export class ThreadResumeResponseDto extends ThreadStartResponseDto {}
 
+/** v2 ThreadForkResponse mirror. */
+export class ThreadForkResponseDto extends ThreadStartResponseDto {}
+
 /** v2 ThreadReadResponse mirror. */
 export class ThreadReadResponseDto {
   @ApiProperty({ type: () => ThreadDto })
@@ -57,6 +60,18 @@ export class ThreadListResponseDto {
 
   @ApiProperty(NULLABLE_STRING_SCHEMA)
   nextCursor!: string | null;
+}
+
+/** v2 ThreadUnarchiveResponse mirror. */
+export class ThreadUnarchiveResponseDto {
+  @ApiProperty({ type: () => ThreadDto })
+  thread!: ThreadDto;
+}
+
+/** v2 ThreadRollbackResponse mirror. */
+export class ThreadRollbackResponseDto {
+  @ApiProperty({ type: () => ThreadDto })
+  thread!: ThreadDto;
 }
 
 /** v2 TurnStartResponse mirror. */

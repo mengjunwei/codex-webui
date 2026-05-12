@@ -106,14 +106,6 @@ export type CodexStatusResponseDto = {
     runtime: CodexRuntimeStatusDto;
 };
 
-export type UpdateApprovalPolicyDto = {
-    approvalPolicy: 'untrusted' | 'on-failure' | 'on-request' | 'never';
-};
-
-export type UpdateSandboxModeDto = {
-    sandboxMode: 'read-only' | 'workspace-write' | 'danger-full-access';
-};
-
 export type FileEntryDto = {
     name: string;
     path: string;
@@ -659,6 +651,18 @@ export type ThreadResumeResponseDto = {
     reasoningEffort: 'none' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh' | null;
 };
 
+export type ThreadForkResponseDto = {
+    thread: ThreadDto;
+    model: string;
+    modelProvider: string;
+    serviceTier: 'fast' | 'flex' | null;
+    cwd: string;
+    approvalPolicy: 'untrusted' | 'on-failure' | 'on-request' | 'never' | GranularApprovalPolicyDto;
+    approvalsReviewer: 'user' | 'guardian_subagent';
+    sandbox: SandboxDangerFullAccessDto | SandboxReadOnlyDto | SandboxExternalSandboxDto | SandboxWorkspaceWriteDto;
+    reasoningEffort: 'none' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh' | null;
+};
+
 export type ThreadReadResponseDto = {
     thread: ThreadDto;
 };
@@ -666,6 +670,14 @@ export type ThreadReadResponseDto = {
 export type ThreadListResponseDto = {
     data: Array<ThreadDto>;
     nextCursor: string | null;
+};
+
+export type ThreadUnarchiveResponseDto = {
+    thread: ThreadDto;
+};
+
+export type ThreadRollbackResponseDto = {
+    thread: ThreadDto;
 };
 
 export type TurnStartResponseDto = {
@@ -690,6 +702,14 @@ export type TextTurnInputDto = {
 
 export type StartTurnDto = {
     input: Array<TextTurnInputDto>;
+};
+
+export type ThreadRollbackRequestDto = {
+    numTurns: number;
+};
+
+export type ThreadSetNameRequestDto = {
+    name: string;
 };
 
 export type LogEntryDto = {
@@ -792,7 +812,7 @@ export type CodexStatusGetStatusResponses = {
 export type CodexStatusGetStatusResponse = CodexStatusGetStatusResponses[keyof CodexStatusGetStatusResponses];
 
 export type CodexStatusUpdateApprovalPolicyData = {
-    body: UpdateApprovalPolicyDto;
+    body?: never;
     path?: never;
     query?: never;
     url: '/api/codex/approval-policy';
@@ -812,7 +832,7 @@ export type CodexStatusUpdateApprovalPolicyResponses = {
 export type CodexStatusUpdateApprovalPolicyResponse = CodexStatusUpdateApprovalPolicyResponses[keyof CodexStatusUpdateApprovalPolicyResponses];
 
 export type CodexStatusUpdateSandboxModeData = {
-    body: UpdateSandboxModeDto;
+    body?: never;
     path?: never;
     query?: never;
     url: '/api/codex/sandbox-mode';
@@ -1007,6 +1027,8 @@ export type ThreadsListThreadsData = {
         limit?: number;
         archived?: boolean;
         searchTerm?: string;
+        cwd?: string;
+        sortKey?: 'created_at' | 'updated_at';
     };
     url: '/api/threads';
 };
@@ -1131,6 +1153,134 @@ export type ThreadsInterruptTurnResponses = {
 };
 
 export type ThreadsInterruptTurnResponse = ThreadsInterruptTurnResponses[keyof ThreadsInterruptTurnResponses];
+
+export type ThreadsArchiveThreadData = {
+    body?: never;
+    path: {
+        threadId: string;
+    };
+    query?: never;
+    url: '/api/threads/{threadId}/archive';
+};
+
+export type ThreadsArchiveThreadErrors = {
+    401: ApiErrorResponseDto;
+};
+
+export type ThreadsArchiveThreadError = ThreadsArchiveThreadErrors[keyof ThreadsArchiveThreadErrors];
+
+export type ThreadsArchiveThreadResponses = {
+    204: void;
+};
+
+export type ThreadsArchiveThreadResponse = ThreadsArchiveThreadResponses[keyof ThreadsArchiveThreadResponses];
+
+export type ThreadsUnarchiveThreadData = {
+    body?: never;
+    path: {
+        threadId: string;
+    };
+    query?: never;
+    url: '/api/threads/{threadId}/unarchive';
+};
+
+export type ThreadsUnarchiveThreadErrors = {
+    401: ApiErrorResponseDto;
+};
+
+export type ThreadsUnarchiveThreadError = ThreadsUnarchiveThreadErrors[keyof ThreadsUnarchiveThreadErrors];
+
+export type ThreadsUnarchiveThreadResponses = {
+    201: ThreadUnarchiveResponseDto;
+};
+
+export type ThreadsUnarchiveThreadResponse = ThreadsUnarchiveThreadResponses[keyof ThreadsUnarchiveThreadResponses];
+
+export type ThreadsCompactThreadData = {
+    body?: never;
+    path: {
+        threadId: string;
+    };
+    query?: never;
+    url: '/api/threads/{threadId}/compact';
+};
+
+export type ThreadsCompactThreadErrors = {
+    401: ApiErrorResponseDto;
+};
+
+export type ThreadsCompactThreadError = ThreadsCompactThreadErrors[keyof ThreadsCompactThreadErrors];
+
+export type ThreadsCompactThreadResponses = {
+    204: void;
+};
+
+export type ThreadsCompactThreadResponse = ThreadsCompactThreadResponses[keyof ThreadsCompactThreadResponses];
+
+export type ThreadsForkThreadData = {
+    body?: never;
+    path: {
+        threadId: string;
+    };
+    query?: never;
+    url: '/api/threads/{threadId}/fork';
+};
+
+export type ThreadsForkThreadErrors = {
+    401: ApiErrorResponseDto;
+};
+
+export type ThreadsForkThreadError = ThreadsForkThreadErrors[keyof ThreadsForkThreadErrors];
+
+export type ThreadsForkThreadResponses = {
+    201: ThreadForkResponseDto;
+};
+
+export type ThreadsForkThreadResponse = ThreadsForkThreadResponses[keyof ThreadsForkThreadResponses];
+
+export type ThreadsRollbackThreadData = {
+    body: ThreadRollbackRequestDto;
+    path: {
+        threadId: string;
+    };
+    query?: never;
+    url: '/api/threads/{threadId}/rollback';
+};
+
+export type ThreadsRollbackThreadErrors = {
+    400: ApiErrorResponseDto;
+    401: ApiErrorResponseDto;
+};
+
+export type ThreadsRollbackThreadError = ThreadsRollbackThreadErrors[keyof ThreadsRollbackThreadErrors];
+
+export type ThreadsRollbackThreadResponses = {
+    201: ThreadRollbackResponseDto;
+};
+
+export type ThreadsRollbackThreadResponse = ThreadsRollbackThreadResponses[keyof ThreadsRollbackThreadResponses];
+
+export type ThreadsSetThreadNameData = {
+    body: ThreadSetNameRequestDto;
+    path: {
+        threadId: string;
+    };
+    query?: never;
+    url: '/api/threads/{threadId}/name';
+};
+
+export type ThreadsSetThreadNameErrors = {
+    400: ApiErrorResponseDto;
+    401: ApiErrorResponseDto;
+};
+
+export type ThreadsSetThreadNameError = ThreadsSetThreadNameErrors[keyof ThreadsSetThreadNameErrors];
+
+export type ThreadsSetThreadNameResponses = {
+    204: void;
+};
+
+export type ThreadsSetThreadNameResponse = ThreadsSetThreadNameResponses[keyof ThreadsSetThreadNameResponses];
 
 export type ModelsListModelsData = {
     body?: never;

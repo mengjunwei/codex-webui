@@ -2,7 +2,7 @@
 
 import type { Client, Options as Options2, TDataShape } from './client';
 import { client } from './client.gen';
-import type { AppGetStatusData, AppGetStatusResponses, AuthLoginData, AuthLoginErrors, AuthLoginResponses, AuthLogoutData, AuthLogoutResponses, CodexStatusGetStatusData, CodexStatusGetStatusErrors, CodexStatusGetStatusResponses, CodexStatusUpdateApprovalPolicyData, CodexStatusUpdateApprovalPolicyErrors, CodexStatusUpdateApprovalPolicyResponses, CodexStatusUpdateSandboxModeData, CodexStatusUpdateSandboxModeErrors, CodexStatusUpdateSandboxModeResponses, FilesAddRootData, FilesAddRootErrors, FilesAddRootResponses, FilesDeletePathData, FilesDeletePathErrors, FilesDeletePathResponses, FilesGetMetadataData, FilesGetMetadataErrors, FilesGetMetadataResponses, FilesGetRootsData, FilesGetRootsErrors, FilesGetRootsResponses, FilesReadFileData, FilesReadFileErrors, FilesReadFileResponses, FilesReadTreeData, FilesReadTreeErrors, FilesReadTreeResponses, FilesWriteFileData, FilesWriteFileErrors, FilesWriteFileResponses, LogsExportDiagnosticsData, LogsExportDiagnosticsErrors, LogsExportDiagnosticsResponses, LogsListLogsData, LogsListLogsErrors, LogsListLogsResponses, ModelsListModelsData, ModelsListModelsErrors, ModelsListModelsResponses, ThreadsInterruptTurnData, ThreadsInterruptTurnErrors, ThreadsInterruptTurnResponses, ThreadsListThreadsData, ThreadsListThreadsErrors, ThreadsListThreadsResponses, ThreadsReadThreadData, ThreadsReadThreadErrors, ThreadsReadThreadResponses, ThreadsResumeThreadData, ThreadsResumeThreadErrors, ThreadsResumeThreadResponses, ThreadsStartThreadData, ThreadsStartThreadErrors, ThreadsStartThreadResponses, ThreadsStartTurnData, ThreadsStartTurnErrors, ThreadsStartTurnResponses } from './types.gen';
+import type { AppGetStatusData, AppGetStatusResponses, AuthLoginData, AuthLoginErrors, AuthLoginResponses, AuthLogoutData, AuthLogoutResponses, CodexStatusGetStatusData, CodexStatusGetStatusErrors, CodexStatusGetStatusResponses, CodexStatusUpdateApprovalPolicyData, CodexStatusUpdateApprovalPolicyErrors, CodexStatusUpdateApprovalPolicyResponses, CodexStatusUpdateSandboxModeData, CodexStatusUpdateSandboxModeErrors, CodexStatusUpdateSandboxModeResponses, FilesAddRootData, FilesAddRootErrors, FilesAddRootResponses, FilesDeletePathData, FilesDeletePathErrors, FilesDeletePathResponses, FilesGetMetadataData, FilesGetMetadataErrors, FilesGetMetadataResponses, FilesGetRootsData, FilesGetRootsErrors, FilesGetRootsResponses, FilesReadFileData, FilesReadFileErrors, FilesReadFileResponses, FilesReadTreeData, FilesReadTreeErrors, FilesReadTreeResponses, FilesWriteFileData, FilesWriteFileErrors, FilesWriteFileResponses, LogsExportDiagnosticsData, LogsExportDiagnosticsErrors, LogsExportDiagnosticsResponses, LogsListLogsData, LogsListLogsErrors, LogsListLogsResponses, ModelsListModelsData, ModelsListModelsErrors, ModelsListModelsResponses, ThreadsArchiveThreadData, ThreadsArchiveThreadErrors, ThreadsArchiveThreadResponses, ThreadsCompactThreadData, ThreadsCompactThreadErrors, ThreadsCompactThreadResponses, ThreadsForkThreadData, ThreadsForkThreadErrors, ThreadsForkThreadResponses, ThreadsInterruptTurnData, ThreadsInterruptTurnErrors, ThreadsInterruptTurnResponses, ThreadsListThreadsData, ThreadsListThreadsErrors, ThreadsListThreadsResponses, ThreadsReadThreadData, ThreadsReadThreadErrors, ThreadsReadThreadResponses, ThreadsResumeThreadData, ThreadsResumeThreadErrors, ThreadsResumeThreadResponses, ThreadsRollbackThreadData, ThreadsRollbackThreadErrors, ThreadsRollbackThreadResponses, ThreadsSetThreadNameData, ThreadsSetThreadNameErrors, ThreadsSetThreadNameResponses, ThreadsStartThreadData, ThreadsStartThreadErrors, ThreadsStartThreadResponses, ThreadsStartTurnData, ThreadsStartTurnErrors, ThreadsStartTurnResponses, ThreadsUnarchiveThreadData, ThreadsUnarchiveThreadErrors, ThreadsUnarchiveThreadResponses } from './types.gen';
 
 export type Options<TData extends TDataShape = TDataShape, ThrowOnError extends boolean = boolean, TResponse = unknown> = Options2<TData, ThrowOnError, TResponse> & {
     /**
@@ -56,27 +56,19 @@ export const codexStatusGetStatus = <ThrowOnError extends boolean = false>(optio
 /**
  * Update approval policy (hot-reloads all threads)
  */
-export const codexStatusUpdateApprovalPolicy = <ThrowOnError extends boolean = false>(options: Options<CodexStatusUpdateApprovalPolicyData, ThrowOnError>) => (options.client ?? client).post<CodexStatusUpdateApprovalPolicyResponses, CodexStatusUpdateApprovalPolicyErrors, ThrowOnError>({
+export const codexStatusUpdateApprovalPolicy = <ThrowOnError extends boolean = false>(options?: Options<CodexStatusUpdateApprovalPolicyData, ThrowOnError>) => (options?.client ?? client).post<CodexStatusUpdateApprovalPolicyResponses, CodexStatusUpdateApprovalPolicyErrors, ThrowOnError>({
     security: [{ scheme: 'bearer', type: 'http' }],
     url: '/api/codex/approval-policy',
-    ...options,
-    headers: {
-        'Content-Type': 'application/json',
-        ...options.headers
-    }
+    ...options
 });
 
 /**
  * Update sandbox mode (hot-reloads all threads)
  */
-export const codexStatusUpdateSandboxMode = <ThrowOnError extends boolean = false>(options: Options<CodexStatusUpdateSandboxModeData, ThrowOnError>) => (options.client ?? client).post<CodexStatusUpdateSandboxModeResponses, CodexStatusUpdateSandboxModeErrors, ThrowOnError>({
+export const codexStatusUpdateSandboxMode = <ThrowOnError extends boolean = false>(options?: Options<CodexStatusUpdateSandboxModeData, ThrowOnError>) => (options?.client ?? client).post<CodexStatusUpdateSandboxModeResponses, CodexStatusUpdateSandboxModeErrors, ThrowOnError>({
     security: [{ scheme: 'bearer', type: 'http' }],
     url: '/api/codex/sandbox-mode',
-    ...options,
-    headers: {
-        'Content-Type': 'application/json',
-        ...options.headers
-    }
+    ...options
 });
 
 /**
@@ -210,6 +202,68 @@ export const threadsInterruptTurn = <ThrowOnError extends boolean = false>(optio
     security: [{ scheme: 'bearer', type: 'http' }],
     url: '/api/threads/{threadId}/turns/{turnId}/interrupt',
     ...options
+});
+
+/**
+ * Archive a thread
+ */
+export const threadsArchiveThread = <ThrowOnError extends boolean = false>(options: Options<ThreadsArchiveThreadData, ThrowOnError>) => (options.client ?? client).post<ThreadsArchiveThreadResponses, ThreadsArchiveThreadErrors, ThrowOnError>({
+    security: [{ scheme: 'bearer', type: 'http' }],
+    url: '/api/threads/{threadId}/archive',
+    ...options
+});
+
+/**
+ * Unarchive a thread
+ */
+export const threadsUnarchiveThread = <ThrowOnError extends boolean = false>(options: Options<ThreadsUnarchiveThreadData, ThrowOnError>) => (options.client ?? client).post<ThreadsUnarchiveThreadResponses, ThreadsUnarchiveThreadErrors, ThrowOnError>({
+    security: [{ scheme: 'bearer', type: 'http' }],
+    url: '/api/threads/{threadId}/unarchive',
+    ...options
+});
+
+/**
+ * Compact thread context
+ */
+export const threadsCompactThread = <ThrowOnError extends boolean = false>(options: Options<ThreadsCompactThreadData, ThrowOnError>) => (options.client ?? client).post<ThreadsCompactThreadResponses, ThreadsCompactThreadErrors, ThrowOnError>({
+    security: [{ scheme: 'bearer', type: 'http' }],
+    url: '/api/threads/{threadId}/compact',
+    ...options
+});
+
+/**
+ * Fork a thread
+ */
+export const threadsForkThread = <ThrowOnError extends boolean = false>(options: Options<ThreadsForkThreadData, ThrowOnError>) => (options.client ?? client).post<ThreadsForkThreadResponses, ThreadsForkThreadErrors, ThrowOnError>({
+    security: [{ scheme: 'bearer', type: 'http' }],
+    url: '/api/threads/{threadId}/fork',
+    ...options
+});
+
+/**
+ * Rollback turns from a thread
+ */
+export const threadsRollbackThread = <ThrowOnError extends boolean = false>(options: Options<ThreadsRollbackThreadData, ThrowOnError>) => (options.client ?? client).post<ThreadsRollbackThreadResponses, ThreadsRollbackThreadErrors, ThrowOnError>({
+    security: [{ scheme: 'bearer', type: 'http' }],
+    url: '/api/threads/{threadId}/rollback',
+    ...options,
+    headers: {
+        'Content-Type': 'application/json',
+        ...options.headers
+    }
+});
+
+/**
+ * Set thread name
+ */
+export const threadsSetThreadName = <ThrowOnError extends boolean = false>(options: Options<ThreadsSetThreadNameData, ThrowOnError>) => (options.client ?? client).patch<ThreadsSetThreadNameResponses, ThreadsSetThreadNameErrors, ThrowOnError>({
+    security: [{ scheme: 'bearer', type: 'http' }],
+    url: '/api/threads/{threadId}/name',
+    ...options,
+    headers: {
+        'Content-Type': 'application/json',
+        ...options.headers
+    }
 });
 
 /**

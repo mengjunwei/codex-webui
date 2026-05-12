@@ -29,6 +29,7 @@ export function useCodexSocket(enabled = true) {
     addSystemError,
     setTokenUsage,
     setThreadStatus,
+    setThreadTitle,
     resolveApprovalByRequestId,
   } = useTimelineStore();
 
@@ -55,6 +56,7 @@ export function useCodexSocket(enabled = true) {
       addSystemError,
       setTokenUsage,
       setThreadStatus,
+      setThreadTitle,
       resolveApprovalByRequestId,
     };
 
@@ -146,6 +148,7 @@ export function useCodexSocket(enabled = true) {
     addSystemError,
     setTokenUsage,
     setThreadStatus,
+    setThreadTitle,
     resolveApprovalByRequestId,
   ]);
 

@@ -47,10 +47,13 @@ import {
 import { TurnDto, TurnErrorDto } from './turn.dto';
 import {
   ModelListResponseDto,
+  ThreadForkResponseDto,
   ThreadListResponseDto,
   ThreadReadResponseDto,
   ThreadResumeResponseDto,
+  ThreadRollbackResponseDto,
   ThreadStartResponseDto,
+  ThreadUnarchiveResponseDto,
   TurnStartResponseDto,
 } from './responses.dto';
 
@@ -85,8 +88,11 @@ export const CODEX_V2_EXTRA_MODELS = [
   ModelDto,
   ThreadStartResponseDto,
   ThreadResumeResponseDto,
+  ThreadForkResponseDto,
   ThreadReadResponseDto,
   ThreadListResponseDto,
+  ThreadUnarchiveResponseDto,
+  ThreadRollbackResponseDto,
   TurnStartResponseDto,
   ModelListResponseDto,
 ] as const;

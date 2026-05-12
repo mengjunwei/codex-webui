@@ -28,11 +28,26 @@ export class StartTurnDto {
   input!: TextTurnInputDto[];
 }
 
+/** Request body for rolling back turns from a thread. */
+export class ThreadRollbackRequestDto {
+  @ApiProperty({ minimum: 1, type: Number })
+  numTurns!: number;
+}
+
+/** Request body for setting a user-facing thread name. */
+export class ThreadSetNameRequestDto {
+  @ApiProperty({ minLength: 1 })
+  name!: string;
+}
+
 export {
   CODEX_V2_EXTRA_MODELS,
+  ThreadForkResponseDto,
   ThreadListResponseDto,
   ThreadReadResponseDto,
   ThreadResumeResponseDto,
+  ThreadRollbackResponseDto,
   ThreadStartResponseDto,
+  ThreadUnarchiveResponseDto,
   TurnStartResponseDto,
 } from '../../codex/dto/v2';

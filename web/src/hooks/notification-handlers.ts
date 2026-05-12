@@ -37,6 +37,7 @@ export interface NotificationContext {
   addSystemError: (message: string) => void;
   setTokenUsage: (turnId: string, usage: ThreadTokenUsage) => void;
   setThreadStatus: (status: ThreadStatusType | null) => void;
+  setThreadTitle: (title: string | null) => void;
   resolveApprovalByRequestId: (requestId: string | number) => void;
 }
 
@@ -354,7 +355,12 @@ const handleThreadStatusChanged: Handler = (params, ctx) => {
   debouncedInvalidateThreadList(ctx.queryClient);
 };
 
-const handleThreadNameUpdated: Handler = (_params, ctx) => {
+const handleThreadNameUpdated: Handler = (params, ctx) => {
+  const threadId = params.threadId as string | undefined;
+  const name = params.threadName as string | undefined;
+  if (threadId && ctx.threadId === threadId) {
+    ctx.setThreadTitle(name?.trim() || null);
+  }
   debouncedInvalidateThreadList(ctx.queryClient);
 };
 

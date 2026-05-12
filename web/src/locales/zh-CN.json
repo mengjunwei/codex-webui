@@ -12,27 +12,20 @@
   "Copied!": "已复制！",
   "Copy failed": "复制失败",
   "Code": "代码",
-
   "Request failed": "请求失败",
   "Request failed ({{status}})": "请求失败（{{status}}）",
-
   "Codex WebUI": "Codex WebUI",
   "Connected": "已连接",
   "Disconnected": "未连接",
-
   "Threads": "会话",
   "No threads yet": "暂无会话",
-
   "Type a message... (Enter to send)": "输入消息…（按 Enter 发送）",
   "Create a thread first": "请先创建会话",
-
   "Send a message to start the conversation.": "发送消息开始对话。",
   "Create a new thread to begin.": "创建新会话以开始。",
-
   "Thinking...": "思考中...",
   "Thinking": "思考",
   "(click to expand)": "（点击展开）",
-
   "Command Approval": "命令审批",
   "File Change Approval": "文件变更审批",
   "Accepted": "已接受",
@@ -42,32 +35,23 @@
   "Decline": "拒绝",
   "Requesting write access to:": "请求写入权限：",
   "cwd:": "工作目录：",
-
   "done": "完成",
   "exit": "退出码",
-
   "File change": "文件变更",
   "Applied": "已应用",
-
   "{{count}} file changed": "{{count}} 个文件变更",
   "{{count}} files changed": "{{count}} 个文件变更",
-
   "No workspace directory": "无工作区目录",
   "Go up": "返回上级",
-
   "Select a file to view": "选择文件以查看",
   "Save (Ctrl+S)": "保存 (Ctrl+S)",
-
   "Close panel": "关闭面板",
-
   "Process exited with code {{code}}": "进程退出，退出码 {{code}}",
-
   "Enter your API key to continue.": "输入 API 密钥以继续。",
   "API Key": "API 密钥",
   "Invalid API key": "API 密钥无效",
   "Failed to connect to server": "无法连接到服务器",
   "Login": "登录",
-
   "Context": "当前上下文",
   "Thread Total": "对话累计",
   "Context Usage": "上下文用量",
@@ -77,7 +61,6 @@
   "Reasoning": "推理",
   "Total": "总计",
   "Window": "窗口",
-
   "Codex Degraded": "Codex 服务降级",
   "Codex Unavailable": "Codex 服务不可用",
   "Refresh": "刷新",
@@ -93,7 +76,6 @@
   "Model list failed": "模型列表获取失败",
   "No models available": "无可用模型",
   "Status check failed": "状态检查失败",
-
   "Security policy": "安全策略",
   "Hot-reloads into all active threads.": "热重载至所有活跃会话。",
   "Sandbox": "沙箱",
@@ -111,12 +93,10 @@
   "read-only": "只读",
   "workspace-write": "工作区可写",
   "danger-full-access": "危险：完全访问",
-
   "Open terminal?": "打开终端？",
   "Commands execute directly on the server/container. Proceed?": "命令会直接在服务器/容器中执行。是否继续？",
   "Cancel": "取消",
   "Proceed": "继续",
-
   "Structured logs and sanitized issue bundle export.": "结构化日志和已脱敏的问题报告导出。",
   "Level": "级别",
   "All": "全部",
@@ -126,13 +106,38 @@
   "No logs found": "未找到日志",
   "Previous": "上一页",
   "Next": "下一页",
-
   "Thread closed": "会话已关闭",
   "Thread archived": "会话已归档",
   "Context compacted": "上下文已压缩",
   "Thread encountered a system error": "会话遇到系统错误",
   "Model rerouted: {{from}} → {{to}}": "模型已切换：{{from}} → {{to}}",
-
   "English": "English",
-  "简体中文": "简体中文"
+  "简体中文": "简体中文",
+  "Archived": "已归档",
+  "View more": "查看更多",
+  "No archived threads": "暂无归档会话",
+  "Back": "返回",
+  "Rename": "重命名",
+  "Unarchive": "取消归档",
+  "Archive": "归档",
+  "Compact": "压缩上下文",
+  "Fork": "分叉",
+  "Save": "保存",
+  "Rename thread": "重命名会话",
+  "Enter a non-empty thread name.": "请输入非空会话名称。",
+  "Compact this thread?": "压缩此会话？",
+  "Archive this thread?": "归档此会话？",
+  "Compaction permanently compresses context and cannot be undone.": "上下文压缩会永久压缩当前上下文，且无法撤销。",
+  "Archived threads move to the read-only archive group.": "归档会话会移动到只读归档分组。",
+  "Archived read-only": "归档只读",
+  "Archived threads are read-only. Unarchive or fork to continue.": "归档会话为只读。请取消归档或分叉后继续。",
+  "Archived thread is read-only": "归档会话为只读",
+  "Rollback to here": "回滚到此处",
+  "Rollback to this turn?": "回滚到此轮？",
+  "This will remove this turn and all subsequent turns. File changes will NOT be reverted.": "这会删除此轮及之后的所有轮次。文件变更不会被还原。",
+  "Rollback": "回滚",
+  "Edit this message": "编辑此条消息",
+  "Edit this message?": "编辑此条消息？",
+  "Confirm": "确认",
+  "Cannot read archived thread. Try unarchive or fork.": "无法读取归档会话。请尝试取消归档或分叉。"
 }

@@ -10,6 +10,8 @@ import type { ApprovalRequest } from '../types/approval';
 import type { ThreadDto, TurnDto } from '../generated/api';
 import type { ThreadTokenUsage, ThreadStatusType } from '../types/codex-notifications';
 
+export type ThreadMode = 'live' | 'readOnly';
+
 /** Converts a persisted turn item to a TurnItem for rendering. */
 function parseTurnItem(item: Record<string, unknown>): TurnItem | null {
   const type = item.type as string;
@@ -97,22 +99,15 @@ function turnsToTimeline(turns: TurnDto[]): TimelineEntry[] {
   return entries;
 }
 
-/** Unsubscribe from the current thread and subscribe to a new one. */
-function switchSocketSubscription(
-  oldThreadId: string | null,
-  newThreadId: string,
-) {
-  const socket = getSocket();
-  if (oldThreadId) {
-    socket.emit('thread.unsubscribe', { threadId: oldThreadId });
-  }
-  socket.emit('thread.subscribe', { threadId: newThreadId });
-}
 
 interface TimelineState {
   threadId: string | null;
   /** Working directory of the current thread. */
   threadCwd: string | null;
+  /** Current thread display name, falling back to preview in UI. */
+  threadTitle: string | null;
+  /** Live threads are resumable; read-only threads are archived snapshots. */
+  threadMode: ThreadMode;
   timeline: TimelineEntry[];
   loading: boolean;
   expandedReasoning: Set<string>;
@@ -128,9 +123,15 @@ interface TimelineState {
   pendingResolvedRequestIds: Set<string>;
 
   /** Sets the active thread, subscribes socket, resets timeline. */
-  setActiveThread: (threadId: string, cwd?: string | null) => void;
+  setActiveThread: (threadId: string, cwd?: string | null, title?: string | null) => void;
+  /** Loads a thread snapshot without subscribing it for live updates. */
+  setReadOnlyThread: (thread: ThreadDto) => void;
+  /** Clears the selected thread and returns the chat area to the empty state. */
+  clearThread: () => void;
   /** Hydrates timeline from persisted turns (e.g. after resume). */
   hydrateTimeline: (turns: TurnDto[], cwd?: string | null) => void;
+  /** Updates the active thread title after a rename/list refresh. */
+  setThreadTitle: (title: string | null) => void;
   /** Adds a user message to the timeline (optimistic). */
   addUserMessage: (text: string) => void;
   /** Adds a system error to the timeline. */
@@ -168,6 +169,8 @@ interface TimelineState {
 export const useTimelineStore = create<TimelineState>((set, get) => ({
   threadId: null,
   threadCwd: null,
+  threadTitle: null,
+  threadMode: 'live',
   timeline: [],
   loading: false,
   expandedReasoning: new Set<string>(),
@@ -177,13 +180,60 @@ export const useTimelineStore = create<TimelineState>((set, get) => ({
   threadStatus: null,
   pendingResolvedRequestIds: new Set(),
 
-  setActiveThread: (threadId: string, cwd?: string | null) => {
-    const { threadId: oldId } = get();
-    if (oldId === threadId) return;
-    switchSocketSubscription(oldId, threadId);
+  setActiveThread: (threadId: string, cwd?: string | null, title?: string | null) => {
+    const { threadId: oldId, threadMode: oldMode } = get();
+    if (oldId === threadId && oldMode === 'live') return;
+    if (oldId && oldId !== threadId) {
+      getSocket().emit('thread.unsubscribe', { threadId: oldId });
+    }
+    getSocket().emit('thread.subscribe', { threadId });
     set({
       threadId,
       threadCwd: cwd ?? null,
+      threadTitle: title ?? null,
+      threadMode: 'live',
+      timeline: [],
+      loading: false,
+      expandedReasoning: new Set<string>(),
+      approvals: {},
+      tokenUsageByTurn: {},
+      latestTokenUsage: null,
+      threadStatus: null,
+      pendingResolvedRequestIds: new Set(),
+    });
+  },
+
+  setReadOnlyThread: (thread) => {
+    const { threadId: oldId } = get();
+    if (oldId) {
+      getSocket().emit('thread.unsubscribe', { threadId: oldId });
+    }
+    set({
+      threadId: thread.id,
+      threadCwd: thread.cwd,
+      threadTitle: thread.name ?? thread.preview ?? null,
+      threadMode: 'readOnly',
+      timeline: turnsToTimeline(thread.turns ?? []),
+      loading: false,
+      expandedReasoning: new Set<string>(),
+      approvals: {},
+      tokenUsageByTurn: {},
+      latestTokenUsage: null,
+      threadStatus: thread.status as ThreadStatusType,
+      pendingResolvedRequestIds: new Set(),
+    });
+  },
+
+  clearThread: () => {
+    const { threadId: oldId } = get();
+    if (oldId) {
+      getSocket().emit('thread.unsubscribe', { threadId: oldId });
+    }
+    set({
+      threadId: null,
+      threadCwd: null,
+      threadTitle: null,
+      threadMode: 'live',
       timeline: [],
       loading: false,
       expandedReasoning: new Set<string>(),
@@ -199,9 +249,11 @@ export const useTimelineStore = create<TimelineState>((set, get) => ({
     set({
       threadCwd: cwd ?? get().threadCwd,
       loading: false,
-      ...(turns.length > 0 ? { timeline: turnsToTimeline(turns) } : {}),
+      timeline: turnsToTimeline(turns),
     });
   },
+
+  setThreadTitle: (title) => set({ threadTitle: title }),
 
   addUserMessage: (text: string) => {
     set((s) => ({

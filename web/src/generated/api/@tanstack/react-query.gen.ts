@@ -3,8 +3,8 @@
 import { type DefaultError, type InfiniteData, infiniteQueryOptions, queryOptions, type UseMutationOptions } from '@tanstack/react-query';
 
 import { client } from '../client.gen';
-import { appGetStatus, authLogin, authLogout, codexStatusGetStatus, codexStatusUpdateApprovalPolicy, codexStatusUpdateSandboxMode, filesAddRoot, filesDeletePath, filesGetMetadata, filesGetRoots, filesReadFile, filesReadTree, filesWriteFile, logsExportDiagnostics, logsListLogs, modelsListModels, type Options, threadsInterruptTurn, threadsListThreads, threadsReadThread, threadsResumeThread, threadsStartThread, threadsStartTurn } from '../sdk.gen';
-import type { AppGetStatusData, AppGetStatusResponse, AuthLoginData, AuthLoginError, AuthLoginResponse, AuthLogoutData, AuthLogoutResponse, CodexStatusGetStatusData, CodexStatusGetStatusError, CodexStatusGetStatusResponse, CodexStatusUpdateApprovalPolicyData, CodexStatusUpdateApprovalPolicyError, CodexStatusUpdateApprovalPolicyResponse, CodexStatusUpdateSandboxModeData, CodexStatusUpdateSandboxModeError, CodexStatusUpdateSandboxModeResponse, FilesAddRootData, FilesAddRootError, FilesAddRootResponse, FilesDeletePathData, FilesDeletePathError, FilesDeletePathResponse, FilesGetMetadataData, FilesGetMetadataError, FilesGetMetadataResponse, FilesGetRootsData, FilesGetRootsError, FilesGetRootsResponse, FilesReadFileData, FilesReadFileError, FilesReadFileResponse, FilesReadTreeData, FilesReadTreeError, FilesReadTreeResponse, FilesWriteFileData, FilesWriteFileError, FilesWriteFileResponse, LogsExportDiagnosticsData, LogsExportDiagnosticsError, LogsExportDiagnosticsResponse, LogsListLogsData, LogsListLogsError, LogsListLogsResponse, ModelsListModelsData, ModelsListModelsError, ModelsListModelsResponse, ThreadsInterruptTurnData, ThreadsInterruptTurnError, ThreadsInterruptTurnResponse, ThreadsListThreadsData, ThreadsListThreadsError, ThreadsListThreadsResponse, ThreadsReadThreadData, ThreadsReadThreadError, ThreadsReadThreadResponse, ThreadsResumeThreadData, ThreadsResumeThreadError, ThreadsResumeThreadResponse, ThreadsStartThreadData, ThreadsStartThreadError, ThreadsStartThreadResponse, ThreadsStartTurnData, ThreadsStartTurnError, ThreadsStartTurnResponse } from '../types.gen';
+import { appGetStatus, authLogin, authLogout, codexStatusGetStatus, codexStatusUpdateApprovalPolicy, codexStatusUpdateSandboxMode, filesAddRoot, filesDeletePath, filesGetMetadata, filesGetRoots, filesReadFile, filesReadTree, filesWriteFile, logsExportDiagnostics, logsListLogs, modelsListModels, type Options, threadsArchiveThread, threadsCompactThread, threadsForkThread, threadsInterruptTurn, threadsListThreads, threadsReadThread, threadsResumeThread, threadsRollbackThread, threadsSetThreadName, threadsStartThread, threadsStartTurn, threadsUnarchiveThread } from '../sdk.gen';
+import type { AppGetStatusData, AppGetStatusResponse, AuthLoginData, AuthLoginError, AuthLoginResponse, AuthLogoutData, AuthLogoutResponse, CodexStatusGetStatusData, CodexStatusGetStatusError, CodexStatusGetStatusResponse, CodexStatusUpdateApprovalPolicyData, CodexStatusUpdateApprovalPolicyError, CodexStatusUpdateApprovalPolicyResponse, CodexStatusUpdateSandboxModeData, CodexStatusUpdateSandboxModeError, CodexStatusUpdateSandboxModeResponse, FilesAddRootData, FilesAddRootError, FilesAddRootResponse, FilesDeletePathData, FilesDeletePathError, FilesDeletePathResponse, FilesGetMetadataData, FilesGetMetadataError, FilesGetMetadataResponse, FilesGetRootsData, FilesGetRootsError, FilesGetRootsResponse, FilesReadFileData, FilesReadFileError, FilesReadFileResponse, FilesReadTreeData, FilesReadTreeError, FilesReadTreeResponse, FilesWriteFileData, FilesWriteFileError, FilesWriteFileResponse, LogsExportDiagnosticsData, LogsExportDiagnosticsError, LogsExportDiagnosticsResponse, LogsListLogsData, LogsListLogsError, LogsListLogsResponse, ModelsListModelsData, ModelsListModelsError, ModelsListModelsResponse, ThreadsArchiveThreadData, ThreadsArchiveThreadError, ThreadsArchiveThreadResponse, ThreadsCompactThreadData, ThreadsCompactThreadError, ThreadsCompactThreadResponse, ThreadsForkThreadData, ThreadsForkThreadError, ThreadsForkThreadResponse, ThreadsInterruptTurnData, ThreadsInterruptTurnError, ThreadsInterruptTurnResponse, ThreadsListThreadsData, ThreadsListThreadsError, ThreadsListThreadsResponse, ThreadsReadThreadData, ThreadsReadThreadError, ThreadsReadThreadResponse, ThreadsResumeThreadData, ThreadsResumeThreadError, ThreadsResumeThreadResponse, ThreadsRollbackThreadData, ThreadsRollbackThreadError, ThreadsRollbackThreadResponse, ThreadsSetThreadNameData, ThreadsSetThreadNameError, ThreadsSetThreadNameResponse, ThreadsStartThreadData, ThreadsStartThreadError, ThreadsStartThreadResponse, ThreadsStartTurnData, ThreadsStartTurnError, ThreadsStartTurnResponse, ThreadsUnarchiveThreadData, ThreadsUnarchiveThreadError, ThreadsUnarchiveThreadResponse } from '../types.gen';
 
 export type QueryKey<TOptions extends Options> = [
     Pick<TOptions, 'baseUrl' | 'body' | 'headers' | 'path' | 'query'> & {
@@ -416,6 +416,108 @@ export const threadsInterruptTurnMutation = (options?: Partial<Options<ThreadsIn
     const mutationOptions: UseMutationOptions<ThreadsInterruptTurnResponse, ThreadsInterruptTurnError, Options<ThreadsInterruptTurnData>> = {
         mutationFn: async (fnOptions) => {
             const { data } = await threadsInterruptTurn({
+                ...options,
+                ...fnOptions,
+                throwOnError: true
+            });
+            return data;
+        }
+    };
+    return mutationOptions;
+};
+
+/**
+ * Archive a thread
+ */
+export const threadsArchiveThreadMutation = (options?: Partial<Options<ThreadsArchiveThreadData>>): UseMutationOptions<ThreadsArchiveThreadResponse, ThreadsArchiveThreadError, Options<ThreadsArchiveThreadData>> => {
+    const mutationOptions: UseMutationOptions<ThreadsArchiveThreadResponse, ThreadsArchiveThreadError, Options<ThreadsArchiveThreadData>> = {
+        mutationFn: async (fnOptions) => {
+            const { data } = await threadsArchiveThread({
+                ...options,
+                ...fnOptions,
+                throwOnError: true
+            });
+            return data;
+        }
+    };
+    return mutationOptions;
+};
+
+/**
+ * Unarchive a thread
+ */
+export const threadsUnarchiveThreadMutation = (options?: Partial<Options<ThreadsUnarchiveThreadData>>): UseMutationOptions<ThreadsUnarchiveThreadResponse, ThreadsUnarchiveThreadError, Options<ThreadsUnarchiveThreadData>> => {
+    const mutationOptions: UseMutationOptions<ThreadsUnarchiveThreadResponse, ThreadsUnarchiveThreadError, Options<ThreadsUnarchiveThreadData>> = {
+        mutationFn: async (fnOptions) => {
+            const { data } = await threadsUnarchiveThread({
+                ...options,
+                ...fnOptions,
+                throwOnError: true
+            });
+            return data;
+        }
+    };
+    return mutationOptions;
+};
+
+/**
+ * Compact thread context
+ */
+export const threadsCompactThreadMutation = (options?: Partial<Options<ThreadsCompactThreadData>>): UseMutationOptions<ThreadsCompactThreadResponse, ThreadsCompactThreadError, Options<ThreadsCompactThreadData>> => {
+    const mutationOptions: UseMutationOptions<ThreadsCompactThreadResponse, ThreadsCompactThreadError, Options<ThreadsCompactThreadData>> = {
+        mutationFn: async (fnOptions) => {
+            const { data } = await threadsCompactThread({
+                ...options,
+                ...fnOptions,
+                throwOnError: true
+            });
+            return data;
+        }
+    };
+    return mutationOptions;
+};
+
+/**
+ * Fork a thread
+ */
+export const threadsForkThreadMutation = (options?: Partial<Options<ThreadsForkThreadData>>): UseMutationOptions<ThreadsForkThreadResponse, ThreadsForkThreadError, Options<ThreadsForkThreadData>> => {
+    const mutationOptions: UseMutationOptions<ThreadsForkThreadResponse, ThreadsForkThreadError, Options<ThreadsForkThreadData>> = {
+        mutationFn: async (fnOptions) => {
+            const { data } = await threadsForkThread({
+                ...options,
+                ...fnOptions,
+                throwOnError: true
+            });
+            return data;
+        }
+    };
+    return mutationOptions;
+};
+
+/**
+ * Rollback turns from a thread
+ */
+export const threadsRollbackThreadMutation = (options?: Partial<Options<ThreadsRollbackThreadData>>): UseMutationOptions<ThreadsRollbackThreadResponse, ThreadsRollbackThreadError, Options<ThreadsRollbackThreadData>> => {
+    const mutationOptions: UseMutationOptions<ThreadsRollbackThreadResponse, ThreadsRollbackThreadError, Options<ThreadsRollbackThreadData>> = {
+        mutationFn: async (fnOptions) => {
+            const { data } = await threadsRollbackThread({
+                ...options,
+                ...fnOptions,
+                throwOnError: true
+            });
+            return data;
+        }
+    };
+    return mutationOptions;
+};
+
+/**
+ * Set thread name
+ */
+export const threadsSetThreadNameMutation = (options?: Partial<Options<ThreadsSetThreadNameData>>): UseMutationOptions<ThreadsSetThreadNameResponse, ThreadsSetThreadNameError, Options<ThreadsSetThreadNameData>> => {
+    const mutationOptions: UseMutationOptions<ThreadsSetThreadNameResponse, ThreadsSetThreadNameError, Options<ThreadsSetThreadNameData>> = {
+        mutationFn: async (fnOptions) => {
+            const { data } = await threadsSetThreadName({
                 ...options,
                 ...fnOptions,
                 throwOnError: true
