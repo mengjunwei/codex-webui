@@ -14,6 +14,78 @@ export type ApiErrorResponseDto = {
     error?: string;
 };
 
+export type CodexStatusErrorDto = {
+    message: string;
+    code?: string;
+};
+
+export type CodexAppServerStatusDto = {
+    ok: boolean;
+    connected: boolean;
+    initialized: boolean;
+    error?: CodexStatusErrorDto;
+};
+
+export type CodexInitializeStatusDto = {
+    ok: boolean;
+    data: number | string | boolean | Array<unknown> | {
+        [key: string]: unknown;
+    } | null;
+    error?: CodexStatusErrorDto;
+};
+
+export type CodexAccountStatusDto = {
+    ok: boolean;
+    data?: number | string | boolean | Array<unknown> | {
+        [key: string]: unknown;
+    } | null;
+    error?: CodexStatusErrorDto;
+};
+
+export type CodexConfigStatusDto = {
+    ok: boolean;
+    data?: number | string | boolean | Array<unknown> | {
+        [key: string]: unknown;
+    } | null;
+    error?: CodexStatusErrorDto;
+};
+
+export type CodexProviderStatusDto = {
+    ok: boolean;
+    id: string | null;
+    envKey: string | null;
+    envPresent: boolean | null;
+    error?: CodexStatusErrorDto;
+};
+
+export type CodexModelsStatusDto = {
+    ok: boolean;
+    listable: boolean;
+    defaultModel: string | null;
+    count: number;
+    data?: number | string | boolean | Array<unknown> | {
+        [key: string]: unknown;
+    } | null;
+    error?: CodexStatusErrorDto;
+};
+
+export type CodexRuntimeStatusDto = {
+    status: 'ready' | 'degraded' | 'unavailable';
+    reasons: Array<string>;
+    checkedAt: string;
+    cacheTtlMs: number;
+};
+
+export type CodexStatusResponseDto = {
+    appServer: CodexAppServerStatusDto;
+    initialize: CodexInitializeStatusDto;
+    account: CodexAccountStatusDto;
+    config: CodexConfigStatusDto;
+    provider: CodexProviderStatusDto;
+    models: CodexModelsStatusDto;
+    runtime: CodexRuntimeStatusDto;
+};
+
 export type FileEntryDto = {
     name: string;
     path: string;
@@ -604,6 +676,25 @@ export type AppGetStatusResponses = {
 };
 
 export type AppGetStatusResponse = AppGetStatusResponses[keyof AppGetStatusResponses];
+
+export type CodexStatusGetStatusData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/api/codex/status';
+};
+
+export type CodexStatusGetStatusErrors = {
+    401: ApiErrorResponseDto;
+};
+
+export type CodexStatusGetStatusError = CodexStatusGetStatusErrors[keyof CodexStatusGetStatusErrors];
+
+export type CodexStatusGetStatusResponses = {
+    200: CodexStatusResponseDto;
+};
+
+export type CodexStatusGetStatusResponse = CodexStatusGetStatusResponses[keyof CodexStatusGetStatusResponses];
 
 export type FilesReadTreeData = {
     body?: never;

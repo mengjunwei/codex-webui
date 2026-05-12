@@ -3,8 +3,8 @@
 import { type DefaultError, type InfiniteData, infiniteQueryOptions, queryOptions, type UseMutationOptions } from '@tanstack/react-query';
 
 import { client } from '../client.gen';
-import { appGetStatus, filesAddRoot, filesDeletePath, filesGetMetadata, filesGetRoots, filesReadFile, filesReadTree, filesWriteFile, modelsListModels, type Options, threadsInterruptTurn, threadsListThreads, threadsReadThread, threadsResumeThread, threadsStartThread, threadsStartTurn } from '../sdk.gen';
-import type { AppGetStatusData, AppGetStatusResponse, FilesAddRootData, FilesAddRootError, FilesAddRootResponse, FilesDeletePathData, FilesDeletePathError, FilesDeletePathResponse, FilesGetMetadataData, FilesGetMetadataError, FilesGetMetadataResponse, FilesGetRootsData, FilesGetRootsError, FilesGetRootsResponse, FilesReadFileData, FilesReadFileError, FilesReadFileResponse, FilesReadTreeData, FilesReadTreeError, FilesReadTreeResponse, FilesWriteFileData, FilesWriteFileError, FilesWriteFileResponse, ModelsListModelsData, ModelsListModelsError, ModelsListModelsResponse, ThreadsInterruptTurnData, ThreadsInterruptTurnError, ThreadsInterruptTurnResponse, ThreadsListThreadsData, ThreadsListThreadsError, ThreadsListThreadsResponse, ThreadsReadThreadData, ThreadsReadThreadError, ThreadsReadThreadResponse, ThreadsResumeThreadData, ThreadsResumeThreadError, ThreadsResumeThreadResponse, ThreadsStartThreadData, ThreadsStartThreadError, ThreadsStartThreadResponse, ThreadsStartTurnData, ThreadsStartTurnError, ThreadsStartTurnResponse } from '../types.gen';
+import { appGetStatus, codexStatusGetStatus, filesAddRoot, filesDeletePath, filesGetMetadata, filesGetRoots, filesReadFile, filesReadTree, filesWriteFile, modelsListModels, type Options, threadsInterruptTurn, threadsListThreads, threadsReadThread, threadsResumeThread, threadsStartThread, threadsStartTurn } from '../sdk.gen';
+import type { AppGetStatusData, AppGetStatusResponse, CodexStatusGetStatusData, CodexStatusGetStatusError, CodexStatusGetStatusResponse, FilesAddRootData, FilesAddRootError, FilesAddRootResponse, FilesDeletePathData, FilesDeletePathError, FilesDeletePathResponse, FilesGetMetadataData, FilesGetMetadataError, FilesGetMetadataResponse, FilesGetRootsData, FilesGetRootsError, FilesGetRootsResponse, FilesReadFileData, FilesReadFileError, FilesReadFileResponse, FilesReadTreeData, FilesReadTreeError, FilesReadTreeResponse, FilesWriteFileData, FilesWriteFileError, FilesWriteFileResponse, ModelsListModelsData, ModelsListModelsError, ModelsListModelsResponse, ThreadsInterruptTurnData, ThreadsInterruptTurnError, ThreadsInterruptTurnResponse, ThreadsListThreadsData, ThreadsListThreadsError, ThreadsListThreadsResponse, ThreadsReadThreadData, ThreadsReadThreadError, ThreadsReadThreadResponse, ThreadsResumeThreadData, ThreadsResumeThreadError, ThreadsResumeThreadResponse, ThreadsStartThreadData, ThreadsStartThreadError, ThreadsStartThreadResponse, ThreadsStartTurnData, ThreadsStartTurnError, ThreadsStartTurnResponse } from '../types.gen';
 
 export type QueryKey<TOptions extends Options> = [
     Pick<TOptions, 'baseUrl' | 'body' | 'headers' | 'path' | 'query'> & {
@@ -55,6 +55,24 @@ export const appGetStatusOptions = (options?: Options<AppGetStatusData>) => quer
         return data;
     },
     queryKey: appGetStatusQueryKey(options)
+});
+
+export const codexStatusGetStatusQueryKey = (options?: Options<CodexStatusGetStatusData>) => createQueryKey('codexStatusGetStatus', options);
+
+/**
+ * Get aggregated Codex runtime status
+ */
+export const codexStatusGetStatusOptions = (options?: Options<CodexStatusGetStatusData>) => queryOptions<CodexStatusGetStatusResponse, CodexStatusGetStatusError, CodexStatusGetStatusResponse, ReturnType<typeof codexStatusGetStatusQueryKey>>({
+    queryFn: async ({ queryKey, signal }) => {
+        const { data } = await codexStatusGetStatus({
+            ...options,
+            ...queryKey[0],
+            signal,
+            throwOnError: true
+        });
+        return data;
+    },
+    queryKey: codexStatusGetStatusQueryKey(options)
 });
 
 export const filesReadTreeQueryKey = (options: Options<FilesReadTreeData>) => createQueryKey('filesReadTree', options);

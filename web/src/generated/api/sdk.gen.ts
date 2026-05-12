@@ -2,7 +2,7 @@
 
 import type { Client, Options as Options2, TDataShape } from './client';
 import { client } from './client.gen';
-import type { AppGetStatusData, AppGetStatusResponses, FilesAddRootData, FilesAddRootErrors, FilesAddRootResponses, FilesDeletePathData, FilesDeletePathErrors, FilesDeletePathResponses, FilesGetMetadataData, FilesGetMetadataErrors, FilesGetMetadataResponses, FilesGetRootsData, FilesGetRootsErrors, FilesGetRootsResponses, FilesReadFileData, FilesReadFileErrors, FilesReadFileResponses, FilesReadTreeData, FilesReadTreeErrors, FilesReadTreeResponses, FilesWriteFileData, FilesWriteFileErrors, FilesWriteFileResponses, ModelsListModelsData, ModelsListModelsErrors, ModelsListModelsResponses, ThreadsInterruptTurnData, ThreadsInterruptTurnErrors, ThreadsInterruptTurnResponses, ThreadsListThreadsData, ThreadsListThreadsErrors, ThreadsListThreadsResponses, ThreadsReadThreadData, ThreadsReadThreadErrors, ThreadsReadThreadResponses, ThreadsResumeThreadData, ThreadsResumeThreadErrors, ThreadsResumeThreadResponses, ThreadsStartThreadData, ThreadsStartThreadErrors, ThreadsStartThreadResponses, ThreadsStartTurnData, ThreadsStartTurnErrors, ThreadsStartTurnResponses } from './types.gen';
+import type { AppGetStatusData, AppGetStatusResponses, CodexStatusGetStatusData, CodexStatusGetStatusErrors, CodexStatusGetStatusResponses, FilesAddRootData, FilesAddRootErrors, FilesAddRootResponses, FilesDeletePathData, FilesDeletePathErrors, FilesDeletePathResponses, FilesGetMetadataData, FilesGetMetadataErrors, FilesGetMetadataResponses, FilesGetRootsData, FilesGetRootsErrors, FilesGetRootsResponses, FilesReadFileData, FilesReadFileErrors, FilesReadFileResponses, FilesReadTreeData, FilesReadTreeErrors, FilesReadTreeResponses, FilesWriteFileData, FilesWriteFileErrors, FilesWriteFileResponses, ModelsListModelsData, ModelsListModelsErrors, ModelsListModelsResponses, ThreadsInterruptTurnData, ThreadsInterruptTurnErrors, ThreadsInterruptTurnResponses, ThreadsListThreadsData, ThreadsListThreadsErrors, ThreadsListThreadsResponses, ThreadsReadThreadData, ThreadsReadThreadErrors, ThreadsReadThreadResponses, ThreadsResumeThreadData, ThreadsResumeThreadErrors, ThreadsResumeThreadResponses, ThreadsStartThreadData, ThreadsStartThreadErrors, ThreadsStartThreadResponses, ThreadsStartTurnData, ThreadsStartTurnErrors, ThreadsStartTurnResponses } from './types.gen';
 
 export type Options<TData extends TDataShape = TDataShape, ThrowOnError extends boolean = boolean, TResponse = unknown> = Options2<TData, ThrowOnError, TResponse> & {
     /**
@@ -24,6 +24,15 @@ export type Options<TData extends TDataShape = TDataShape, ThrowOnError extends 
 export const appGetStatus = <ThrowOnError extends boolean = false>(options?: Options<AppGetStatusData, ThrowOnError>) => (options?.client ?? client).get<AppGetStatusResponses, unknown, ThrowOnError>({
     security: [{ scheme: 'bearer', type: 'http' }],
     url: '/api/status',
+    ...options
+});
+
+/**
+ * Get aggregated Codex runtime status
+ */
+export const codexStatusGetStatus = <ThrowOnError extends boolean = false>(options?: Options<CodexStatusGetStatusData, ThrowOnError>) => (options?.client ?? client).get<CodexStatusGetStatusResponses, CodexStatusGetStatusErrors, ThrowOnError>({
+    security: [{ scheme: 'bearer', type: 'http' }],
+    url: '/api/codex/status',
     ...options
 });
 

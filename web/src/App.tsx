@@ -10,6 +10,7 @@ import { FilesPanel } from '@/components/files/files-panel';
 import { TerminalView } from '@/components/terminal/terminal-view';
 import { LoginPage } from '@/components/login';
 import { SnackbarContainer } from '@/components/snackbar/snackbar-container';
+import { CodexStatusBanner } from '@/components/codex-status-banner';
 import { useCodexSocket } from '@/hooks/use-codex-socket';
 import { useTimelineStore } from '@/stores/timeline-store';
 import { useFilesStore } from '@/stores/files-store';
@@ -102,6 +103,7 @@ function App() {
 
         <div className="flex min-h-0 min-w-0 flex-1 flex-col">
           <ChatHeader dark={dark} onToggleDark={() => setDark((d) => !d)} />
+          <CodexStatusBanner />
 
           {globalView === 'chat' && (
             <>

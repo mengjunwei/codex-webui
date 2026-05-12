@@ -1,9 +1,12 @@
 import { Module } from '@nestjs/common';
 import { CodexProcessManager } from './codex-process-manager.service';
+import { CodexStatusController } from './codex-status.controller';
+import { CodexStatusService } from './codex-status.service';
 import { CodexService } from './codex.service';
 
 @Module({
-  providers: [CodexProcessManager, CodexService],
-  exports: [CodexProcessManager, CodexService],
+  controllers: [CodexStatusController],
+  providers: [CodexProcessManager, CodexService, CodexStatusService],
+  exports: [CodexProcessManager, CodexService, CodexStatusService],
 })
 export class CodexModule {}
