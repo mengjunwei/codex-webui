@@ -8,6 +8,7 @@ import { getSocket } from '../socket';
 import type { TimelineEntry, TurnItem } from '../types/timeline';
 import type { ApprovalRequest } from '../types/approval';
 import type { ThreadDto, TurnDto } from '../generated/api';
+import type { ThreadTokenUsage, ThreadStatusType } from '../types/codex-notifications';
 
 /** Converts a persisted turn item to a TurnItem for rendering. */
 function parseTurnItem(item: Record<string, unknown>): TurnItem | null {
@@ -117,6 +118,14 @@ interface TimelineState {
   expandedReasoning: Set<string>;
   /** Pending/resolved approval requests, keyed by itemId for easy lookup. */
   approvals: Record<string, ApprovalRequest>;
+  /** Token usage per turn (keyed by turnId). */
+  tokenUsageByTurn: Record<string, ThreadTokenUsage>;
+  /** Latest token usage snapshot for the active thread (drives ChatInput donut). */
+  latestTokenUsage: ThreadTokenUsage | null;
+  /** Active thread status from app-server. */
+  threadStatus: ThreadStatusType | null;
+  /** Request IDs resolved before their approval card arrived (out-of-order). */
+  pendingResolvedRequestIds: Set<string>;
 
   /** Sets the active thread, subscribes socket, resets timeline. */
   setActiveThread: (threadId: string, cwd?: string | null) => void;
@@ -126,6 +135,8 @@ interface TimelineState {
   addUserMessage: (text: string) => void;
   /** Adds a system error to the timeline. */
   addSystemError: (message: string) => void;
+  /** Adds a system message with optional severity. */
+  addSystemMessage: (message: string, severity?: 'info' | 'warning' | 'error') => void;
 
   toggleReasoning: (itemId: string) => void;
   updateCurrentTurn: (
@@ -146,6 +157,12 @@ interface TimelineState {
   collapseReasoning: (itemId: string) => void;
   addApproval: (approval: ApprovalRequest) => void;
   resolveApproval: (itemId: string, decision: 'accepted' | 'declined') => void;
+  /** Stores token usage for a turn and updates latest snapshot. */
+  setTokenUsage: (turnId: string, usage: ThreadTokenUsage) => void;
+  /** Updates active thread status. */
+  setThreadStatus: (status: ThreadStatusType | null) => void;
+  /** Resolves an approval by its JSON-RPC requestId (for serverRequest/resolved). */
+  resolveApprovalByRequestId: (requestId: string | number) => void;
 }
 
 export const useTimelineStore = create<TimelineState>((set, get) => ({
@@ -155,6 +172,10 @@ export const useTimelineStore = create<TimelineState>((set, get) => ({
   loading: false,
   expandedReasoning: new Set<string>(),
   approvals: {},
+  tokenUsageByTurn: {},
+  latestTokenUsage: null,
+  threadStatus: null,
+  pendingResolvedRequestIds: new Set(),
 
   setActiveThread: (threadId: string, cwd?: string | null) => {
     const { threadId: oldId } = get();
@@ -167,6 +188,10 @@ export const useTimelineStore = create<TimelineState>((set, get) => ({
       loading: false,
       expandedReasoning: new Set<string>(),
       approvals: {},
+      tokenUsageByTurn: {},
+      latestTokenUsage: null,
+      threadStatus: null,
+      pendingResolvedRequestIds: new Set(),
     });
   },
 
@@ -189,9 +214,18 @@ export const useTimelineStore = create<TimelineState>((set, get) => ({
     set((s) => ({
       timeline: [
         ...s.timeline,
-        { kind: 'system' as const, content: `Error: ${message}` },
+        { kind: 'system' as const, content: `Error: ${message}`, severity: 'error' as const },
       ],
       loading: false,
+    }));
+  },
+
+  addSystemMessage: (message: string, severity: 'info' | 'warning' | 'error' = 'info') => {
+    set((s) => ({
+      timeline: [
+        ...s.timeline,
+        { kind: 'system' as const, content: message, severity },
+      ],
     }));
   },
 
@@ -207,16 +241,17 @@ export const useTimelineStore = create<TimelineState>((set, get) => ({
   updateCurrentTurn: (turnId, updater) => {
     set((s) => {
       const { timeline } = s;
-      const last = timeline[timeline.length - 1];
+      const idx = timeline.findIndex(
+        (e) => e.kind === 'turn' && e.turnId === turnId,
+      );
 
-      if (last?.kind === 'turn' && last.turnId === turnId) {
-        const result = updater(last.items, last.completed);
-        return {
-          timeline: [
-            ...timeline.slice(0, -1),
-            { ...last, items: result.items, completed: result.completed },
-          ],
-        };
+      if (idx >= 0) {
+        const entry = timeline[idx];
+        if (entry.kind !== 'turn') return {};
+        const result = updater(entry.items, entry.completed);
+        const updated = [...timeline];
+        updated[idx] = { ...entry, items: result.items, completed: result.completed };
+        return { timeline: updated };
       }
 
       const result = updater([], false);
@@ -276,9 +311,25 @@ export const useTimelineStore = create<TimelineState>((set, get) => ({
   },
 
   addApproval: (approval) => {
-    set((s) => ({
-      approvals: { ...s.approvals, [approval.itemId]: approval },
-    }));
+    const { pendingResolvedRequestIds } = get();
+    const requestKey = String(approval.requestId);
+    const alreadyResolved = pendingResolvedRequestIds.has(requestKey);
+    const finalApproval = alreadyResolved
+      ? { ...approval, status: 'resolved' as const }
+      : approval;
+    set((s) => {
+      const nextPending = alreadyResolved
+        ? (() => {
+            const next = new Set(s.pendingResolvedRequestIds);
+            next.delete(requestKey);
+            return next;
+          })()
+        : s.pendingResolvedRequestIds;
+      return {
+        approvals: { ...s.approvals, [approval.itemId]: finalApproval },
+        pendingResolvedRequestIds: nextPending,
+      };
+    });
   },
 
   resolveApproval: (itemId, decision) => {
@@ -292,6 +343,37 @@ export const useTimelineStore = create<TimelineState>((set, get) => ({
         },
       };
     });
+  },
+
+  setTokenUsage: (turnId, usage) => {
+    set((s) => ({
+      tokenUsageByTurn: { ...s.tokenUsageByTurn, [turnId]: usage },
+      latestTokenUsage: usage,
+    }));
+  },
+
+  setThreadStatus: (status) => {
+    set({ threadStatus: status });
+  },
+
+  resolveApprovalByRequestId: (requestId) => {
+    const requestKey = String(requestId);
+    const { approvals } = get();
+    const entry = Object.values(approvals).find(
+      (a) => String(a.requestId) === requestKey,
+    );
+    if (entry) {
+      set((s) => ({
+        approvals: {
+          ...s.approvals,
+          [entry.itemId]: { ...entry, status: 'resolved' },
+        },
+      }));
+    } else {
+      set((s) => ({
+        pendingResolvedRequestIds: new Set(s.pendingResolvedRequestIds).add(requestKey),
+      }));
+    }
   },
 }));
 

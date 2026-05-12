@@ -9,6 +9,7 @@ import { Button } from '@/components/ui/button';
 import { Textarea } from '@/components/ui/textarea';
 import { threadsStartTurnMutation } from '@/generated/api/@tanstack/react-query.gen';
 import { useTimelineStore } from '@/stores/timeline-store';
+import { TokenUsageRing } from './token-usage-ring';
 
 interface Props {
   value: string;
@@ -81,14 +82,17 @@ export function ChatInput({ value, onChange, panelOpen, onTogglePanel }: Props) 
             {t('Terminal')}
           </Button>
 
-          <Button
-            size="icon"
-            className="h-7 w-7 rounded-lg transition-transform duration-200 hover:scale-105 active:scale-95"
-            disabled={!threadId || !value.trim() || loading}
-            onClick={handleSend}
-          >
-            <Send className="h-3.5 w-3.5" />
-          </Button>
+          <div className="flex items-center gap-2">
+            <TokenUsageRing />
+            <Button
+              size="icon"
+              className="h-7 w-7 rounded-lg transition-transform duration-200 hover:scale-105 active:scale-95"
+              disabled={!threadId || !value.trim() || loading}
+              onClick={handleSend}
+            >
+              <Send className="h-3.5 w-3.5" />
+            </Button>
+          </div>
         </div>
       </div>
     </footer>

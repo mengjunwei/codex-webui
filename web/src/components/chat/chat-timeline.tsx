@@ -78,6 +78,12 @@ export function ChatTimeline() {
             }
 
             if (entry.kind === 'system') {
+              const severity = entry.severity ?? 'error';
+              const colorMap = {
+                info: 'bg-blue-500/10 text-blue-600 dark:text-blue-400',
+                warning: 'bg-yellow-500/10 text-yellow-600 dark:text-yellow-400',
+                error: 'bg-destructive/10 text-destructive',
+              } as const;
               return (
                 <motion.div
                   key={i}
@@ -86,7 +92,7 @@ export function ChatTimeline() {
                   animate="visible"
                   className="mb-4 text-center"
                 >
-                  <span className="inline-block rounded-lg bg-destructive/10 px-3 py-1.5 text-sm text-destructive">
+                  <span className={`inline-block rounded-lg px-3 py-1.5 text-sm ${colorMap[severity]}`}>
                     {entry.content}
                   </span>
                 </motion.div>

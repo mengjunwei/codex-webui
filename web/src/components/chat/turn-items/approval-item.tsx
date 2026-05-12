@@ -2,7 +2,7 @@
  * Renders an approval request card for command execution or file change.
  * Shows the command/reason and Accept/Decline buttons when pending.
  */
-import { ShieldAlert, Check, X, Terminal, FileCode } from 'lucide-react';
+import { ShieldAlert, Check, X, Terminal, FileCode, CheckCircle } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { Button } from '@/components/ui/button';
 import { getSocket } from '@/socket';
@@ -31,6 +31,7 @@ export function ApprovalItem({ approval }: Props) {
   const isPending = approval.status === 'pending';
   const isAccepted = approval.status === 'accepted';
   const isDeclined = approval.status === 'declined';
+  const isResolved = approval.status === 'resolved';
 
   const Icon = approval.kind === 'commandExecution' ? Terminal : FileCode;
   const label =
@@ -45,6 +46,7 @@ export function ApprovalItem({ approval }: Props) {
         isPending && 'border-yellow-500/50 bg-yellow-500/5',
         isAccepted && 'border-green-500/30 bg-green-500/5',
         isDeclined && 'border-red-500/30 bg-red-500/5',
+        isResolved && 'border-muted bg-muted/5',
       )}
     >
       {/* Header */}
@@ -55,6 +57,7 @@ export function ApprovalItem({ approval }: Props) {
             isPending && 'text-yellow-500',
             isAccepted && 'text-green-500',
             isDeclined && 'text-red-500',
+            isResolved && 'text-muted-foreground',
           )}
         />
         <span className="font-medium">{label}</span>
@@ -66,6 +69,11 @@ export function ApprovalItem({ approval }: Props) {
         {isDeclined && (
           <span className="ml-auto flex items-center gap-1 text-xs text-red-500">
             <X className="h-3 w-3" /> {t('Declined')}
+          </span>
+        )}
+        {isResolved && (
+          <span className="ml-auto flex items-center gap-1 text-xs text-muted-foreground">
+            <CheckCircle className="h-3 w-3" /> {t('Resolved')}
           </span>
         )}
       </div>

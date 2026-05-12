@@ -14,6 +14,7 @@ import { CommandItem } from './turn-items/command-item';
 import { FileChangeItem } from './turn-items/file-change-item';
 import { DiffViewer } from './turn-items/diff-viewer';
 import { ApprovalItem } from './turn-items/approval-item';
+import { TurnTokenFooter } from './turn-token-footer';
 import { useTimelineStore } from '@/stores/timeline-store';
 
 const entryVariants = {
@@ -77,6 +78,8 @@ export function TurnBlock({ entry }: Props) {
         ))}
 
         {entry.diff && <DiffViewer diff={entry.diff} />}
+
+        {entry.completed && <TurnTokenFooter turnId={entry.turnId} />}
 
         {!entry.completed && entry.items.length === 0 && (
           <div className="flex items-center gap-2 text-sm text-muted-foreground">

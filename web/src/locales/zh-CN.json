@@ -34,6 +34,7 @@
   "File Change Approval": "文件变更审批",
   "Accepted": "已接受",
   "Declined": "已拒绝",
+  "Resolved": "已处理",
   "Accept": "接受",
   "Decline": "拒绝",
   "Requesting write access to:": "请求写入权限：",
@@ -63,6 +64,22 @@
   "Invalid API key": "API 密钥无效",
   "Failed to connect to server": "无法连接到服务器",
   "Login": "登录",
+
+  "Context": "当前上下文",
+  "Thread Total": "对话累计",
+  "Context Usage": "上下文用量",
+  "Input": "输入",
+  "Cached": "缓存",
+  "Output": "输出",
+  "Reasoning": "推理",
+  "Total": "总计",
+  "Window": "窗口",
+
+  "Thread closed": "会话已关闭",
+  "Thread archived": "会话已归档",
+  "Context compacted": "上下文已压缩",
+  "Thread encountered a system error": "会话遇到系统错误",
+  "Model rerouted: {{from}} → {{to}}": "模型已切换：{{from}} → {{to}}",
 
   "English": "English",
   "简体中文": "简体中文"

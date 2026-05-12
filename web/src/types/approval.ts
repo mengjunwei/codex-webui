@@ -10,7 +10,7 @@ export interface ApprovalRequest {
   turnId: string;
   itemId: string;
   /** Current status. */
-  status: 'pending' | 'accepted' | 'declined';
+  status: 'pending' | 'accepted' | 'declined' | 'resolved';
   /** Shell command (commandExecution only). */
   command?: string | null;
   /** Working directory (commandExecution only). */
