@@ -26,7 +26,7 @@ import {
   threadsListThreadsQueryKey,
   threadsRollbackThreadMutation,
 } from '@/generated/api/@tanstack/react-query.gen';
-import { tokenUsageReadThreadTokenUsage } from '@/generated/api/sdk.gen';
+import { tokenUsageReadThreadTokenUsage, turnDiffReadThreadTurnDiffs } from '@/generated/api/sdk.gen';
 import { useTimelineStore } from '@/stores/timeline-store';
 import type { TimelineEntry } from '@/types/timeline';
 import { TurnBlock } from './turn-block';
@@ -61,6 +61,7 @@ export function ChatTimeline({ onEditMessage }: Props) {
   const loading = useTimelineStore((s) => s.loading);
   const hydrateTimeline = useTimelineStore((s) => s.hydrateTimeline);
   const hydrateTokenUsage = useTimelineStore((s) => s.hydrateTokenUsage);
+  const hydrateTurnDiffs = useTimelineStore((s) => s.hydrateTurnDiffs);
   const bottomRef = useRef<HTMLDivElement>(null);
   const [rollbackTarget, setRollbackTarget] = useState<{
     numTurns: number;
@@ -72,9 +73,13 @@ export function ChatTimeline({ onEditMessage }: Props) {
     ...threadsRollbackThreadMutation(),
     onSuccess: (res) => {
       const content = rollbackTarget?.content;
+      const tid = res.thread.id;
       hydrateTimeline(res.thread.turns, res.thread.cwd);
-      void tokenUsageReadThreadTokenUsage({ path: { threadId: res.thread.id } })
+      void tokenUsageReadThreadTokenUsage({ path: { threadId: tid } })
         .then(({ data }) => data && hydrateTokenUsage(data.turns))
+        .catch(() => undefined);
+      void turnDiffReadThreadTurnDiffs({ path: { threadId: tid } })
+        .then(({ data }) => data && hydrateTurnDiffs(data.turns))
         .catch(() => undefined);
       setRollbackTarget(null);
       void queryClient.invalidateQueries({ queryKey: threadsListThreadsQueryKey() });

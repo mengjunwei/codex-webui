@@ -1,49 +1,192 @@
 /**
- * Renders a file change item showing the diff output from codex agent.
+ * Renders a file change item with collapsible diff and inline approval controls.
+ * Default collapsed — header shows file path, approval status, and +/- stats.
+ * When a pending approval exists, accept/decline buttons appear in the header.
  */
-import { FileCode, Loader2 } from 'lucide-react';
+import { useState } from 'react';
+import {
+  FileCode,
+  Loader2,
+  ChevronDown,
+  Check,
+  X,
+  ShieldAlert,
+  CheckCircle,
+} from 'lucide-react';
 import { useTranslation } from 'react-i18next';
+import { Button } from '@/components/ui/button';
+import { getSocket } from '@/socket';
+import { useTimelineStore } from '@/stores/timeline-store';
 import type { TurnItem } from '@/types/timeline';
+import type { ApprovalRequest } from '@/types/approval';
 import { cn } from '@/lib/utils';
 
 interface Props {
   item: TurnItem;
+  /** Optional approval request associated with this file change. */
+  approval?: ApprovalRequest;
 }
 
-export function FileChangeItem({ item }: Props) {
+export function FileChangeItem({ item, approval }: Props) {
   const { t } = useTranslation();
+  const resolveApproval = useTimelineStore((s) => s.resolveApproval);
+  const [expanded, setExpanded] = useState(false);
+
   const fileName = item.filePath?.split('/').pop() ?? t('File change');
+  const diff = item.fileDiff ?? '';
+  const lines = diff ? diff.split('\n') : [];
+  const additions = lines.filter(
+    (l) => l.startsWith('+') && !l.startsWith('+++'),
+  ).length;
+  const deletions = lines.filter(
+    (l) => l.startsWith('-') && !l.startsWith('---'),
+  ).length;
+
+  const isPending = approval?.status === 'pending';
+  const isAccepted = approval?.status === 'accepted';
+  const isDeclined = approval?.status === 'declined';
+  const isResolved = approval?.status === 'resolved';
+
+  const handleDecision = (decision: 'accepted' | 'declined') => {
+    if (!approval) return;
+    const socket = getSocket();
+    socket.emit('codex.serverResponse', {
+      id: approval.requestId,
+      result: { decision: decision === 'accepted' ? 'accept' : 'decline' },
+    });
+    resolveApproval(approval.itemId, decision);
+  };
 
   return (
-    <div className="rounded-lg border border-border bg-muted/30 text-sm">
-      <div className="flex items-center gap-2 border-b border-border px-3 py-1.5">
-        <FileCode className="h-3.5 w-3.5 text-orange-400" />
-        <span className="font-mono text-xs text-muted-foreground">
+    <div
+      className={cn(
+        'rounded-lg border text-sm',
+        isPending
+          ? 'border-yellow-500/50 bg-yellow-500/5'
+          : 'border-border bg-muted/30',
+      )}
+    >
+      {/* Collapsible header */}
+      <button
+        type="button"
+        onClick={() => setExpanded((e) => !e)}
+        className="flex w-full items-center gap-2 px-3 py-2 text-left text-xs hover:bg-accent/30"
+      >
+        <FileCode className="h-3.5 w-3.5 shrink-0 text-orange-400" />
+        <span className="min-w-0 truncate font-mono text-muted-foreground">
           {item.filePath ?? fileName}
         </span>
-        {!item.completed && (
-          <Loader2 className="ml-auto h-3 w-3 animate-spin text-muted-foreground" />
-        )}
-        {item.completed && (
-          <span className="ml-auto text-xs text-green-400">{t('Applied')}</span>
-        )}
-      </div>
 
-      {item.fileDiff && (
+        {/* +/- stats */}
+        {diff && (
+          <>
+            {additions > 0 && (
+              <span className="shrink-0 text-green-400">+{additions}</span>
+            )}
+            {deletions > 0 && (
+              <span className="shrink-0 text-red-400">-{deletions}</span>
+            )}
+          </>
+        )}
+
+        {/* Loading spinner */}
+        {!item.completed && (
+          <Loader2 className="ml-auto h-3 w-3 shrink-0 animate-spin text-muted-foreground" />
+        )}
+
+        {/* Approval status badges (non-pending) */}
+        {isAccepted && (
+          <span className="ml-auto flex shrink-0 items-center gap-1 text-green-500">
+            <Check className="h-3 w-3" /> {t('Accepted')}
+          </span>
+        )}
+        {isDeclined && (
+          <span className="ml-auto flex shrink-0 items-center gap-1 text-red-500">
+            <X className="h-3 w-3" /> {t('Declined')}
+          </span>
+        )}
+        {isResolved && (
+          <span className="ml-auto flex shrink-0 items-center gap-1 text-muted-foreground">
+            <CheckCircle className="h-3 w-3" /> {t('Resolved')}
+          </span>
+        )}
+
+        {/* Completed badge (no approval) */}
+        {item.completed && !approval && (
+          <span className="ml-auto shrink-0 text-green-400">{t('Applied')}</span>
+        )}
+
+        <ChevronDown
+          className={cn(
+            'h-3 w-3 shrink-0 transition-transform',
+            expanded && 'rotate-180',
+          )}
+        />
+      </button>
+
+      {/* Pending approval bar */}
+      {isPending && (
+        <div className="flex items-center gap-2 border-t border-yellow-500/30 px-3 py-1.5">
+          <ShieldAlert className="h-3.5 w-3.5 text-yellow-500" />
+          <span className="text-xs font-medium text-yellow-500">
+            {t('File Change Approval')}
+          </span>
+          {approval.reason && (
+            <span className="truncate text-xs text-muted-foreground">
+              — {approval.reason}
+            </span>
+          )}
+          {approval.grantRoot && (
+            <span className="truncate text-xs text-muted-foreground">
+              {t('Requesting write access to:')}{' '}
+              <code className="rounded bg-muted px-1">{approval.grantRoot}</code>
+            </span>
+          )}
+          <div className="ml-auto flex gap-1.5">
+            <Button
+              size="sm"
+              variant="outline"
+              className="h-6 border-green-500/50 px-2 text-xs text-green-500 hover:bg-green-500/10"
+              onClick={(e) => {
+                e.stopPropagation();
+                handleDecision('accepted');
+              }}
+            >
+              <Check className="mr-1 h-3 w-3" />
+              {t('Accept')}
+            </Button>
+            <Button
+              size="sm"
+              variant="outline"
+              className="h-6 border-red-500/50 px-2 text-xs text-red-500 hover:bg-red-500/10"
+              onClick={(e) => {
+                e.stopPropagation();
+                handleDecision('declined');
+              }}
+            >
+              <X className="mr-1 h-3 w-3" />
+              {t('Decline')}
+            </Button>
+          </div>
+        </div>
+      )}
+
+      {/* Collapsible diff body */}
+      {expanded && diff && (
         <pre
           className={cn(
-            'max-h-64 overflow-auto p-3 font-mono text-xs leading-relaxed',
+            'max-h-64 overflow-auto border-t border-border p-3 font-mono text-xs leading-relaxed',
             'scrollbar-thin scrollbar-track-transparent scrollbar-thumb-muted-foreground/20',
           )}
         >
-          {item.fileDiff.split('\n').map((line, i) => (
+          {lines.map((line, i) => (
             <div
               key={i}
               className={cn(
                 line.startsWith('+') && !line.startsWith('+++')
-                  ? 'text-green-400'
+                  ? 'bg-green-500/10 text-green-400'
                   : line.startsWith('-') && !line.startsWith('---')
-                    ? 'text-red-400'
+                    ? 'bg-red-500/10 text-red-400'
                     : line.startsWith('@@')
                       ? 'text-blue-400'
                       : 'text-muted-foreground',

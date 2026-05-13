@@ -746,6 +746,17 @@ export type ThreadTokenUsageResponseDto = {
     latest: TurnTokenUsageDto | null;
 };
 
+export type TurnDiffEntryDto = {
+    turnId: string;
+    diff: string;
+    updatedAt: number;
+};
+
+export type ThreadTurnDiffsResponseDto = {
+    threadId: string;
+    turns: Array<TurnDiffEntryDto>;
+};
+
 export type LogEntryDto = {
     timestamp: string;
     level: 'trace' | 'debug' | 'info' | 'warn' | 'error' | 'fatal' | 'unknown';
@@ -1359,6 +1370,27 @@ export type TokenUsageReadThreadTokenUsageResponses = {
 };
 
 export type TokenUsageReadThreadTokenUsageResponse = TokenUsageReadThreadTokenUsageResponses[keyof TokenUsageReadThreadTokenUsageResponses];
+
+export type TurnDiffReadThreadTurnDiffsData = {
+    body?: never;
+    path: {
+        threadId: string;
+    };
+    query?: never;
+    url: '/api/threads/{threadId}/turn-diffs';
+};
+
+export type TurnDiffReadThreadTurnDiffsErrors = {
+    401: ApiErrorResponseDto;
+};
+
+export type TurnDiffReadThreadTurnDiffsError = TurnDiffReadThreadTurnDiffsErrors[keyof TurnDiffReadThreadTurnDiffsErrors];
+
+export type TurnDiffReadThreadTurnDiffsResponses = {
+    200: ThreadTurnDiffsResponseDto;
+};
+
+export type TurnDiffReadThreadTurnDiffsResponse = TurnDiffReadThreadTurnDiffsResponses[keyof TurnDiffReadThreadTurnDiffsResponses];
 
 export type ModelsListModelsData = {
     body?: never;

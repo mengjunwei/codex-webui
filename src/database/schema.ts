@@ -36,3 +36,21 @@ export const tokenUsageSnapshots = sqliteTable(
 
 export type TokenUsageSnapshot = typeof tokenUsageSnapshots.$inferSelect;
 export type InsertTokenUsageSnapshot = typeof tokenUsageSnapshots.$inferInsert;
+
+/** Persists the cumulative turn-level diff from turn/diff/updated notifications. */
+export const turnDiffs = sqliteTable(
+  'turn_diffs',
+  {
+    threadId: text('thread_id').notNull(),
+    turnId: text('turn_id').notNull(),
+    diff: text('diff').notNull(),
+    updatedAt: integer('updated_at').notNull(),
+  },
+  (table) => [
+    primaryKey({ columns: [table.threadId, table.turnId] }),
+    index('idx_turn_diffs_thread').on(table.threadId),
+  ],
+);
+
+export type TurnDiffRow = typeof turnDiffs.$inferSelect;
+export type InsertTurnDiffRow = typeof turnDiffs.$inferInsert;

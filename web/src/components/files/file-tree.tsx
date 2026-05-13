@@ -9,6 +9,7 @@ import {
   Folder,
   FolderOpen,
   Loader2,
+  RefreshCw,
   Trash2,
 } from 'lucide-react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
@@ -18,6 +19,10 @@ import {
   filesReadTreeOptions,
   filesDeletePathMutation,
   filesReadTreeQueryKey,
+} from '@/generated/api/@tanstack/react-query.gen';
+import {
+  filesReadFileQueryKey,
+  filesGetMetadataQueryKey,
 } from '@/generated/api/@tanstack/react-query.gen';
 import { useFilesStore } from '@/stores/files-store';
 import { cn } from '@/lib/utils';
@@ -32,6 +37,7 @@ export function FileTree({ onFileClick }: FileTreeProps = {}) {
   const rootDir = useFilesStore((s) => s.rootDir);
   const selectedFile = useFilesStore((s) => s.selectedFile);
   const navigateUp = useFilesStore((s) => s.navigateUp);
+  const queryClient = useQueryClient();
 
   if (!rootDir) {
     return (
@@ -42,6 +48,16 @@ export function FileTree({ onFileClick }: FileTreeProps = {}) {
   }
 
   const dirName = rootDir.split('/').pop() || rootDir;
+
+  /** Invalidates all tree queries under the current root. */
+  const refreshAll = () => {
+    void queryClient.invalidateQueries({
+      predicate: ({ queryKey }) => {
+        const key = queryKey[0] as { _id?: string } | undefined;
+        return key?._id === 'filesReadTree';
+      },
+    });
+  };
 
   return (
     <>
@@ -58,6 +74,14 @@ export function FileTree({ onFileClick }: FileTreeProps = {}) {
         <span className="truncate text-xs text-muted-foreground" title={rootDir}>
           {dirName}
         </span>
+        <button
+          type="button"
+          onClick={refreshAll}
+          className="ml-auto rounded p-0.5 text-muted-foreground hover:bg-accent/50 hover:text-foreground"
+          title={t('Refresh')}
+        >
+          <RefreshCw className="h-3 w-3" />
+        </button>
       </div>
 
       <ScrollArea className="min-h-0 flex-1">
@@ -104,6 +128,23 @@ function DirectoryContents({ dirPath, depth, selectedFile, onFileClick }: Direct
     },
   });
 
+  /** Refreshes a single directory's tree listing. */
+  const refreshDir = (path: string) => {
+    void queryClient.invalidateQueries({
+      queryKey: filesReadTreeQueryKey({ query: { root: path } }),
+    });
+  };
+
+  /** Refreshes a single file's content and metadata queries. */
+  const refreshFile = (path: string) => {
+    void queryClient.invalidateQueries({
+      queryKey: filesReadFileQueryKey({ query: { path } }),
+    });
+    void queryClient.invalidateQueries({
+      queryKey: filesGetMetadataQueryKey({ query: { path } }),
+    });
+  };
+
   if (isLoading) {
     return (
       <div
@@ -132,6 +173,7 @@ function DirectoryContents({ dirPath, depth, selectedFile, onFileClick }: Direct
                 expanded={isExpanded}
                 selected={false}
                 onClick={() => toggleDirectory(entry.path)}
+                onRefresh={() => refreshDir(entry.path)}
                 onDelete={() => deletePath.mutate({ query: { path: entry.path } })}
               />
               {isExpanded && (
@@ -153,6 +195,7 @@ function DirectoryContents({ dirPath, depth, selectedFile, onFileClick }: Direct
             name={entry.name}
             selected={entry.path === selectedFile}
             onClick={() => handleFileClick(entry.path)}
+            onRefresh={() => refreshFile(entry.path)}
             onDelete={() => deletePath.mutate({ query: { path: entry.path } })}
           />
         );
@@ -168,10 +211,11 @@ interface TreeRowProps {
   expanded?: boolean;
   selected: boolean;
   onClick: () => void;
+  onRefresh: () => void;
   onDelete: () => void;
 }
 
-function TreeRow({ depth, icon, name, expanded, selected, onClick, onDelete }: TreeRowProps) {
+function TreeRow({ depth, icon, name, expanded, selected, onClick, onRefresh, onDelete }: TreeRowProps) {
   const { t } = useTranslation();
   return (
     <div
@@ -207,6 +251,18 @@ function TreeRow({ depth, icon, name, expanded, selected, onClick, onDelete }: T
           </>
         )}
         <span className="min-w-0 truncate">{name}</span>
+      </button>
+
+      <button
+        type="button"
+        onClick={(e) => {
+          e.stopPropagation();
+          onRefresh();
+        }}
+        className="shrink-0 rounded p-0.5 opacity-0 transition-opacity hover:bg-accent hover:text-foreground group-hover:opacity-100"
+        title={t('Refresh')}
+      >
+        <RefreshCw className="h-3 w-3" />
       </button>
 
       <button

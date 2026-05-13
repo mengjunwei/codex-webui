@@ -88,7 +88,6 @@ function App() {
   useEffect(() => {
     const dir = globalView === 'chat' ? threadCwd : globalView === 'files' ? homeDir : null;
     if (dir) {
-      // Register as workspace root, then update store
       void filesAddRoot({ body: { root: dir }, throwOnError: true, meta: { silent: true } })
         .then(() => setRootDir(dir))
         .catch(() => { /* root rejected — keep previous state */ });

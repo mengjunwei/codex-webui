@@ -171,6 +171,8 @@ interface TimelineState {
   clearActiveTurn: () => void;
   /** Hydrates token usage snapshots fetched from the backend. */
   hydrateTokenUsage: (turns: Array<{ turnId: string; usage: ThreadTokenUsage }>) => void;
+  /** Hydrates turn-level diffs fetched from the backend (for DiffViewer on resume). */
+  hydrateTurnDiffs: (turns: Array<{ turnId: string; diff: string }>) => void;
   /** Resolves an approval by its JSON-RPC requestId (for serverRequest/resolved). */
   resolveApprovalByRequestId: (requestId: string | number) => void;
 }
@@ -434,6 +436,17 @@ export const useTimelineStore = create<TimelineState>((set, get) => ({
     set({
       tokenUsageByTurn: byTurn,
       latestTokenUsage: turns.at(-1)?.usage ?? null,
+    });
+  },
+
+  hydrateTurnDiffs: (turns) => {
+    set((s) => {
+      const timeline = s.timeline.map((entry) => {
+        if (entry.kind !== 'turn') return entry;
+        const match = turns.find((t) => t.turnId === entry.turnId);
+        return match ? { ...entry, diff: match.diff } : entry;
+      });
+      return { timeline };
     });
   },
 

@@ -34,27 +34,23 @@ interface Props {
 function ItemWithApproval({ item }: { item: TurnItem }) {
   const approval = useTimelineStore((s) => s.approvals[item.itemId]);
 
-  const rendered = (() => {
-    switch (item.type) {
-      case 'reasoning':
-        return <ReasoningItem item={item} />;
-      case 'agentMessage':
-        return <AgentMessageItem item={item} />;
-      case 'mcpToolCall':
-        return <ToolCallItem item={item} />;
-      case 'commandExecution':
-        return <CommandItem item={item} />;
-      case 'fileChange':
-        return <FileChangeItem item={item} />;
-    }
-  })();
-
-  return (
-    <>
-      {rendered}
-      {approval && <ApprovalItem approval={approval} />}
-    </>
-  );
+  switch (item.type) {
+    case 'reasoning':
+      return <ReasoningItem item={item} />;
+    case 'agentMessage':
+      return <AgentMessageItem item={item} />;
+    case 'mcpToolCall':
+      return <ToolCallItem item={item} />;
+    case 'commandExecution':
+      return (
+        <>
+          <CommandItem item={item} />
+          {approval && <ApprovalItem approval={approval} />}
+        </>
+      );
+    case 'fileChange':
+      return <FileChangeItem item={item} approval={approval} />;
+  }
 }
 
 export function TurnBlock({ entry }: Props) {

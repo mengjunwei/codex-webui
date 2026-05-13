@@ -22,7 +22,7 @@ import {
   threadsStartThreadMutation,
   threadsUnarchiveThreadMutation,
 } from '@/generated/api/@tanstack/react-query.gen';
-import { tokenUsageReadThreadTokenUsage } from '@/generated/api/sdk.gen';
+import { tokenUsageReadThreadTokenUsage, turnDiffReadThreadTurnDiffs } from '@/generated/api/sdk.gen';
 import type { ThreadDto } from '@/generated/api';
 import { useTimelineStore } from '@/stores/timeline-store';
 import { showSnackbar } from '@/stores/snackbar-store';
@@ -51,6 +51,7 @@ export function ThreadSidebar({ activeView, onViewChange }: Props) {
   const clearThread = useTimelineStore((s) => s.clearThread);
   const hydrateTimeline = useTimelineStore((s) => s.hydrateTimeline);
   const hydrateTokenUsage = useTimelineStore((s) => s.hydrateTokenUsage);
+  const hydrateTurnDiffs = useTimelineStore((s) => s.hydrateTurnDiffs);
   const setThreadTitle = useTimelineStore((s) => s.setThreadTitle);
   const addSystemError = useTimelineStore((s) => s.addSystemError);
   const setLoading = useTimelineStore((s) => s.setLoading);
@@ -102,8 +103,12 @@ export function ThreadSidebar({ activeView, onViewChange }: Props) {
     onSuccess: (res) => {
       setThreadTitle(threadLabel(res.thread));
       hydrateTimeline(res.thread.turns, res.cwd);
-      void tokenUsageReadThreadTokenUsage({ path: { threadId: res.thread.id } })
+      const tid = res.thread.id;
+      void tokenUsageReadThreadTokenUsage({ path: { threadId: tid } })
         .then(({ data }) => data && hydrateTokenUsage(data.turns))
+        .catch(() => undefined);
+      void turnDiffReadThreadTurnDiffs({ path: { threadId: tid } })
+        .then(({ data }) => data && hydrateTurnDiffs(data.turns))
         .catch(() => undefined);
     },
     onError: () => setLoading(false),
@@ -120,8 +125,12 @@ export function ThreadSidebar({ activeView, onViewChange }: Props) {
         }),
       );
       setReadOnlyThread(res.thread);
-      void tokenUsageReadThreadTokenUsage({ path: { threadId: res.thread.id } })
+      const tid = res.thread.id;
+      void tokenUsageReadThreadTokenUsage({ path: { threadId: tid } })
         .then(({ data }) => data && hydrateTokenUsage(data.turns))
+        .catch(() => undefined);
+      void turnDiffReadThreadTurnDiffs({ path: { threadId: tid } })
+        .then(({ data }) => data && hydrateTurnDiffs(data.turns))
         .catch(() => undefined);
       onViewChange('chat');
     } catch {
@@ -180,10 +189,14 @@ export function ThreadSidebar({ activeView, onViewChange }: Props) {
   const forkThread = useMutation({
     ...threadsForkThreadMutation(),
     onSuccess: (res) => {
-      setActiveThread(res.thread.id, res.cwd, threadLabel(res.thread));
+      const tid = res.thread.id;
+      setActiveThread(tid, res.cwd, threadLabel(res.thread));
       hydrateTimeline(res.thread.turns, res.cwd);
-      void tokenUsageReadThreadTokenUsage({ path: { threadId: res.thread.id } })
+      void tokenUsageReadThreadTokenUsage({ path: { threadId: tid } })
         .then(({ data }) => data && hydrateTokenUsage(data.turns))
+        .catch(() => undefined);
+      void turnDiffReadThreadTurnDiffs({ path: { threadId: tid } })
+        .then(({ data }) => data && hydrateTurnDiffs(data.turns))
         .catch(() => undefined);
       invalidateThreads();
       onViewChange('chat');

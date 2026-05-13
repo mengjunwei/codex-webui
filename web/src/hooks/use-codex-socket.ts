@@ -8,9 +8,8 @@ import { useQueryClient } from '@tanstack/react-query';
 import { getSocket } from '../socket';
 import { useConnectionStore } from '../stores/connection-store';
 import { useTimelineStore } from '../stores/timeline-store';
-import { useFilesStore } from '../stores/files-store';
 import { handleNotification, type NotificationContext } from './notification-handlers';
-import { tokenUsageReadThreadTokenUsage } from '@/generated/api/sdk.gen';
+import { tokenUsageReadThreadTokenUsage, turnDiffReadThreadTurnDiffs } from '@/generated/api/sdk.gen';
 import i18n from '@/i18n';
 
 type CodexLifecycleEvent =
@@ -22,8 +21,6 @@ type CodexLifecycleEvent =
 export function useCodexSocket(enabled = true) {
   const setConnected = useConnectionStore((s) => s.setConnected);
   const queryClient = useQueryClient();
-  const rootDir = useFilesStore((s) => s.rootDir);
-  const expandedDirs = useFilesStore((s) => s.expandedDirs);
   const {
     threadId,
     updateCurrentTurn,
@@ -40,6 +37,7 @@ export function useCodexSocket(enabled = true) {
     setActiveTurnId,
     clearActiveTurn,
     hydrateTokenUsage,
+    hydrateTurnDiffs,
     setThreadTitle,
     resolveApprovalByRequestId,
   } = useTimelineStore();
@@ -123,24 +121,10 @@ export function useCodexSocket(enabled = true) {
           .catch(() =>
             addSystemMessage(i18n.t('Token usage recovery failed after resume.'), 'warning'),
           );
+        void turnDiffReadThreadTurnDiffs({ path: { threadId: activeThreadId } })
+          .then(({ data }) => data && hydrateTurnDiffs(data.turns))
+          .catch(() => undefined);
       }
-    });
-
-    // File watcher events → invalidate affected file queries
-    socket.on('fs.changed', (event: { event: string; path: string }) => {
-      void queryClient.invalidateQueries({
-        predicate: ({ queryKey }) => {
-          const key = queryKey[0] as
-            | { _id?: string; query?: { path?: string; root?: string } }
-            | undefined;
-          if (!key?._id) return false;
-          if (key._id === 'filesReadTree') return true;
-          return (
-            (key._id === 'filesReadFile' || key._id === 'filesGetMetadata') &&
-            key.query?.path === event.path
-          );
-        },
-      });
     });
 
     socket.on(
@@ -190,7 +174,6 @@ export function useCodexSocket(enabled = true) {
       socket.off('codex.notification');
       socket.off('codex.lifecycle');
       socket.off('codex.serverRequest');
-      socket.off('fs.changed');
     };
   }, [
     enabled,
@@ -211,27 +194,9 @@ export function useCodexSocket(enabled = true) {
     setActiveTurnId,
     clearActiveTurn,
     hydrateTokenUsage,
+    hydrateTurnDiffs,
     setThreadTitle,
     resolveApprovalByRequestId,
   ]);
 
-  // Subscribe/unsubscribe file watchers for visible directories
-  useEffect(() => {
-    if (!enabled) return;
-
-    const socket = getSocket();
-    const watchedDirs = new Set<string>();
-    if (rootDir) watchedDirs.add(rootDir);
-    for (const dir of expandedDirs) watchedDirs.add(dir);
-
-    for (const path of watchedDirs) {
-      socket.emit('fs.subscribe', { path });
-    }
-
-    return () => {
-      for (const path of watchedDirs) {
-        socket.emit('fs.unsubscribe', { path });
-      }
-    };
-  }, [enabled, rootDir, expandedDirs]);
 }
