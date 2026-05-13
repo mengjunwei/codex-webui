@@ -1,6 +1,7 @@
 /**
  * Renders an approval request card for command execution or file change.
  * Shows the command/reason and Accept/Decline buttons when pending.
+ * For fileChange, looks up the related turn item to display file path and diff.
  */
 import { ShieldAlert, Check, X, Terminal, FileCode, CheckCircle } from 'lucide-react';
 import { useTranslation } from 'react-i18next';

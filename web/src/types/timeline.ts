@@ -14,6 +14,8 @@ export interface TurnItem {
   toolArgs?: string;
   /** File path for fileChange items. */
   filePath?: string;
+  /** Pure diff content from changes[0].diff (fileChange only). */
+  fileDiff?: string;
   /** Shell command for commandExecution items. */
   command?: string;
   /** Exit code for commandExecution items. */

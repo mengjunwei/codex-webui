@@ -7,7 +7,7 @@ import { create } from 'zustand';
 import { getSocket } from '../socket';
 import type { TimelineEntry, TurnItem } from '../types/timeline';
 import type { ApprovalRequest } from '../types/approval';
-import type { ThreadDto, TurnDto } from '../generated/api';
+import type { ThreadDto, TurnDto, FileUpdateChangeDto } from '../generated/api';
 import type { ThreadTokenUsage, ThreadStatusType } from '../types/codex-notifications';
 
 export type ThreadMode = 'live' | 'readOnly';
@@ -54,13 +54,14 @@ function parseTurnItem(item: Record<string, unknown>): TurnItem | null {
         exitCode: item.exitCode as number | undefined,
       };
     case 'fileChange': {
-      const changes = item.changes as Array<{ file?: string }> | undefined;
+      const changes = item.changes as FileUpdateChangeDto[] | undefined;
       return {
         type: 'fileChange',
         itemId: id,
         content: (item.text as string) ?? '',
         completed: true,
-        filePath: changes?.[0]?.file,
+        filePath: changes?.[0]?.path,
+        fileDiff: changes?.[0]?.diff ?? '',
       };
     }
     default:

@@ -29,14 +29,14 @@ export function FileChangeItem({ item }: Props) {
         )}
       </div>
 
-      {item.content && (
+      {item.fileDiff && (
         <pre
           className={cn(
             'max-h-64 overflow-auto p-3 font-mono text-xs leading-relaxed',
             'scrollbar-thin scrollbar-track-transparent scrollbar-thumb-muted-foreground/20',
           )}
         >
-          {item.content.split('\n').map((line, i) => (
+          {item.fileDiff.split('\n').map((line, i) => (
             <div
               key={i}
               className={cn(

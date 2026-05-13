@@ -7,6 +7,7 @@ import type { QueryClient } from '@tanstack/react-query';
 import { threadsListThreadsQueryKey } from '@/generated/api/@tanstack/react-query.gen';
 import { showSnackbar } from '@/stores/snackbar-store';
 import type { ThreadTokenUsage, ThreadStatusType } from '@/types/codex-notifications';
+import type { FileUpdateChangeDto } from '@/generated/api';
 import i18n from '@/i18n';
 
 // ---------------------------------------------------------------------------
@@ -129,8 +130,7 @@ const handleCommandExecutionOutputDelta: Handler = (params, ctx) => {
   const { turnId, itemId, delta } = params as { turnId?: string; itemId?: string; delta?: string };
   if (!turnId || !itemId || !isForActiveThread(params, ctx)) return;
   ctx.updateTurnItem(turnId, itemId, (existing) => ({
-    type: 'commandExecution',
-    itemId,
+    ...(existing ?? { type: 'commandExecution' as const, itemId }),
     content: (existing?.content ?? '') + (delta ?? ''),
     completed: false,
   }));
@@ -140,11 +140,9 @@ const handleFileChangeOutputDelta: Handler = (params, ctx) => {
   const { turnId, itemId, delta } = params as { turnId?: string; itemId?: string; delta?: string };
   if (!turnId || !itemId || !isForActiveThread(params, ctx)) return;
   ctx.updateTurnItem(turnId, itemId, (existing) => ({
-    type: 'fileChange',
-    itemId,
+    ...(existing ?? { type: 'fileChange' as const, itemId }),
     content: (existing?.content ?? '') + (delta ?? ''),
     completed: false,
-    filePath: existing?.filePath,
   }));
 };
 
@@ -174,13 +172,14 @@ const handleItemStarted: Handler = (params, ctx) => {
     }));
   }
   if (item.type === 'fileChange') {
-    const changes = item.changes as Array<{ file?: string }> | undefined;
+    const changes = item.changes as FileUpdateChangeDto[] | undefined;
     ctx.updateTurnItem(turnId, id, () => ({
       type: 'fileChange',
       itemId: id,
       content: '',
       completed: false,
-      filePath: changes?.[0]?.file ?? '',
+      filePath: changes?.[0]?.path ?? '',
+      fileDiff: changes?.[0]?.diff ?? '',
     }));
   }
   if (item.type === 'commandExecution') {
@@ -243,12 +242,14 @@ const handleItemCompleted: Handler = (params, ctx) => {
     }));
   }
   if (item.type === 'fileChange') {
-    const changes = item.changes as Array<{ file?: string }> | undefined;
+    const changes = item.changes as FileUpdateChangeDto[] | undefined;
+    const firstChange = changes?.[0];
     ctx.updateTurnItem(turnId, completedItemId, (existing) => ({
       ...(existing ?? { type: 'fileChange' as const, itemId: completedItemId }),
       content: existing?.content ?? '',
       completed: true,
-      filePath: existing?.filePath ?? (changes?.[0]?.file ?? ''),
+      filePath: existing?.filePath ?? firstChange?.path ?? '',
+      fileDiff: firstChange?.diff || existing?.fileDiff || '',
     }));
   }
 };
