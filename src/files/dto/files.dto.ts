@@ -45,6 +45,141 @@ export class WriteFileResponseDto {
   mtime!: number;
 }
 
+/** File creation request body. */
+export class CreateFileRequestDto {
+  @ApiProperty()
+  path!: string;
+
+  @ApiPropertyOptional({ default: '' })
+  content?: string;
+
+  @ApiPropertyOptional({ default: false })
+  overwrite?: boolean;
+}
+
+/** File creation response. */
+export class CreateFileResponseDto {
+  @ApiProperty({ example: true })
+  ok!: boolean;
+
+  @ApiProperty()
+  path!: string;
+
+  @ApiProperty()
+  mtime!: number;
+}
+
+/** Directory creation request body. */
+export class CreateDirectoryRequestDto {
+  @ApiProperty()
+  path!: string;
+
+  @ApiPropertyOptional({ default: false })
+  recursive?: boolean;
+
+  @ApiPropertyOptional({ default: false })
+  overwrite?: boolean;
+}
+
+/** Directory creation response. */
+export class CreateDirectoryResponseDto {
+  @ApiProperty({ example: true })
+  ok!: boolean;
+
+  @ApiProperty()
+  path!: string;
+}
+
+/** Same-parent rename request body. */
+export class RenamePathRequestDto {
+  @ApiProperty()
+  path!: string;
+
+  @ApiProperty()
+  newName!: string;
+
+  @ApiPropertyOptional({ default: false })
+  overwrite?: boolean;
+}
+
+/** Rename response containing old and new paths. */
+export class RenamePathResponseDto {
+  @ApiProperty({ example: true })
+  ok!: boolean;
+
+  @ApiProperty()
+  oldPath!: string;
+
+  @ApiProperty()
+  newPath!: string;
+}
+
+/** Copy request body. */
+export class CopyPathRequestDto {
+  @ApiProperty()
+  sourcePath!: string;
+
+  @ApiProperty()
+  destinationPath!: string;
+
+  @ApiPropertyOptional({ default: false })
+  overwrite?: boolean;
+}
+
+/** Move request body. */
+export class MovePathRequestDto {
+  @ApiProperty()
+  sourcePath!: string;
+
+  @ApiProperty()
+  destinationPath!: string;
+
+  @ApiPropertyOptional({ default: false })
+  overwrite?: boolean;
+}
+
+/** Copy response containing source and destination paths. */
+export class CopyPathResponseDto {
+  @ApiProperty({ example: true })
+  ok!: boolean;
+
+  @ApiProperty()
+  sourcePath!: string;
+
+  @ApiProperty()
+  destinationPath!: string;
+}
+
+/** Move response containing old and new paths. */
+export class MovePathResponseDto {
+  @ApiProperty({ example: true })
+  ok!: boolean;
+
+  @ApiProperty()
+  oldPath!: string;
+
+  @ApiProperty()
+  newPath!: string;
+}
+
+/** Uploaded file result. */
+export class UploadedFileDto {
+  @ApiProperty()
+  path!: string;
+
+  @ApiProperty()
+  size!: number;
+}
+
+/** Upload response containing all stored files. */
+export class UploadFilesResponseDto {
+  @ApiProperty({ example: true })
+  ok!: boolean;
+
+  @ApiProperty({ type: [UploadedFileDto] })
+  files!: UploadedFileDto[];
+}
+
 /** File or directory metadata response. */
 export class FileMetadataDto {
   @ApiProperty()

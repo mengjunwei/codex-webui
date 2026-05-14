@@ -124,6 +124,29 @@ export type FileReadResponseDto = {
     size: number;
 };
 
+export type CreateFileRequestDto = {
+    path: string;
+    content?: string;
+    overwrite?: boolean;
+};
+
+export type CreateFileResponseDto = {
+    ok: boolean;
+    path: string;
+    mtime: number;
+};
+
+export type CreateDirectoryRequestDto = {
+    path: string;
+    recursive?: boolean;
+    overwrite?: boolean;
+};
+
+export type CreateDirectoryResponseDto = {
+    ok: boolean;
+    path: string;
+};
+
 export type WriteFileRequestDto = {
     path: string;
     content: string;
@@ -132,6 +155,42 @@ export type WriteFileRequestDto = {
 
 export type WriteFileResponseDto = {
     mtime: number;
+};
+
+export type RenamePathRequestDto = {
+    path: string;
+    newName: string;
+    overwrite?: boolean;
+};
+
+export type RenamePathResponseDto = {
+    ok: boolean;
+    oldPath: string;
+    newPath: string;
+};
+
+export type CopyPathRequestDto = {
+    sourcePath: string;
+    destinationPath: string;
+    overwrite?: boolean;
+};
+
+export type CopyPathResponseDto = {
+    ok: boolean;
+    sourcePath: string;
+    destinationPath: string;
+};
+
+export type MovePathRequestDto = {
+    sourcePath: string;
+    destinationPath: string;
+    overwrite?: boolean;
+};
+
+export type MovePathResponseDto = {
+    ok: boolean;
+    oldPath: string;
+    newPath: string;
 };
 
 export type FileMetadataDto = {
@@ -154,6 +213,16 @@ export type AddWorkspaceRootRequestDto = {
 
 export type OkResponseDto = {
     ok: boolean;
+};
+
+export type UploadedFileDto = {
+    path: string;
+    size: number;
+};
+
+export type UploadFilesResponseDto = {
+    ok: boolean;
+    files: Array<UploadedFileDto>;
 };
 
 export type GranularApprovalOptionsDto = {
@@ -963,6 +1032,50 @@ export type FilesReadFileResponses = {
 
 export type FilesReadFileResponse = FilesReadFileResponses[keyof FilesReadFileResponses];
 
+export type FilesCreateFileData = {
+    body: CreateFileRequestDto;
+    path?: never;
+    query?: never;
+    url: '/api/files/create-file';
+};
+
+export type FilesCreateFileErrors = {
+    400: ApiErrorResponseDto;
+    401: ApiErrorResponseDto;
+    403: ApiErrorResponseDto;
+    404: ApiErrorResponseDto;
+};
+
+export type FilesCreateFileError = FilesCreateFileErrors[keyof FilesCreateFileErrors];
+
+export type FilesCreateFileResponses = {
+    201: CreateFileResponseDto;
+};
+
+export type FilesCreateFileResponse = FilesCreateFileResponses[keyof FilesCreateFileResponses];
+
+export type FilesCreateDirectoryData = {
+    body: CreateDirectoryRequestDto;
+    path?: never;
+    query?: never;
+    url: '/api/files/create-directory';
+};
+
+export type FilesCreateDirectoryErrors = {
+    400: ApiErrorResponseDto;
+    401: ApiErrorResponseDto;
+    403: ApiErrorResponseDto;
+    404: ApiErrorResponseDto;
+};
+
+export type FilesCreateDirectoryError = FilesCreateDirectoryErrors[keyof FilesCreateDirectoryErrors];
+
+export type FilesCreateDirectoryResponses = {
+    201: CreateDirectoryResponseDto;
+};
+
+export type FilesCreateDirectoryResponse = FilesCreateDirectoryResponses[keyof FilesCreateDirectoryResponses];
+
 export type FilesWriteFileData = {
     body: WriteFileRequestDto;
     path?: never;
@@ -984,6 +1097,72 @@ export type FilesWriteFileResponses = {
 };
 
 export type FilesWriteFileResponse = FilesWriteFileResponses[keyof FilesWriteFileResponses];
+
+export type FilesRenamePathData = {
+    body: RenamePathRequestDto;
+    path?: never;
+    query?: never;
+    url: '/api/files/rename';
+};
+
+export type FilesRenamePathErrors = {
+    400: ApiErrorResponseDto;
+    401: ApiErrorResponseDto;
+    403: ApiErrorResponseDto;
+    404: ApiErrorResponseDto;
+};
+
+export type FilesRenamePathError = FilesRenamePathErrors[keyof FilesRenamePathErrors];
+
+export type FilesRenamePathResponses = {
+    201: RenamePathResponseDto;
+};
+
+export type FilesRenamePathResponse = FilesRenamePathResponses[keyof FilesRenamePathResponses];
+
+export type FilesCopyPathData = {
+    body: CopyPathRequestDto;
+    path?: never;
+    query?: never;
+    url: '/api/files/copy';
+};
+
+export type FilesCopyPathErrors = {
+    400: ApiErrorResponseDto;
+    401: ApiErrorResponseDto;
+    403: ApiErrorResponseDto;
+    404: ApiErrorResponseDto;
+};
+
+export type FilesCopyPathError = FilesCopyPathErrors[keyof FilesCopyPathErrors];
+
+export type FilesCopyPathResponses = {
+    201: CopyPathResponseDto;
+};
+
+export type FilesCopyPathResponse = FilesCopyPathResponses[keyof FilesCopyPathResponses];
+
+export type FilesMovePathData = {
+    body: MovePathRequestDto;
+    path?: never;
+    query?: never;
+    url: '/api/files/move';
+};
+
+export type FilesMovePathErrors = {
+    400: ApiErrorResponseDto;
+    401: ApiErrorResponseDto;
+    403: ApiErrorResponseDto;
+    404: ApiErrorResponseDto;
+};
+
+export type FilesMovePathError = FilesMovePathErrors[keyof FilesMovePathErrors];
+
+export type FilesMovePathResponses = {
+    201: MovePathResponseDto;
+};
+
+export type FilesMovePathResponse = FilesMovePathResponses[keyof FilesMovePathResponses];
 
 export type FilesGetMetadataData = {
     body?: never;
@@ -1010,6 +1189,27 @@ export type FilesGetMetadataResponses = {
 };
 
 export type FilesGetMetadataResponse = FilesGetMetadataResponses[keyof FilesGetMetadataResponses];
+
+export type FilesDownloadFileData = {
+    body?: never;
+    path?: never;
+    query: {
+        /**
+         * File path
+         */
+        path: string;
+    };
+    url: '/api/files/download';
+};
+
+export type FilesDownloadFileErrors = {
+    400: ApiErrorResponseDto;
+    401: ApiErrorResponseDto;
+    403: ApiErrorResponseDto;
+    404: ApiErrorResponseDto;
+};
+
+export type FilesDownloadFileError = FilesDownloadFileErrors[keyof FilesDownloadFileErrors];
 
 export type FilesGetRootsData = {
     body?: never;
@@ -1059,6 +1259,7 @@ export type FilesDeletePathData = {
     path?: never;
     query: {
         path: string;
+        recursive?: boolean;
     };
     url: '/api/files/delete';
 };
@@ -1076,6 +1277,33 @@ export type FilesDeletePathResponses = {
 };
 
 export type FilesDeletePathResponse = FilesDeletePathResponses[keyof FilesDeletePathResponses];
+
+export type FilesUploadFilesData = {
+    body: {
+        files: Array<Blob | File>;
+    };
+    path?: never;
+    query: {
+        destinationPath: string;
+        overwrite?: boolean;
+    };
+    url: '/api/files/upload';
+};
+
+export type FilesUploadFilesErrors = {
+    400: ApiErrorResponseDto;
+    401: ApiErrorResponseDto;
+    403: ApiErrorResponseDto;
+    404: ApiErrorResponseDto;
+};
+
+export type FilesUploadFilesError = FilesUploadFilesErrors[keyof FilesUploadFilesErrors];
+
+export type FilesUploadFilesResponses = {
+    201: UploadFilesResponseDto;
+};
+
+export type FilesUploadFilesResponse = FilesUploadFilesResponses[keyof FilesUploadFilesResponses];
 
 export type ThreadsListThreadsData = {
     body?: never;

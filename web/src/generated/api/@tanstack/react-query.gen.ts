@@ -3,8 +3,8 @@
 import { type DefaultError, type InfiniteData, infiniteQueryOptions, queryOptions, type UseMutationOptions } from '@tanstack/react-query';
 
 import { client } from '../client.gen';
-import { appGetStatus, authLogin, authLogout, codexStatusGetStatus, codexStatusUpdateApprovalPolicy, codexStatusUpdateSandboxMode, filesAddRoot, filesDeletePath, filesGetMetadata, filesGetRoots, filesReadFile, filesReadTree, filesWriteFile, logsExportDiagnostics, logsListLogs, modelsListModels, type Options, threadsArchiveThread, threadsCompactThread, threadsForkThread, threadsInterruptTurn, threadsListThreads, threadsReadThread, threadsResumeThread, threadsRollbackThread, threadsSetThreadName, threadsStartThread, threadsStartTurn, threadsSteerTurn, threadsUnarchiveThread, tokenUsageReadThreadTokenUsage, turnDiffReadThreadTurnDiffs } from '../sdk.gen';
-import type { AppGetStatusData, AppGetStatusResponse, AuthLoginData, AuthLoginError, AuthLoginResponse, AuthLogoutData, AuthLogoutResponse, CodexStatusGetStatusData, CodexStatusGetStatusError, CodexStatusGetStatusResponse, CodexStatusUpdateApprovalPolicyData, CodexStatusUpdateApprovalPolicyError, CodexStatusUpdateApprovalPolicyResponse, CodexStatusUpdateSandboxModeData, CodexStatusUpdateSandboxModeError, CodexStatusUpdateSandboxModeResponse, FilesAddRootData, FilesAddRootError, FilesAddRootResponse, FilesDeletePathData, FilesDeletePathError, FilesDeletePathResponse, FilesGetMetadataData, FilesGetMetadataError, FilesGetMetadataResponse, FilesGetRootsData, FilesGetRootsError, FilesGetRootsResponse, FilesReadFileData, FilesReadFileError, FilesReadFileResponse, FilesReadTreeData, FilesReadTreeError, FilesReadTreeResponse, FilesWriteFileData, FilesWriteFileError, FilesWriteFileResponse, LogsExportDiagnosticsData, LogsExportDiagnosticsError, LogsExportDiagnosticsResponse, LogsListLogsData, LogsListLogsError, LogsListLogsResponse, ModelsListModelsData, ModelsListModelsError, ModelsListModelsResponse, ThreadsArchiveThreadData, ThreadsArchiveThreadError, ThreadsArchiveThreadResponse, ThreadsCompactThreadData, ThreadsCompactThreadError, ThreadsCompactThreadResponse, ThreadsForkThreadData, ThreadsForkThreadError, ThreadsForkThreadResponse, ThreadsInterruptTurnData, ThreadsInterruptTurnError, ThreadsInterruptTurnResponse, ThreadsListThreadsData, ThreadsListThreadsError, ThreadsListThreadsResponse, ThreadsReadThreadData, ThreadsReadThreadError, ThreadsReadThreadResponse, ThreadsResumeThreadData, ThreadsResumeThreadError, ThreadsResumeThreadResponse, ThreadsRollbackThreadData, ThreadsRollbackThreadError, ThreadsRollbackThreadResponse, ThreadsSetThreadNameData, ThreadsSetThreadNameError, ThreadsSetThreadNameResponse, ThreadsStartThreadData, ThreadsStartThreadError, ThreadsStartThreadResponse, ThreadsStartTurnData, ThreadsStartTurnError, ThreadsStartTurnResponse, ThreadsSteerTurnData, ThreadsSteerTurnError, ThreadsSteerTurnResponse, ThreadsUnarchiveThreadData, ThreadsUnarchiveThreadError, ThreadsUnarchiveThreadResponse, TokenUsageReadThreadTokenUsageData, TokenUsageReadThreadTokenUsageError, TokenUsageReadThreadTokenUsageResponse, TurnDiffReadThreadTurnDiffsData, TurnDiffReadThreadTurnDiffsError, TurnDiffReadThreadTurnDiffsResponse } from '../types.gen';
+import { appGetStatus, authLogin, authLogout, codexStatusGetStatus, codexStatusUpdateApprovalPolicy, codexStatusUpdateSandboxMode, filesAddRoot, filesCopyPath, filesCreateDirectory, filesCreateFile, filesDeletePath, filesDownloadFile, filesGetMetadata, filesGetRoots, filesMovePath, filesReadFile, filesReadTree, filesRenamePath, filesUploadFiles, filesWriteFile, logsExportDiagnostics, logsListLogs, modelsListModels, type Options, threadsArchiveThread, threadsCompactThread, threadsForkThread, threadsInterruptTurn, threadsListThreads, threadsReadThread, threadsResumeThread, threadsRollbackThread, threadsSetThreadName, threadsStartThread, threadsStartTurn, threadsSteerTurn, threadsUnarchiveThread, tokenUsageReadThreadTokenUsage, turnDiffReadThreadTurnDiffs } from '../sdk.gen';
+import type { AppGetStatusData, AppGetStatusResponse, AuthLoginData, AuthLoginError, AuthLoginResponse, AuthLogoutData, AuthLogoutResponse, CodexStatusGetStatusData, CodexStatusGetStatusError, CodexStatusGetStatusResponse, CodexStatusUpdateApprovalPolicyData, CodexStatusUpdateApprovalPolicyError, CodexStatusUpdateApprovalPolicyResponse, CodexStatusUpdateSandboxModeData, CodexStatusUpdateSandboxModeError, CodexStatusUpdateSandboxModeResponse, FilesAddRootData, FilesAddRootError, FilesAddRootResponse, FilesCopyPathData, FilesCopyPathError, FilesCopyPathResponse, FilesCreateDirectoryData, FilesCreateDirectoryError, FilesCreateDirectoryResponse, FilesCreateFileData, FilesCreateFileError, FilesCreateFileResponse, FilesDeletePathData, FilesDeletePathError, FilesDeletePathResponse, FilesDownloadFileData, FilesDownloadFileError, FilesGetMetadataData, FilesGetMetadataError, FilesGetMetadataResponse, FilesGetRootsData, FilesGetRootsError, FilesGetRootsResponse, FilesMovePathData, FilesMovePathError, FilesMovePathResponse, FilesReadFileData, FilesReadFileError, FilesReadFileResponse, FilesReadTreeData, FilesReadTreeError, FilesReadTreeResponse, FilesRenamePathData, FilesRenamePathError, FilesRenamePathResponse, FilesUploadFilesData, FilesUploadFilesError, FilesUploadFilesResponse, FilesWriteFileData, FilesWriteFileError, FilesWriteFileResponse, LogsExportDiagnosticsData, LogsExportDiagnosticsError, LogsExportDiagnosticsResponse, LogsListLogsData, LogsListLogsError, LogsListLogsResponse, ModelsListModelsData, ModelsListModelsError, ModelsListModelsResponse, ThreadsArchiveThreadData, ThreadsArchiveThreadError, ThreadsArchiveThreadResponse, ThreadsCompactThreadData, ThreadsCompactThreadError, ThreadsCompactThreadResponse, ThreadsForkThreadData, ThreadsForkThreadError, ThreadsForkThreadResponse, ThreadsInterruptTurnData, ThreadsInterruptTurnError, ThreadsInterruptTurnResponse, ThreadsListThreadsData, ThreadsListThreadsError, ThreadsListThreadsResponse, ThreadsReadThreadData, ThreadsReadThreadError, ThreadsReadThreadResponse, ThreadsResumeThreadData, ThreadsResumeThreadError, ThreadsResumeThreadResponse, ThreadsRollbackThreadData, ThreadsRollbackThreadError, ThreadsRollbackThreadResponse, ThreadsSetThreadNameData, ThreadsSetThreadNameError, ThreadsSetThreadNameResponse, ThreadsStartThreadData, ThreadsStartThreadError, ThreadsStartThreadResponse, ThreadsStartTurnData, ThreadsStartTurnError, ThreadsStartTurnResponse, ThreadsSteerTurnData, ThreadsSteerTurnError, ThreadsSteerTurnResponse, ThreadsUnarchiveThreadData, ThreadsUnarchiveThreadError, ThreadsUnarchiveThreadResponse, TokenUsageReadThreadTokenUsageData, TokenUsageReadThreadTokenUsageError, TokenUsageReadThreadTokenUsageResponse, TurnDiffReadThreadTurnDiffsData, TurnDiffReadThreadTurnDiffsError, TurnDiffReadThreadTurnDiffsResponse } from '../types.gen';
 
 export type QueryKey<TOptions extends Options> = [
     Pick<TOptions, 'baseUrl' | 'body' | 'headers' | 'path' | 'query'> & {
@@ -180,12 +180,97 @@ export const filesReadFileOptions = (options: Options<FilesReadFileData>) => que
 });
 
 /**
+ * Create a new file
+ */
+export const filesCreateFileMutation = (options?: Partial<Options<FilesCreateFileData>>): UseMutationOptions<FilesCreateFileResponse, FilesCreateFileError, Options<FilesCreateFileData>> => {
+    const mutationOptions: UseMutationOptions<FilesCreateFileResponse, FilesCreateFileError, Options<FilesCreateFileData>> = {
+        mutationFn: async (fnOptions) => {
+            const { data } = await filesCreateFile({
+                ...options,
+                ...fnOptions,
+                throwOnError: true
+            });
+            return data;
+        }
+    };
+    return mutationOptions;
+};
+
+/**
+ * Create a new directory
+ */
+export const filesCreateDirectoryMutation = (options?: Partial<Options<FilesCreateDirectoryData>>): UseMutationOptions<FilesCreateDirectoryResponse, FilesCreateDirectoryError, Options<FilesCreateDirectoryData>> => {
+    const mutationOptions: UseMutationOptions<FilesCreateDirectoryResponse, FilesCreateDirectoryError, Options<FilesCreateDirectoryData>> = {
+        mutationFn: async (fnOptions) => {
+            const { data } = await filesCreateDirectory({
+                ...options,
+                ...fnOptions,
+                throwOnError: true
+            });
+            return data;
+        }
+    };
+    return mutationOptions;
+};
+
+/**
  * Write/save a file
  */
 export const filesWriteFileMutation = (options?: Partial<Options<FilesWriteFileData>>): UseMutationOptions<FilesWriteFileResponse, FilesWriteFileError, Options<FilesWriteFileData>> => {
     const mutationOptions: UseMutationOptions<FilesWriteFileResponse, FilesWriteFileError, Options<FilesWriteFileData>> = {
         mutationFn: async (fnOptions) => {
             const { data } = await filesWriteFile({
+                ...options,
+                ...fnOptions,
+                throwOnError: true
+            });
+            return data;
+        }
+    };
+    return mutationOptions;
+};
+
+/**
+ * Rename a file or directory within the same parent
+ */
+export const filesRenamePathMutation = (options?: Partial<Options<FilesRenamePathData>>): UseMutationOptions<FilesRenamePathResponse, FilesRenamePathError, Options<FilesRenamePathData>> => {
+    const mutationOptions: UseMutationOptions<FilesRenamePathResponse, FilesRenamePathError, Options<FilesRenamePathData>> = {
+        mutationFn: async (fnOptions) => {
+            const { data } = await filesRenamePath({
+                ...options,
+                ...fnOptions,
+                throwOnError: true
+            });
+            return data;
+        }
+    };
+    return mutationOptions;
+};
+
+/**
+ * Copy a file or directory
+ */
+export const filesCopyPathMutation = (options?: Partial<Options<FilesCopyPathData>>): UseMutationOptions<FilesCopyPathResponse, FilesCopyPathError, Options<FilesCopyPathData>> => {
+    const mutationOptions: UseMutationOptions<FilesCopyPathResponse, FilesCopyPathError, Options<FilesCopyPathData>> = {
+        mutationFn: async (fnOptions) => {
+            const { data } = await filesCopyPath({
+                ...options,
+                ...fnOptions,
+                throwOnError: true
+            });
+            return data;
+        }
+    };
+    return mutationOptions;
+};
+
+/**
+ * Move a file or directory
+ */
+export const filesMovePathMutation = (options?: Partial<Options<FilesMovePathData>>): UseMutationOptions<FilesMovePathResponse, FilesMovePathError, Options<FilesMovePathData>> => {
+    const mutationOptions: UseMutationOptions<FilesMovePathResponse, FilesMovePathError, Options<FilesMovePathData>> = {
+        mutationFn: async (fnOptions) => {
+            const { data } = await filesMovePath({
                 ...options,
                 ...fnOptions,
                 throwOnError: true
@@ -212,6 +297,24 @@ export const filesGetMetadataOptions = (options: Options<FilesGetMetadataData>) 
         return data;
     },
     queryKey: filesGetMetadataQueryKey(options)
+});
+
+export const filesDownloadFileQueryKey = (options: Options<FilesDownloadFileData>) => createQueryKey('filesDownloadFile', options);
+
+/**
+ * Download a file
+ */
+export const filesDownloadFileOptions = (options: Options<FilesDownloadFileData>) => queryOptions<unknown, FilesDownloadFileError, unknown, ReturnType<typeof filesDownloadFileQueryKey>>({
+    queryFn: async ({ queryKey, signal }) => {
+        const { data } = await filesDownloadFile({
+            ...options,
+            ...queryKey[0],
+            signal,
+            throwOnError: true
+        });
+        return data;
+    },
+    queryKey: filesDownloadFileQueryKey(options)
 });
 
 export const filesGetRootsQueryKey = (options?: Options<FilesGetRootsData>) => createQueryKey('filesGetRoots', options);
@@ -250,12 +353,29 @@ export const filesAddRootMutation = (options?: Partial<Options<FilesAddRootData>
 };
 
 /**
- * Delete a file or empty directory
+ * Delete a file, symlink, or directory
  */
 export const filesDeletePathMutation = (options?: Partial<Options<FilesDeletePathData>>): UseMutationOptions<FilesDeletePathResponse, FilesDeletePathError, Options<FilesDeletePathData>> => {
     const mutationOptions: UseMutationOptions<FilesDeletePathResponse, FilesDeletePathError, Options<FilesDeletePathData>> = {
         mutationFn: async (fnOptions) => {
             const { data } = await filesDeletePath({
+                ...options,
+                ...fnOptions,
+                throwOnError: true
+            });
+            return data;
+        }
+    };
+    return mutationOptions;
+};
+
+/**
+ * Upload one or more files into a directory
+ */
+export const filesUploadFilesMutation = (options?: Partial<Options<FilesUploadFilesData>>): UseMutationOptions<FilesUploadFilesResponse, FilesUploadFilesError, Options<FilesUploadFilesData>> => {
+    const mutationOptions: UseMutationOptions<FilesUploadFilesResponse, FilesUploadFilesError, Options<FilesUploadFilesData>> = {
+        mutationFn: async (fnOptions) => {
+            const { data } = await filesUploadFiles({
                 ...options,
                 ...fnOptions,
                 throwOnError: true

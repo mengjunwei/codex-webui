@@ -1,5 +1,6 @@
 import {
   BadRequestException,
+  ConflictException,
   ForbiddenException,
   NotFoundException,
 } from '@nestjs/common';
@@ -8,7 +9,8 @@ import { Test } from '@nestjs/testing';
 import * as fs from 'node:fs/promises';
 import * as os from 'node:os';
 import * as path from 'node:path';
-import { FilesService } from './files.service';
+import { Readable } from 'node:stream';
+import { FilesService, type FileUploadInput } from './files.service';
 
 describe('FilesService', () => {
   let service: FilesService;
@@ -111,6 +113,49 @@ describe('FilesService', () => {
     });
   });
 
+  describe('createFile', () => {
+    it('should create a new empty file by default', async () => {
+      const target = path.join(tmpDir, 'created-empty.txt');
+      const result = await service.createFile(target);
+      expect(result.path).toBe(target);
+      expect(result.mtime).toBeGreaterThan(0);
+      await expect(fs.readFile(target, 'utf-8')).resolves.toBe('');
+    });
+
+    it('should reject existing targets unless overwrite is explicit', async () => {
+      await expect(
+        service.createFile(path.join(tmpDir, 'hello.txt'), 'replace'),
+      ).rejects.toThrow(ConflictException);
+    });
+
+    it('should reject targets outside workspace roots', async () => {
+      const outsideRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'outside-'));
+      const resolvedOutside = await fs.realpath(outsideRoot);
+      try {
+        await expect(
+          service.createFile(path.join(resolvedOutside, 'blocked.txt')),
+        ).rejects.toThrow(ForbiddenException);
+      } finally {
+        await fs.rm(resolvedOutside, { recursive: true, force: true });
+      }
+    });
+  });
+
+  describe('createDirectory', () => {
+    it('should create nested directories when recursive is true', async () => {
+      const target = path.join(tmpDir, 'recursive-a', 'recursive-b');
+      const result = await service.createDirectory(target, true);
+      expect(result.path).toBe(target);
+      await expect(fs.stat(target)).resolves.toMatchObject({});
+    });
+
+    it('should reject existing directories unless overwrite is explicit', async () => {
+      await expect(
+        service.createDirectory(path.join(tmpDir, 'subdir')),
+      ).rejects.toThrow(ConflictException);
+    });
+  });
+
   describe('writeFile', () => {
     it('should write file content', async () => {
       const target = path.join(tmpDir, 'new-file.txt');
@@ -129,6 +174,95 @@ describe('FilesService', () => {
     });
   });
 
+  describe('renamePath', () => {
+    it('should rename an entry within the same parent', async () => {
+      const source = path.join(tmpDir, 'rename-source.txt');
+      await fs.writeFile(source, 'rename me');
+
+      const result = await service.renamePath(source, 'rename-target.txt');
+      expect(result.oldPath).toBe(source);
+      expect(result.newPath).toBe(path.join(tmpDir, 'rename-target.txt'));
+      await expect(fs.readFile(result.newPath!, 'utf-8')).resolves.toBe(
+        'rename me',
+      );
+    });
+
+    it('should reject path traversal in the new name', async () => {
+      await expect(
+        service.renamePath(path.join(tmpDir, 'hello.txt'), '../bad.txt'),
+      ).rejects.toThrow(BadRequestException);
+    });
+  });
+
+  describe('copyPath', () => {
+    it('should copy directories recursively', async () => {
+      const source = path.join(tmpDir, 'copy-source');
+      const destination = path.join(tmpDir, 'copy-destination');
+      await fs.mkdir(source);
+      await fs.writeFile(path.join(source, 'nested.txt'), 'copy data');
+
+      const result = await service.copyPath(source, destination);
+      expect(result.sourcePath).toBe(source);
+      expect(result.destinationPath).toBe(destination);
+      await expect(
+        fs.readFile(path.join(destination, 'nested.txt'), 'utf-8'),
+      ).resolves.toBe('copy data');
+    });
+
+    it('should reject copying a directory into itself', async () => {
+      const source = path.join(tmpDir, 'copy-self-source');
+      const child = path.join(source, 'child');
+      await fs.mkdir(child, { recursive: true });
+
+      await expect(
+        service.copyPath(source, path.join(child, 'copy')),
+      ).rejects.toThrow(BadRequestException);
+    });
+
+    it('should reject destinations outside workspace roots', async () => {
+      const outsideRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'outside-'));
+      const resolvedOutside = await fs.realpath(outsideRoot);
+      try {
+        await expect(
+          service.copyPath(
+            path.join(tmpDir, 'hello.txt'),
+            path.join(resolvedOutside, 'hello-copy.txt'),
+          ),
+        ).rejects.toThrow(ForbiddenException);
+      } finally {
+        await fs.rm(resolvedOutside, { recursive: true, force: true });
+      }
+    });
+  });
+
+  describe('movePath', () => {
+    it('should move files within the same device', async () => {
+      const source = path.join(tmpDir, 'move-source.txt');
+      const destination = path.join(tmpDir, 'move-target.txt');
+      await fs.writeFile(source, 'move data');
+
+      const result = await service.movePath(source, destination);
+      expect(result.oldPath).toBe(source);
+      expect(result.newPath).toBe(destination);
+      await expect(fs.readFile(destination, 'utf-8')).resolves.toBe(
+        'move data',
+      );
+      await expect(fs.stat(source)).rejects.toThrow();
+    });
+
+    it('should reject moving to an existing target without overwrite', async () => {
+      const source = path.join(tmpDir, 'move-conflict-src.txt');
+      const destination = path.join(tmpDir, 'hello.txt'); // already exists
+      await fs.writeFile(source, 'conflict data');
+
+      await expect(service.movePath(source, destination)).rejects.toThrow(
+        ConflictException,
+      );
+      // Source untouched
+      await expect(fs.readFile(source, 'utf-8')).resolves.toBe('conflict data');
+    });
+  });
+
   describe('getMetadata', () => {
     it('should return file metadata', async () => {
       const meta = await service.getMetadata(path.join(tmpDir, 'hello.txt'));
@@ -140,6 +274,99 @@ describe('FilesService', () => {
     it('should return directory metadata', async () => {
       const meta = await service.getMetadata(tmpDir);
       expect(meta.type).toBe('directory');
+    });
+  });
+
+  describe('deletePath', () => {
+    it('should delete non-empty directories when recursive is true', async () => {
+      const target = path.join(tmpDir, 'recursive-delete');
+      await fs.mkdir(target);
+      await fs.writeFile(path.join(target, 'child.txt'), 'delete me');
+
+      await service.deletePath(target, true);
+      await expect(fs.stat(target)).rejects.toThrow();
+    });
+
+    it('should reject non-empty directories when recursive is false', async () => {
+      const target = path.join(tmpDir, 'non-recursive-delete');
+      await fs.mkdir(target);
+      await fs.writeFile(path.join(target, 'child.txt'), 'keep me');
+
+      await expect(service.deletePath(target)).rejects.toThrow(
+        BadRequestException,
+      );
+    });
+
+    it('should unlink symlinks without deleting their targets', async () => {
+      const realFile = path.join(tmpDir, 'symlink-target.txt');
+      const linkFile = path.join(tmpDir, 'symlink-link.txt');
+      await fs.writeFile(realFile, 'target data');
+      await fs.symlink(realFile, linkFile);
+
+      await service.deletePath(linkFile);
+
+      await expect(fs.lstat(linkFile)).rejects.toThrow();
+      await expect(fs.readFile(realFile, 'utf-8')).resolves.toBe('target data');
+    });
+  });
+
+  describe('prepareDownload', () => {
+    it('should prepare a safe file stream for download', async () => {
+      const result = await service.prepareDownload(
+        path.join(tmpDir, 'hello.txt'),
+      );
+      expect(result.filename).toBe('hello.txt');
+      expect(result.size).toBe(11);
+      result.stream.destroy();
+    });
+
+    it('should reject directories', async () => {
+      await expect(service.prepareDownload(tmpDir)).rejects.toThrow(
+        BadRequestException,
+      );
+    });
+  });
+
+  describe('saveUploadedFiles', () => {
+    it('should preserve folder upload hierarchy', async () => {
+      const result = await service.saveUploadedFiles(
+        tmpDir,
+        uploadInputs([
+          { relativePath: 'upload-folder/nested.txt', content: 'upload data' },
+        ]),
+      );
+
+      expect(result.files).toHaveLength(1);
+      await expect(
+        fs.readFile(path.join(tmpDir, 'upload-folder', 'nested.txt'), 'utf-8'),
+      ).resolves.toBe('upload data');
+    });
+
+    it('should reject upload path traversal', async () => {
+      await expect(
+        service.saveUploadedFiles(
+          tmpDir,
+          uploadInputs([{ relativePath: '../evil.txt', content: 'blocked' }]),
+        ),
+      ).rejects.toThrow(BadRequestException);
+    });
+
+    it('should reject empty upload path segments', async () => {
+      await expect(
+        service.saveUploadedFiles(
+          tmpDir,
+          uploadInputs([{ relativePath: 'bad//file.txt', content: 'blocked' }]),
+        ),
+      ).rejects.toThrow(BadRequestException);
+    });
+
+    it('should reject overwrite by default', async () => {
+      await expect(
+        service.saveUploadedFiles(
+          tmpDir,
+          uploadInputs([{ relativePath: 'hello.txt', content: 'blocked' }]),
+        ),
+      ).rejects.toThrow(ConflictException);
     });
   });
 
@@ -181,3 +408,21 @@ describe('FilesService', () => {
     });
   });
 });
+
+interface UploadFixture {
+  relativePath: string;
+  content: string;
+}
+
+// eslint-disable-next-line @typescript-eslint/require-await
+async function* uploadInputs(
+  fixtures: UploadFixture[],
+): AsyncIterable<FileUploadInput> {
+  for (const fixture of fixtures) {
+    yield {
+      filename: path.basename(fixture.relativePath),
+      relativePath: fixture.relativePath,
+      stream: Readable.from([fixture.content]),
+    };
+  }
+}

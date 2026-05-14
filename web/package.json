@@ -11,6 +11,8 @@
     "generate:api": "openapi-ts"
   },
   "dependencies": {
+    "@dnd-kit/dom": "^0.4.0",
+    "@dnd-kit/react": "^0.4.0",
     "@fontsource-variable/geist": "^5.2.8",
     "@monaco-editor/react": "^4.7.0",
     "@tailwindcss/vite": "^4.3.0",
