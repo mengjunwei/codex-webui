@@ -63,7 +63,7 @@ export function ChatHeader({ dark, onToggleDark, onToggleDiagnostics }: Props) {
 
   return (
     <>
-      <header className="glass sticky top-0 z-10 flex items-center gap-3 px-4 py-3 md:px-6">
+      <header className="glass-4 sticky top-0 z-10 flex items-center gap-3 px-4 py-3 md:px-6">
         <div className="min-w-0 flex-1">
           {threadId ? (
             <div className="flex min-w-0 items-center gap-2">

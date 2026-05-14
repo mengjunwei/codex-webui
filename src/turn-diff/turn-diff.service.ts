@@ -42,11 +42,11 @@ export class TurnDiffService implements OnModuleInit, OnModuleDestroy {
       'notification',
       (notification: ServerNotification) => {
         if (notification.method === 'turn/diff/updated') {
-          this.bufferDiff(notification.params as Record<string, unknown>);
+          this.bufferDiff(notification.params);
           return;
         }
         if (notification.method === 'turn/completed') {
-          this.flushTurn(notification.params as Record<string, unknown>);
+          this.flushTurn(notification.params);
         }
       },
     );

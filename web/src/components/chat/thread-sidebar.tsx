@@ -271,7 +271,7 @@ export function ThreadSidebar({ activeView, onViewChange }: Props) {
 
   // ── Render ──────────────────────────────────────────────────────────
   return (
-    <aside className="flex w-64 shrink-0 flex-col border-r border-border bg-muted/30">
+    <aside className="relative z-10 flex w-64 shrink-0 flex-col border-r border-[var(--glass-border-subtle)] bg-card/80">
       {/* Global actions */}
       <div className="space-y-0.5 px-2 py-2">
         <button

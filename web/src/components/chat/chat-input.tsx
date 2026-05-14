@@ -119,7 +119,7 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput(
   );
 
   return (
-    <footer className="glass sticky bottom-0 z-10 px-4 py-3 md:px-6">
+    <footer className="glass-4 sticky bottom-0 z-10 px-4 py-3 md:px-6">
       {readOnly && (
         <p className="mb-2 rounded-lg bg-muted px-3 py-2 text-center text-xs text-muted-foreground">
           {t('Archived threads are read-only. Unarchive or fork to continue.')}

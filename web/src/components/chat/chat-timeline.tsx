@@ -134,7 +134,7 @@ export function ChatTimeline({ onEditMessage }: Props) {
                   animate="visible"
                   className="group/user mb-4 flex flex-col items-end"
                 >
-                  <div className="max-w-2xl rounded-2xl bg-blue-600 px-4 py-3 text-white shadow-md [&_a]:text-blue-200 [&_a]:underline [&_code]:bg-white/15">
+                  <div className="max-w-2xl rounded-2xl bg-blue-600 px-4 py-3 text-white [&_a]:text-blue-200 [&_a]:underline [&_code]:bg-white/15" style={{ boxShadow: '0 8px 24px rgba(59, 130, 246, 0.20), inset 0 1px 0 rgba(255, 255, 255, 0.18), inset 0 -1px 0 rgba(0, 0, 0, 0.12)' }}>
                     <MarkdownRenderer content={entry.content} completed={true} />
                   </div>
                   {canRollback && numTurns > 0 && (

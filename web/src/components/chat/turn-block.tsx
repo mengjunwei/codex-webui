@@ -63,12 +63,12 @@ export function TurnBlock({ entry }: Props) {
       className="mb-6 flex gap-3"
     >
       <Avatar className="mt-1 h-8 w-8 shrink-0">
-        <AvatarFallback className="bg-muted">
+        <AvatarFallback className="glass-1 bg-transparent">
           <Bot className="h-4 w-4" />
         </AvatarFallback>
       </Avatar>
 
-      <div className="min-w-0 flex-1 space-y-2">
+      <div className="glass-1 min-w-0 flex-1 space-y-2 rounded-2xl px-4 py-3">
         {entry.items.map((item) => (
           <ItemWithApproval key={item.itemId} item={item} />
         ))}
