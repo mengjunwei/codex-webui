@@ -6,7 +6,7 @@
 import { create } from 'zustand';
 import { getSocket } from '../socket';
 import type { TimelineEntry, TurnItem } from '../types/timeline';
-import type { ApprovalRequest } from '../types/approval';
+import type { ApprovalRequest, ResolvableApprovalDecision } from '../types/approval';
 import type { ThreadDto, TurnDto, FileUpdateChangeDto } from '../generated/api';
 import type { ThreadTokenUsage, ThreadStatusType } from '../types/codex-notifications';
 
@@ -160,7 +160,7 @@ interface TimelineState {
   expandReasoning: (itemId: string) => void;
   collapseReasoning: (itemId: string) => void;
   addApproval: (approval: ApprovalRequest) => void;
-  resolveApproval: (itemId: string, decision: 'accepted' | 'declined') => void;
+  resolveApproval: (itemId: string, decision: ResolvableApprovalDecision) => void;
   /** Stores token usage for a turn and updates latest snapshot. */
   setTokenUsage: (turnId: string, usage: ThreadTokenUsage) => void;
   /** Updates active thread status. */

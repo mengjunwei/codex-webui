@@ -1,7 +1,7 @@
 /**
  * Renders a file change item with collapsible diff and inline approval controls.
  * Default collapsed — header shows file path, approval status, and +/- stats.
- * When a pending approval exists, accept/decline buttons appear in the header.
+ * When a pending approval exists, accept/acceptForSession/decline/cancel buttons appear.
  */
 import { useState } from 'react';
 import {
@@ -9,7 +9,9 @@ import {
   Loader2,
   ChevronDown,
   Check,
+  CheckCheck,
   X,
+  Ban,
   ShieldAlert,
   CheckCircle,
 } from 'lucide-react';
@@ -18,13 +20,23 @@ import { Button } from '@/components/ui/button';
 import { getSocket } from '@/socket';
 import { useTimelineStore } from '@/stores/timeline-store';
 import type { TurnItem } from '@/types/timeline';
-import type { ApprovalRequest } from '@/types/approval';
+import type { ApprovalRequest, ResolvableApprovalDecision } from '@/types/approval';
 import { cn } from '@/lib/utils';
 
 interface Props {
   item: TurnItem;
   /** Optional approval request associated with this file change. */
   approval?: ApprovalRequest;
+}
+
+/** Maps UI decision to Codex JSON-RPC decision value. */
+function toRpcDecision(decision: ResolvableApprovalDecision): string {
+  switch (decision) {
+    case 'accepted': return 'accept';
+    case 'acceptedForSession': return 'acceptForSession';
+    case 'declined': return 'decline';
+    case 'cancelled': return 'cancel';
+  }
 }
 
 export function FileChangeItem({ item, approval }: Props) {
@@ -43,16 +55,16 @@ export function FileChangeItem({ item, approval }: Props) {
   ).length;
 
   const isPending = approval?.status === 'pending';
-  const isAccepted = approval?.status === 'accepted';
   const isDeclined = approval?.status === 'declined';
+  const isCancelled = approval?.status === 'cancelled';
   const isResolved = approval?.status === 'resolved';
 
-  const handleDecision = (decision: 'accepted' | 'declined') => {
+  const handleDecision = (decision: ResolvableApprovalDecision) => {
     if (!approval) return;
     const socket = getSocket();
     socket.emit('codex.serverResponse', {
       id: approval.requestId,
-      result: { decision: decision === 'accepted' ? 'accept' : 'decline' },
+      result: { decision: toRpcDecision(decision) },
     });
     resolveApproval(approval.itemId, decision);
   };
@@ -95,14 +107,24 @@ export function FileChangeItem({ item, approval }: Props) {
         )}
 
         {/* Approval status badges (non-pending) */}
-        {isAccepted && (
+        {approval?.status === 'accepted' && (
           <span className="ml-auto flex shrink-0 items-center gap-1 text-green-500">
             <Check className="h-3 w-3" /> {t('Accepted')}
+          </span>
+        )}
+        {approval?.status === 'acceptedForSession' && (
+          <span className="ml-auto flex shrink-0 items-center gap-1 text-green-500">
+            <CheckCheck className="h-3 w-3" /> {t('Accepted for session')}
           </span>
         )}
         {isDeclined && (
           <span className="ml-auto flex shrink-0 items-center gap-1 text-red-500">
             <X className="h-3 w-3" /> {t('Declined')}
+          </span>
+        )}
+        {isCancelled && (
+          <span className="ml-auto flex shrink-0 items-center gap-1 text-orange-500">
+            <Ban className="h-3 w-3" /> {t('Cancelled')}
           </span>
         )}
         {isResolved && (
@@ -126,7 +148,7 @@ export function FileChangeItem({ item, approval }: Props) {
 
       {/* Pending approval bar */}
       {isPending && (
-        <div className="flex items-center gap-2 border-t border-yellow-500/30 px-3 py-1.5">
+        <div className="flex flex-wrap items-center gap-2 border-t border-yellow-500/30 px-3 py-1.5">
           <ShieldAlert className="h-3.5 w-3.5 text-yellow-500" />
           <span className="text-xs font-medium text-yellow-500">
             {t('File Change Approval')}
@@ -142,15 +164,12 @@ export function FileChangeItem({ item, approval }: Props) {
               <code className="rounded bg-muted px-1">{approval.grantRoot}</code>
             </span>
           )}
-          <div className="ml-auto flex gap-1.5">
+          <div className="ml-auto flex flex-wrap justify-end gap-1.5">
             <Button
               size="sm"
               variant="outline"
               className="h-6 border-green-500/50 px-2 text-xs text-green-500 hover:bg-green-500/10"
-              onClick={(e) => {
-                e.stopPropagation();
-                handleDecision('accepted');
-              }}
+              onClick={(e) => { e.stopPropagation(); handleDecision('accepted'); }}
             >
               <Check className="mr-1 h-3 w-3" />
               {t('Accept')}
@@ -158,14 +177,29 @@ export function FileChangeItem({ item, approval }: Props) {
             <Button
               size="sm"
               variant="outline"
+              className="h-6 border-green-500/30 px-2 text-xs text-green-600 hover:bg-green-500/10"
+              onClick={(e) => { e.stopPropagation(); handleDecision('acceptedForSession'); }}
+            >
+              <CheckCheck className="mr-1 h-3 w-3" />
+              {t('Accept for session')}
+            </Button>
+            <Button
+              size="sm"
+              variant="outline"
               className="h-6 border-red-500/50 px-2 text-xs text-red-500 hover:bg-red-500/10"
-              onClick={(e) => {
-                e.stopPropagation();
-                handleDecision('declined');
-              }}
+              onClick={(e) => { e.stopPropagation(); handleDecision('declined'); }}
             >
               <X className="mr-1 h-3 w-3" />
               {t('Decline')}
+            </Button>
+            <Button
+              size="sm"
+              variant="outline"
+              className="h-6 border-orange-500/50 px-2 text-xs text-orange-500 hover:bg-orange-500/10"
+              onClick={(e) => { e.stopPropagation(); handleDecision('cancelled'); }}
+            >
+              <Ban className="mr-1 h-3 w-3" />
+              {t('Cancel')}
             </Button>
           </div>
         </div>

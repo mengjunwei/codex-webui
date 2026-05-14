@@ -10,7 +10,33 @@ import { useConnectionStore } from '../stores/connection-store';
 import { useTimelineStore } from '../stores/timeline-store';
 import { handleNotification, type NotificationContext } from './notification-handlers';
 import { tokenUsageReadThreadTokenUsage, turnDiffReadThreadTurnDiffs } from '@/generated/api/sdk.gen';
+import type { NetworkPolicyAmendment, RawCommandDecision } from '@/types/approval';
 import i18n from '@/i18n';
+
+/** Parses availableDecisions from raw socket params with runtime validation. */
+const rawSimpleDecisions = new Set(['accept', 'acceptForSession', 'decline', 'cancel']);
+
+function parseAvailableDecisions(value: unknown): RawCommandDecision[] | null {
+  if (!Array.isArray(value)) return null;
+  return value.filter((d): d is RawCommandDecision => {
+    if (typeof d === 'string') return rawSimpleDecisions.has(d);
+    return d !== null && typeof d === 'object' &&
+      ('acceptWithExecpolicyAmendment' in d || 'applyNetworkPolicyAmendment' in d);
+  });
+}
+
+function parseStringArray(value: unknown): string[] | null {
+  return Array.isArray(value) ? value.filter((s): s is string => typeof s === 'string') : null;
+}
+
+function parseNetworkAmendments(value: unknown): NetworkPolicyAmendment[] | null {
+  if (!Array.isArray(value)) return null;
+  return value.filter((item): item is NetworkPolicyAmendment => {
+    if (item === null || typeof item !== 'object') return false;
+    const r = item as Record<string, unknown>;
+    return typeof r.host === 'string' && (r.action === 'allow' || r.action === 'deny');
+  });
+}
 
 type CodexLifecycleEvent =
   | { type: 'appServerRestarting'; generation: number; delayMs: number }
@@ -150,6 +176,9 @@ export function useCodexSocket(enabled = true) {
             command: (params.command as string) ?? null,
             cwd: (params.cwd as string) ?? null,
             reason: (params.reason as string) ?? null,
+            availableDecisions: parseAvailableDecisions(params.availableDecisions),
+            proposedExecpolicyAmendment: parseStringArray(params.proposedExecpolicyAmendment),
+            proposedNetworkPolicyAmendments: parseNetworkAmendments(params.proposedNetworkPolicyAmendments),
           });
         }
 

@@ -1,44 +1,112 @@
 /**
  * Renders an approval request card for command execution or file change.
- * Shows the command/reason and Accept/Decline buttons when pending.
- * For fileChange, looks up the related turn item to display file path and diff.
+ * Buttons are dynamically rendered from server-provided availableDecisions.
+ * Proposed exec/network amendments are shown when the server includes them.
  */
-import { ShieldAlert, Check, X, Terminal, FileCode, CheckCircle } from 'lucide-react';
+import {
+  ShieldAlert, Check, CheckCheck, X, Ban, Terminal, FileCode,
+  CheckCircle, Shield, Globe,
+} from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { Button } from '@/components/ui/button';
 import { getSocket } from '@/socket';
 import { useTimelineStore } from '@/stores/timeline-store';
-import type { ApprovalRequest } from '@/types/approval';
+import type {
+  ApprovalRequest,
+  ResolvableApprovalDecision,
+  RawCommandDecision,
+} from '@/types/approval';
 import { cn } from '@/lib/utils';
 
 interface Props {
   approval: ApprovalRequest;
 }
 
+/** Maps UI decision to Codex JSON-RPC decision value. */
+function toRpcDecision(decision: ResolvableApprovalDecision): string {
+  switch (decision) {
+    case 'accepted': return 'accept';
+    case 'acceptedForSession': return 'acceptForSession';
+    case 'declined': return 'decline';
+    case 'cancelled': return 'cancel';
+  }
+}
+
+/** Checks if a raw decision string matches a simple decision type. */
+function hasSimpleDecision(decisions: RawCommandDecision[] | null | undefined, key: string): boolean {
+  return decisions?.some((d) => d === key) ?? false;
+}
+
+/** Checks if the available decisions include an exec policy amendment option. */
+function hasExecAmendment(decisions: RawCommandDecision[] | null | undefined): boolean {
+  return decisions?.some((d) => typeof d === 'object' && 'acceptWithExecpolicyAmendment' in d) ?? false;
+}
+
+/** Checks if the available decisions include a network policy amendment option. */
+function hasNetworkAmendment(decisions: RawCommandDecision[] | null | undefined): boolean {
+  return decisions?.some((d) => typeof d === 'object' && 'applyNetworkPolicyAmendment' in d) ?? false;
+}
+
 export function ApprovalItem({ approval }: Props) {
   const { t } = useTranslation();
   const resolveApproval = useTimelineStore((s) => s.resolveApproval);
+  const avail = approval.availableDecisions;
 
-  const handleDecision = (decision: 'accepted' | 'declined') => {
+  const handleDecision = (decision: ResolvableApprovalDecision) => {
     const socket = getSocket();
-    const responseDecision = decision === 'accepted' ? 'accept' : 'decline';
     socket.emit('codex.serverResponse', {
       id: approval.requestId,
-      result: { decision: responseDecision },
+      result: { decision: toRpcDecision(decision) },
     });
     resolveApproval(approval.itemId, decision);
   };
 
+  const handleExecAmendment = () => {
+    const patterns = approval.proposedExecpolicyAmendment;
+    if (!patterns?.length) return;
+    const socket = getSocket();
+    socket.emit('codex.serverResponse', {
+      id: approval.requestId,
+      result: {
+        decision: { acceptWithExecpolicyAmendment: { execpolicy_amendment: patterns } },
+      },
+    });
+    resolveApproval(approval.itemId, 'accepted');
+  };
+
+  const handleNetworkAmendment = (index: number) => {
+    const amendment = approval.proposedNetworkPolicyAmendments?.[index];
+    if (!amendment) return;
+    const socket = getSocket();
+    socket.emit('codex.serverResponse', {
+      id: approval.requestId,
+      result: {
+        decision: { applyNetworkPolicyAmendment: { network_policy_amendment: amendment } },
+      },
+    });
+    resolveApproval(approval.itemId, 'accepted');
+  };
+
   const isPending = approval.status === 'pending';
-  const isAccepted = approval.status === 'accepted';
+  const isAccepted = approval.status === 'accepted' || approval.status === 'acceptedForSession';
   const isDeclined = approval.status === 'declined';
+  const isCancelled = approval.status === 'cancelled';
   const isResolved = approval.status === 'resolved';
 
   const Icon = approval.kind === 'commandExecution' ? Terminal : FileCode;
-  const label =
-    approval.kind === 'commandExecution'
-      ? t('Command Approval')
-      : t('File Change Approval');
+  const label = approval.kind === 'commandExecution'
+    ? t('Command Approval')
+    : t('File Change Approval');
+
+  // Legacy approvals may omit availableDecisions — fallback to accept/decline only.
+  // Session-level (acceptForSession/cancel) and amendments require explicit server permission.
+  const hasExplicitList = Array.isArray(avail);
+  const showAccept = !hasExplicitList || hasSimpleDecision(avail, 'accept');
+  const showAcceptForSession = hasSimpleDecision(avail, 'acceptForSession');
+  const showDecline = !hasExplicitList || hasSimpleDecision(avail, 'decline');
+  const showCancel = hasSimpleDecision(avail, 'cancel');
+  const showExec = hasExecAmendment(avail) && Boolean(approval.proposedExecpolicyAmendment?.length);
+  const showNetwork = hasNetworkAmendment(avail) && Boolean(approval.proposedNetworkPolicyAmendments?.length);
 
   return (
     <div
@@ -47,6 +115,7 @@ export function ApprovalItem({ approval }: Props) {
         isPending && 'border-yellow-500/50 bg-yellow-500/5',
         isAccepted && 'border-green-500/30 bg-green-500/5',
         isDeclined && 'border-red-500/30 bg-red-500/5',
+        isCancelled && 'border-orange-500/30 bg-orange-500/5',
         isResolved && 'border-muted bg-muted/5',
       )}
     >
@@ -58,18 +127,29 @@ export function ApprovalItem({ approval }: Props) {
             isPending && 'text-yellow-500',
             isAccepted && 'text-green-500',
             isDeclined && 'text-red-500',
+            isCancelled && 'text-orange-500',
             isResolved && 'text-muted-foreground',
           )}
         />
         <span className="font-medium">{label}</span>
-        {isAccepted && (
+        {approval.status === 'accepted' && (
           <span className="ml-auto flex items-center gap-1 text-xs text-green-500">
             <Check className="h-3 w-3" /> {t('Accepted')}
+          </span>
+        )}
+        {approval.status === 'acceptedForSession' && (
+          <span className="ml-auto flex items-center gap-1 text-xs text-green-500">
+            <CheckCheck className="h-3 w-3" /> {t('Accepted for session')}
           </span>
         )}
         {isDeclined && (
           <span className="ml-auto flex items-center gap-1 text-xs text-red-500">
             <X className="h-3 w-3" /> {t('Declined')}
+          </span>
+        )}
+        {isCancelled && (
+          <span className="ml-auto flex items-center gap-1 text-xs text-orange-500">
+            <Ban className="h-3 w-3" /> {t('Cancelled')}
           </span>
         )}
         {isResolved && (
@@ -108,25 +188,104 @@ export function ApprovalItem({ approval }: Props) {
 
         {/* Action buttons */}
         {isPending && (
-          <div className="flex gap-2 pt-1">
-            <Button
-              size="sm"
-              variant="outline"
-              className="h-7 border-green-500/50 text-green-500 hover:bg-green-500/10"
-              onClick={() => handleDecision('accepted')}
-            >
-              <Check className="mr-1 h-3 w-3" />
-              {t('Accept')}
-            </Button>
-            <Button
-              size="sm"
-              variant="outline"
-              className="h-7 border-red-500/50 text-red-500 hover:bg-red-500/10"
-              onClick={() => handleDecision('declined')}
-            >
-              <X className="mr-1 h-3 w-3" />
-              {t('Decline')}
-            </Button>
+          <div className="space-y-2 pt-1">
+            <div className="flex flex-wrap gap-2">
+              {showAccept && (
+                <Button
+                  size="sm"
+                  variant="outline"
+                  className="h-7 border-green-500/50 text-green-500 hover:bg-green-500/10"
+                  onClick={() => handleDecision('accepted')}
+                >
+                  <Check className="mr-1 h-3 w-3" />
+                  {t('Accept')}
+                </Button>
+              )}
+              {showAcceptForSession && (
+                <Button
+                  size="sm"
+                  variant="outline"
+                  className="h-7 border-green-500/30 text-green-600 hover:bg-green-500/10"
+                  onClick={() => handleDecision('acceptedForSession')}
+                >
+                  <CheckCheck className="mr-1 h-3 w-3" />
+                  {t('Accept for session')}
+                </Button>
+              )}
+              {showDecline && (
+                <Button
+                  size="sm"
+                  variant="outline"
+                  className="h-7 border-red-500/50 text-red-500 hover:bg-red-500/10"
+                  onClick={() => handleDecision('declined')}
+                >
+                  <X className="mr-1 h-3 w-3" />
+                  {t('Decline')}
+                </Button>
+              )}
+              {showCancel && (
+                <Button
+                  size="sm"
+                  variant="outline"
+                  className="h-7 border-orange-500/50 text-orange-500 hover:bg-orange-500/10"
+                  onClick={() => handleDecision('cancelled')}
+                >
+                  <Ban className="mr-1 h-3 w-3" />
+                  {t('Cancel')}
+                </Button>
+              )}
+            </div>
+
+            {/* Server-proposed exec policy amendment */}
+            {showExec && (
+              <div className="space-y-1 rounded border border-border bg-muted/30 p-2">
+                <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
+                  <Shield className="h-3 w-3" />
+                  {t('Allow similar commands:')}
+                </div>
+                <div className="space-y-0.5">
+                  {approval.proposedExecpolicyAmendment!.map((pattern, i) => (
+                    <code key={i} className="block rounded bg-muted px-1.5 py-0.5 font-mono text-xs">
+                      {pattern}
+                    </code>
+                  ))}
+                </div>
+                <Button
+                  size="sm"
+                  variant="outline"
+                  className="h-6 border-green-500/30 text-xs text-green-600 hover:bg-green-500/10"
+                  onClick={handleExecAmendment}
+                >
+                  <Shield className="mr-1 h-3 w-3" />
+                  {t('Accept with exec policy')}
+                </Button>
+              </div>
+            )}
+
+            {/* Server-proposed network policy amendments */}
+            {showNetwork && (
+              <div className="space-y-1 rounded border border-border bg-muted/30 p-2">
+                <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
+                  <Globe className="h-3 w-3" />
+                  {t('Network access rules:')}
+                </div>
+                {approval.proposedNetworkPolicyAmendments!.map((amendment, i) => (
+                  <div key={i} className="flex items-center gap-2">
+                    <code className="flex-1 rounded bg-muted px-1.5 py-0.5 font-mono text-xs">
+                      {amendment.action === 'allow' ? '✓' : '✗'} {amendment.host}
+                    </code>
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      className="h-6 px-2 text-xs"
+                      onClick={() => handleNetworkAmendment(i)}
+                    >
+                      {t('Apply')}
+                    </Button>
+                  </div>
+                ))}
+              </div>
+            )}
           </div>
         )}
       </div>

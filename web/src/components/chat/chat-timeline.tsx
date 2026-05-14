@@ -51,6 +51,7 @@ interface Props {
 }
 
 export function ChatTimeline({ onEditMessage }: Props) {
+  'use no memo'; // TanStack Virtual is incompatible with React Compiler memoization
   const { t } = useTranslation();
   const timeline = useTimelineStore((s) => s.timeline);
   const threadId = useTimelineStore((s) => s.threadId);
@@ -91,6 +92,7 @@ export function ChatTimeline({ onEditMessage }: Props) {
   const shouldAutoScroll = useRef(true);
   const scrollFrameRef = useRef<number | null>(null);
 
+  // eslint-disable-next-line react-hooks/incompatible-library -- TanStack Virtual known limitation
   const virtualizer = useVirtualizer({
     count: timeline.length,
     getScrollElement: () => scrollRef.current,
