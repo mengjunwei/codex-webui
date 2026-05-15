@@ -18,6 +18,8 @@ import {
 } from '@/generated/api/@tanstack/react-query.gen';
 import { useConnectionStore } from '@/stores/connection-store';
 import { useTimelineStore } from '@/stores/timeline-store';
+import { AccountRateLimitBadge } from './account-rate-limit-badge';
+import { McpStatusBadge } from './mcp-status-badge';
 
 interface Props {
   dark: boolean;
@@ -129,6 +131,8 @@ export function ChatHeader({ dark, onToggleDark, onToggleDiagnostics }: Props) {
             <h1 className="text-lg font-semibold tracking-tight">Codex WebUI</h1>
           )}
         </div>
+        <McpStatusBadge mode="header" />
+        <AccountRateLimitBadge />
         <Badge
           variant={connected ? 'default' : 'secondary'}
           className="text-xs transition-colors duration-300"

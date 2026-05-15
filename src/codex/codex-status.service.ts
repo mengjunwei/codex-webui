@@ -74,6 +74,8 @@ export interface CodexConfigSummary {
 export interface CodexProviderStatus {
   ok: boolean;
   id: string | null;
+  name: string | null;
+  baseUrlMasked: string | null;
   envKey: string | null;
   envPresent: boolean | null;
   error?: CodexStatusError;
@@ -142,6 +144,17 @@ export class CodexStatusService {
   /** Clears the status cache so the next query returns fresh data. */
   invalidateCache(): void {
     this.cache = null;
+  }
+
+  /**
+   * Reads only provider metadata using the same logic as the aggregated status.
+   * AccountModule uses this to avoid duplicating config/provider extraction.
+   */
+  async getProviderStatus(): Promise<CodexProviderStatus> {
+    const configProbe = await this.probe<v2.ConfigReadResponse>('config/read', {
+      includeLayers: false,
+    } satisfies v2.ConfigReadParams);
+    return this.buildProviderStatus(configProbe);
   }
 
   private getFreshCache(): CodexStatusResponse | null {
@@ -288,6 +301,8 @@ export class CodexStatusService {
       return {
         ok: false,
         id: null,
+        name: null,
+        baseUrlMasked: null,
         envKey: null,
         envPresent: null,
         error: configProbe.error,
@@ -299,9 +314,15 @@ export class CodexStatusService {
       providerId,
       configProbe.data.config,
     );
+    const baseUrl = this.lookupProviderBaseUrl(
+      providerId,
+      configProbe.data.config,
+    );
     return {
       ok: true,
-      id: providerId,
+      id: providerId ?? null,
+      name: this.lookupProviderName(providerId, configProbe.data.config),
+      baseUrlMasked: this.maskBaseUrl(baseUrl),
       envKey,
       envPresent: envKey ? this.isEnvPresent(envKey) : null,
     };
@@ -441,16 +462,95 @@ export class CodexStatusService {
     if (!providerId) return null;
 
     // Read from config's model_providers (covers custom providers)
-    const providers = config?.model_providers as
-      | Record<string, { env_key?: unknown }>
-      | undefined;
-    const providerConfig = providers?.[providerId];
+    const providerConfig = this.lookupProviderConfig(providerId, config);
     const configuredEnvKey = providerConfig?.env_key;
     if (typeof configuredEnvKey === 'string' && configuredEnvKey.trim())
       return configuredEnvKey;
 
     // Fallback to hardcoded mapping for built-in providers
     return PROVIDER_ENV_KEYS[providerId.trim().toLowerCase()] ?? null;
+  }
+
+  /** Human-readable provider name from config.toml, falling back to provider id. */
+  private lookupProviderName(
+    providerId: string | null | undefined,
+    config?: v2.Config,
+  ): string | null {
+    if (!providerId) return null;
+    const configuredName = this.lookupProviderConfig(providerId, config)?.name;
+    if (typeof configuredName === 'string' && configuredName.trim()) {
+      return configuredName.trim();
+    }
+    return providerId;
+  }
+
+  /** Base URL comes from config first; env fallback is intentionally avoided. */
+  private lookupProviderBaseUrl(
+    providerId: string | null | undefined,
+    config?: v2.Config,
+  ): string | null {
+    if (!providerId) return null;
+    const configuredBaseUrl = this.lookupProviderConfig(
+      providerId,
+      config,
+    )?.base_url;
+    return typeof configuredBaseUrl === 'string' && configuredBaseUrl.trim()
+      ? configuredBaseUrl.trim()
+      : null;
+  }
+
+  private lookupProviderConfig(
+    providerId: string,
+    config?: v2.Config,
+  ): Record<string, unknown> | null {
+    const providers = config?.model_providers as
+      | Record<string, unknown>
+      | undefined;
+    const providerConfig = providers?.[providerId];
+    if (
+      providerConfig &&
+      typeof providerConfig === 'object' &&
+      !Array.isArray(providerConfig)
+    ) {
+      return providerConfig as Record<string, unknown>;
+    }
+    return null;
+  }
+
+  private maskBaseUrl(value: string | null): string | null {
+    if (!value) return null;
+    try {
+      const url = new URL(value);
+      url.username = '';
+      url.password = '';
+      url.search = '';
+      url.hash = '';
+      const port = url.port ? `:${url.port}` : '';
+      const path = url.pathname === '/' ? '' : url.pathname;
+      return `${url.protocol}//${this.maskHost(url.hostname)}${port}${path}`;
+    } catch {
+      return this.maskRawString(value);
+    }
+  }
+
+  private maskHost(host: string): string {
+    if (
+      host === 'localhost' ||
+      /^\d{1,3}(?:\.\d{1,3}){3}$/.test(host) ||
+      host.length <= 12
+    ) {
+      return host;
+    }
+    const parts = host.split('.');
+    if (parts.length >= 3) {
+      return `${parts[0]}…${parts.slice(-2).join('.')}`;
+    }
+    return `${host.slice(0, 4)}…${host.slice(-4)}`;
+  }
+
+  private maskRawString(value: string): string {
+    if (value.length <= 16) return value;
+    return `${value.slice(0, 8)}…${value.slice(-6)}`;
   }
 
   private isEnvPresent(envKey: string): boolean {
@@ -497,6 +597,8 @@ export class CodexStatusService {
       provider: {
         ok: false,
         id: null,
+        name: null,
+        baseUrlMasked: null,
         envKey: null,
         envPresent: null,
         error: skipped,

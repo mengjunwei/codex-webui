@@ -94,6 +94,12 @@ export class CodexProviderStatusDto {
   id!: string | null;
 
   @ApiProperty({ type: String, nullable: true })
+  name!: string | null;
+
+  @ApiProperty({ type: String, nullable: true })
+  baseUrlMasked!: string | null;
+
+  @ApiProperty({ type: String, nullable: true })
   envKey!: string | null;
 
   @ApiProperty({ type: Boolean, nullable: true })

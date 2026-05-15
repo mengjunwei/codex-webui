@@ -13,6 +13,7 @@ import { useModelStore } from '@/stores/model-store';
 import { SecurityPolicyBadge } from './security-policy-badge';
 import { ModelSelector } from './model-selector';
 import { TokenUsageRing } from './token-usage-ring';
+import { McpStatusBadge } from './mcp-status-badge';
 
 /** Imperative handle exposed via ref for external input manipulation. */
 export interface ChatInputHandle {
@@ -155,6 +156,7 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput(
           <div className="flex items-center gap-1">
             <ModelSelector />
             <SecurityPolicyBadge />
+            <McpStatusBadge />
             <Button
               size="sm"
               variant={panelOpen ? 'secondary' : 'ghost'}

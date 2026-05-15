@@ -73,6 +73,8 @@ export type CodexConfigStatusDto = {
 export type CodexProviderStatusDto = {
     ok: boolean;
     id: string | null;
+    name: string | null;
+    baseUrlMasked: string | null;
     envKey: string | null;
     envPresent: boolean | null;
     error?: CodexStatusErrorDto;
@@ -109,6 +111,96 @@ export type UpdateApprovalPolicyDto = {
 
 export type UpdateSandboxModeDto = {
     sandboxMode: 'read-only' | 'workspace-write' | 'danger-full-access';
+};
+
+export type AccountDto = {
+    type: 'apiKey' | 'chatgpt';
+    /**
+     * ChatGPT email (only when type=chatgpt)
+     */
+    email?: string;
+    /**
+     * ChatGPT plan (only when type=chatgpt)
+     */
+    planType?: 'free' | 'go' | 'plus' | 'pro' | 'team' | 'self_serve_business_usage_based' | 'business' | 'enterprise_cbp_usage_based' | 'enterprise' | 'edu' | 'unknown';
+};
+
+export type AccountErrorDto = {
+    message?: string;
+    code?: string;
+};
+
+export type AccountProviderDto = {
+    ok: boolean;
+    id: string | null;
+    name: string | null;
+    baseUrlMasked: string | null;
+    envKey: string | null;
+    envPresent: boolean | null;
+    error?: AccountErrorDto;
+};
+
+export type AccountReadResponseDto = {
+    account: AccountDto | null;
+    requiresOpenaiAuth: boolean;
+    provider: AccountProviderDto;
+};
+
+export type LoginAccountDto = {
+    type: 'apiKey' | 'chatgpt' | 'chatgptDeviceCode' | 'chatgptAuthTokens';
+    /**
+     * Required for API key login.
+     */
+    apiKey?: string;
+    /**
+     * Required for externally managed ChatGPT token login.
+     */
+    accessToken?: string;
+    /**
+     * Required for externally managed ChatGPT token login.
+     */
+    chatgptAccountId?: string;
+    chatgptPlanType?: string | null;
+};
+
+export type LoginAccountResponseDto = {
+    type: 'apiKey' | 'chatgpt' | 'chatgptDeviceCode' | 'chatgptAuthTokens';
+    loginId?: string;
+    authUrl?: string;
+    verificationUrl?: string;
+    userCode?: string;
+};
+
+export type CancelLoginAccountDto = {
+    loginId: string;
+};
+
+export type RateLimitWindowDto = {
+    usedPercent: number;
+    windowDurationMins: number | null;
+    resetsAt: number | null;
+};
+
+export type CreditsSnapshotDto = {
+    hasCredits: boolean;
+    unlimited: boolean;
+    balance: string | null;
+};
+
+export type RateLimitSnapshotDto = {
+    limitId: string | null;
+    limitName: string | null;
+    primary: RateLimitWindowDto | null;
+    secondary: RateLimitWindowDto | null;
+    credits: CreditsSnapshotDto | null;
+    planType: 'free' | 'go' | 'plus' | 'pro' | 'team' | 'self_serve_business_usage_based' | 'business' | 'enterprise_cbp_usage_based' | 'enterprise' | 'edu' | 'unknown' | null;
+};
+
+export type AccountRateLimitsResponseDto = {
+    rateLimits: RateLimitSnapshotDto;
+    rateLimitsByLimitId: {
+        [key: string]: RateLimitSnapshotDto;
+    } | null;
 };
 
 export type FileEntryDto = {
@@ -933,6 +1025,13 @@ export type LogsExportResponseDto = {
     logs: Array<LogEntryDto>;
 };
 
+export type McpServersListResponseDto = {
+    data: Array<number | string | boolean | Array<unknown> | {
+        [key: string]: unknown;
+    }>;
+    nextCursor: string | null;
+};
+
 export type AppGetStatusData = {
     body?: never;
     path?: never;
@@ -1036,6 +1135,106 @@ export type CodexStatusUpdateSandboxModeResponses = {
 };
 
 export type CodexStatusUpdateSandboxModeResponse = CodexStatusUpdateSandboxModeResponses[keyof CodexStatusUpdateSandboxModeResponses];
+
+export type AccountReadAccountData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/api/account';
+};
+
+export type AccountReadAccountErrors = {
+    400: ApiErrorResponseDto;
+    401: ApiErrorResponseDto;
+};
+
+export type AccountReadAccountError = AccountReadAccountErrors[keyof AccountReadAccountErrors];
+
+export type AccountReadAccountResponses = {
+    200: AccountReadResponseDto;
+};
+
+export type AccountReadAccountResponse = AccountReadAccountResponses[keyof AccountReadAccountResponses];
+
+export type AccountLoginData = {
+    body: LoginAccountDto;
+    path?: never;
+    query?: never;
+    url: '/api/account/login';
+};
+
+export type AccountLoginErrors = {
+    400: ApiErrorResponseDto;
+    401: ApiErrorResponseDto;
+};
+
+export type AccountLoginError = AccountLoginErrors[keyof AccountLoginErrors];
+
+export type AccountLoginResponses = {
+    200: LoginAccountResponseDto;
+};
+
+export type AccountLoginResponse = AccountLoginResponses[keyof AccountLoginResponses];
+
+export type AccountCancelLoginData = {
+    body: CancelLoginAccountDto;
+    path?: never;
+    query?: never;
+    url: '/api/account/login/cancel';
+};
+
+export type AccountCancelLoginErrors = {
+    400: ApiErrorResponseDto;
+    401: ApiErrorResponseDto;
+};
+
+export type AccountCancelLoginError = AccountCancelLoginErrors[keyof AccountCancelLoginErrors];
+
+export type AccountCancelLoginResponses = {
+    204: void;
+};
+
+export type AccountCancelLoginResponse = AccountCancelLoginResponses[keyof AccountCancelLoginResponses];
+
+export type AccountLogoutData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/api/account/logout';
+};
+
+export type AccountLogoutErrors = {
+    400: ApiErrorResponseDto;
+    401: ApiErrorResponseDto;
+};
+
+export type AccountLogoutError = AccountLogoutErrors[keyof AccountLogoutErrors];
+
+export type AccountLogoutResponses = {
+    204: void;
+};
+
+export type AccountLogoutResponse = AccountLogoutResponses[keyof AccountLogoutResponses];
+
+export type AccountReadRateLimitsData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/api/account/rate-limits';
+};
+
+export type AccountReadRateLimitsErrors = {
+    400: ApiErrorResponseDto;
+    401: ApiErrorResponseDto;
+};
+
+export type AccountReadRateLimitsError = AccountReadRateLimitsErrors[keyof AccountReadRateLimitsErrors];
+
+export type AccountReadRateLimitsResponses = {
+    200: AccountRateLimitsResponseDto;
+};
+
+export type AccountReadRateLimitsResponse = AccountReadRateLimitsResponses[keyof AccountReadRateLimitsResponses];
 
 export type FilesReadTreeData = {
     body?: never;
@@ -1864,3 +2063,47 @@ export type LogsExportDiagnosticsResponses = {
 };
 
 export type LogsExportDiagnosticsResponse = LogsExportDiagnosticsResponses[keyof LogsExportDiagnosticsResponses];
+
+export type McpServersListServersData = {
+    body?: never;
+    path?: never;
+    query?: {
+        cursor?: string;
+        limit?: number;
+        detail?: 'full' | 'toolsAndAuthOnly';
+    };
+    url: '/api/mcp-servers';
+};
+
+export type McpServersListServersErrors = {
+    400: ApiErrorResponseDto;
+    401: ApiErrorResponseDto;
+};
+
+export type McpServersListServersError = McpServersListServersErrors[keyof McpServersListServersErrors];
+
+export type McpServersListServersResponses = {
+    200: McpServersListResponseDto;
+};
+
+export type McpServersListServersResponse = McpServersListServersResponses[keyof McpServersListServersResponses];
+
+export type McpServersReloadAllData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/api/mcp-servers/reload';
+};
+
+export type McpServersReloadAllErrors = {
+    400: ApiErrorResponseDto;
+    401: ApiErrorResponseDto;
+};
+
+export type McpServersReloadAllError = McpServersReloadAllErrors[keyof McpServersReloadAllErrors];
+
+export type McpServersReloadAllResponses = {
+    204: void;
+};
+
+export type McpServersReloadAllResponse = McpServersReloadAllResponses[keyof McpServersReloadAllResponses];

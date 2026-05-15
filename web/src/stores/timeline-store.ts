@@ -5,7 +5,7 @@
  */
 import { create } from 'zustand';
 import { getSocket } from '../socket';
-import type { TimelineEntry, TurnItem } from '../types/timeline';
+import type { TimelineEntry, TurnItem, TurnPlanState } from '../types/timeline';
 import type { ApprovalRequest, ResolvableApprovalDecision } from '../types/approval';
 import type { ThreadDto, TurnDto, FileUpdateChangeDto } from '../generated/api';
 import type { ThreadTokenUsage, ThreadStatusType } from '../types/codex-notifications';
@@ -69,6 +69,19 @@ function parseTurnItem(item: Record<string, unknown>): TurnItem | null {
   }
 }
 
+/** Extracts persisted plan text into a plan panel fallback. */
+function parsePersistedPlan(items: Array<Record<string, unknown>>): TurnPlanState | undefined {
+  const planText = items
+    .filter((item) => item.type === 'plan')
+    .map((item) => (typeof item.text === 'string' ? item.text.trim() : ''))
+    .filter(Boolean)
+    .join('\n\n');
+
+  return planText
+    ? { explanation: planText, steps: [] }
+    : undefined;
+}
+
 /** Converts persisted turns into timeline entries. */
 function turnsToTimeline(turns: TurnDto[]): TimelineEntry[] {
   const entries: TimelineEntry[] = [];
@@ -83,14 +96,16 @@ function turnsToTimeline(turns: TurnDto[]): TimelineEntry[] {
       entries.push({ kind: 'user', content: text });
     }
 
+    const plan = parsePersistedPlan(items);
     const turnItems = items
       .map(parseTurnItem)
       .filter((it): it is TurnItem => it !== null);
 
-    if (turnItems.length > 0) {
+    if (turnItems.length > 0 || plan) {
       entries.push({
         kind: 'turn',
         turnId: turn.id,
+        plan,
         items: turnItems,
         completed: turn.status === 'completed',
       });
@@ -156,6 +171,8 @@ interface TimelineState {
     updater: (existing: TurnItem | undefined) => TurnItem,
   ) => void;
   updateTurnDiff: (turnId: string, diff: string) => void;
+  updateTurnPlan: (turnId: string, plan: TurnPlanState) => void;
+  appendPlanDelta: (turnId: string, itemId: string, delta: string) => void;
   setLoading: (loading: boolean) => void;
   expandReasoning: (itemId: string) => void;
   collapseReasoning: (itemId: string) => void;
@@ -359,6 +376,55 @@ export const useTimelineStore = create<TimelineState>((set, get) => ({
         }
       }
       return {};
+    });
+  },
+
+  updateTurnPlan: (turnId, plan) => {
+    set((s) => {
+      const { timeline } = s;
+      const idx = timeline.findIndex(
+        (e) => e.kind === 'turn' && e.turnId === turnId,
+      );
+      if (idx >= 0) {
+        const entry = timeline[idx];
+        if (entry.kind === 'turn') {
+          const updated = [...timeline];
+          updated[idx] = { ...entry, plan };
+          return { timeline: updated };
+        }
+      }
+      return {
+        timeline: [
+          ...timeline,
+          { kind: 'turn' as const, turnId, items: [], completed: false, plan },
+        ],
+      };
+    });
+  },
+
+  appendPlanDelta: (turnId, itemId, delta) => {
+    if (!delta) return;
+    set((s) => {
+      const { timeline } = s;
+      const idx = timeline.findIndex(
+        (e) => e.kind === 'turn' && e.turnId === turnId,
+      );
+      const patchPlan = (plan?: TurnPlanState): TurnPlanState => ({
+        explanation: plan?.explanation ?? null,
+        steps: plan?.steps ?? [],
+        planTextByItemId: {
+          ...(plan?.planTextByItemId ?? {}),
+          [itemId]: `${plan?.planTextByItemId?.[itemId] ?? ''}${delta}`,
+        },
+      });
+      if (idx >= 0) {
+        const entry = timeline[idx];
+        if (entry.kind !== 'turn') return {};
+        const updated = [...timeline];
+        updated[idx] = { ...entry, plan: patchPlan(entry.plan) };
+        return { timeline: updated };
+      }
+      return { timeline: [...timeline, { kind: 'turn' as const, turnId, items: [], completed: false, plan: patchPlan() }] };
     });
   },
 

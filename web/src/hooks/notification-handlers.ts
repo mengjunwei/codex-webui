@@ -4,10 +4,22 @@
  * Unknown methods fall through to a dev-only debug log.
  */
 import type { QueryClient } from '@tanstack/react-query';
-import { threadsListThreadsQueryKey } from '@/generated/api/@tanstack/react-query.gen';
+import {
+  accountReadAccountQueryKey,
+  accountReadRateLimitsQueryKey,
+  codexStatusGetStatusQueryKey,
+  mcpServersListServersQueryKey,
+  threadsListThreadsQueryKey,
+} from '@/generated/api/@tanstack/react-query.gen';
+import type { FileUpdateChangeDto, RateLimitSnapshotDto } from '@/generated/api';
+import { useAccountStore } from '@/stores/account-store';
+import { useMcpStore } from '@/stores/mcp-store';
 import { showSnackbar } from '@/stores/snackbar-store';
+import type { AuthMode, PlanType } from '@/types/account';
 import type { ThreadTokenUsage, ThreadStatusType } from '@/types/codex-notifications';
-import type { FileUpdateChangeDto } from '@/generated/api';
+import type { McpServerStartupState } from '@/types/mcp';
+import type { TurnItem, TurnPlanState, TurnPlanStepStatus } from '@/types/timeline';
+import type { ApprovalRequest } from '@/types/approval';
 import i18n from '@/i18n';
 
 // ---------------------------------------------------------------------------
@@ -20,20 +32,25 @@ export interface NotificationContext {
   updateCurrentTurn: (
     turnId: string,
     updater: (
-      items: import('@/types/timeline').TurnItem[],
+      items: TurnItem[],
       completed: boolean,
-    ) => { items: import('@/types/timeline').TurnItem[]; completed: boolean },
+    ) => { items: TurnItem[]; completed: boolean },
   ) => void;
   updateTurnItem: (
     turnId: string,
     itemId: string,
-    updater: (existing: import('@/types/timeline').TurnItem | undefined) => import('@/types/timeline').TurnItem,
+    updater: (existing: TurnItem | undefined) => TurnItem,
   ) => void;
   updateTurnDiff: (turnId: string, diff: string) => void;
+  updateTurnPlan: (
+    turnId: string,
+    plan: TurnPlanState,
+  ) => void;
+  appendPlanDelta: (turnId: string, itemId: string, delta: string) => void;
   setLoading: (loading: boolean) => void;
   expandReasoning: (itemId: string) => void;
   collapseReasoning: (itemId: string) => void;
-  addApproval: (approval: import('@/types/approval').ApprovalRequest) => void;
+  addApproval: (approval: ApprovalRequest) => void;
   addSystemMessage: (message: string, severity?: 'info' | 'warning' | 'error') => void;
   addSystemError: (message: string) => void;
   setTokenUsage: (turnId: string, usage: ThreadTokenUsage) => void;
@@ -97,6 +114,26 @@ function debouncedInvalidateThreadList(queryClient: QueryClient): void {
     void queryClient.invalidateQueries({ queryKey: threadsListThreadsQueryKey() });
     invalidateTimer = null;
   }, 300);
+}
+
+let invalidateMcpTimer: ReturnType<typeof setTimeout> | null = null;
+
+function debouncedInvalidateMcpServers(queryClient: QueryClient): void {
+  if (invalidateMcpTimer) clearTimeout(invalidateMcpTimer);
+  invalidateMcpTimer = setTimeout(() => {
+    void queryClient.invalidateQueries({ queryKey: mcpServersListServersQueryKey() });
+    invalidateMcpTimer = null;
+  }, 500);
+}
+
+function invalidateAccountQueries(queryClient: QueryClient): void {
+  void queryClient.invalidateQueries({ queryKey: accountReadAccountQueryKey() });
+  void queryClient.invalidateQueries({ queryKey: accountReadRateLimitsQueryKey() });
+  void queryClient.invalidateQueries({ queryKey: codexStatusGetStatusQueryKey() });
+}
+
+function isPlanStepStatus(value: unknown): value is TurnPlanStepStatus {
+  return value === 'pending' || value === 'inProgress' || value === 'completed';
 }
 
 // ---------------------------------------------------------------------------
@@ -338,6 +375,68 @@ const handleDeprecationNotice: Handler = (params) => {
   showSnackbar(summary, 'warning', 5000);
 };
 
+const handleTurnPlanUpdated: Handler = (params, ctx) => {
+  const turnId = params.turnId as string | undefined;
+  if (!turnId || !isForActiveThread(params, ctx)) return;
+  const rawPlan = Array.isArray(params.plan) ? params.plan : [];
+  const steps = rawPlan
+    .map((step) => step as { step?: unknown; status?: unknown })
+    .filter(
+      (step): step is { step: string; status: TurnPlanStepStatus } =>
+        typeof step.step === 'string' && isPlanStepStatus(step.status),
+    )
+    .map((step) => ({ step: step.step, status: step.status }));
+  ctx.updateTurnPlan(turnId, {
+    explanation: typeof params.explanation === 'string' ? params.explanation : null,
+    steps,
+  });
+};
+
+const handlePlanDelta: Handler = (params, ctx) => {
+  const { turnId, itemId, delta } = params as {
+    turnId?: string;
+    itemId?: string;
+    delta?: string;
+  };
+  if (!turnId || !itemId || !delta || !isForActiveThread(params, ctx)) return;
+  ctx.appendPlanDelta(turnId, itemId, delta);
+};
+
+const handleMcpToolCallProgress: Handler = (params, ctx) => {
+  const { turnId, itemId, message } = params as {
+    turnId?: string;
+    itemId?: string;
+    message?: string;
+  };
+  if (!turnId || !itemId || !isForActiveThread(params, ctx)) return;
+  ctx.updateTurnItem(turnId, itemId, (existing) => ({
+    ...(existing ?? {
+      type: 'mcpToolCall' as const,
+      itemId,
+      content: '',
+      completed: false,
+      toolServer: '',
+      toolName: '',
+      toolArgs: '',
+    }),
+    toolProgress: message ?? '',
+  }));
+};
+
+const handleMcpStartupStatusUpdated: Handler = (params, ctx) => {
+  const name = params.name as string | undefined;
+  const status = params.status as string | undefined;
+  if (!name || !isMcpStartupStatus(status)) return;
+  useMcpStore.getState().setServerStatus({
+    name,
+    status,
+    error: typeof params.error === 'string' ? params.error : null,
+  });
+  if (status === 'ready' || status === 'failed') {
+    debouncedInvalidateMcpServers(ctx.queryClient);
+  }
+};
+
 // ---------------------------------------------------------------------------
 // Tier 2 — Thread/Turn lifecycle
 // ---------------------------------------------------------------------------
@@ -420,6 +519,43 @@ const handleModelRerouted: Handler = (params, ctx) => {
   }
 };
 
+const handleAccountUpdated: Handler = (params, ctx) => {
+  const authMode = params.authMode as AuthMode | null;
+  const planType = params.planType as PlanType | null;
+  useAccountStore.getState().setAccountUpdated({ authMode, planType });
+  invalidateAccountQueries(ctx.queryClient);
+};
+
+const handleAccountLoginCompleted: Handler = (params, ctx) => {
+  const payload = {
+    loginId: typeof params.loginId === 'string' ? params.loginId : null,
+    success: Boolean(params.success),
+    error: typeof params.error === 'string' ? params.error : null,
+  };
+  useAccountStore.getState().setLoginCompleted(payload);
+  invalidateAccountQueries(ctx.queryClient);
+  if (payload.success) {
+    showSnackbar(i18n.t('ChatGPT login completed'), 'success');
+  } else if (payload.error) {
+    showSnackbar(payload.error, 'error', 5000);
+  }
+};
+
+const handleAccountRateLimitsUpdated: Handler = (params, ctx) => {
+  const rateLimits = params.rateLimits as RateLimitSnapshotDto | undefined;
+  if (!rateLimits) return;
+  useAccountStore.getState().setRateLimitSnapshot(rateLimits);
+  void ctx.queryClient.invalidateQueries({ queryKey: accountReadRateLimitsQueryKey() });
+};
+
+const handleSkillsChanged: Handler = (_params, ctx) => {
+  void ctx.queryClient.invalidateQueries({ queryKey: ['skills'] });
+};
+
+function isMcpStartupStatus(value: unknown): value is McpServerStartupState {
+  return value === 'starting' || value === 'ready' || value === 'failed' || value === 'cancelled';
+}
+
 // ---------------------------------------------------------------------------
 // Tier 3 — Known low-priority methods (debug-only logging)
 // ---------------------------------------------------------------------------
@@ -430,18 +566,10 @@ const TIER3_METHODS = new Set([
   'item/autoApprovalReview/started',
   'item/autoApprovalReview/completed',
   'rawResponseItem/completed',
-  'item/plan/delta',
-  'turn/plan/updated',
   'command/exec/outputDelta',
   'item/commandExecution/terminalInteraction',
-  'item/mcpToolCall/progress',
   'mcpServer/oauthLogin/completed',
-  'mcpServer/startupStatus/updated',
-  'account/updated',
-  'account/rateLimits/updated',
-  'account/login/completed',
   'app/list/updated',
-  'skills/changed',
   'fs/changed',
   'item/reasoning/summaryPartAdded',
   'item/reasoning/textDelta',
@@ -479,6 +607,13 @@ const HANDLERS: Record<string, Handler> = {
   'serverRequest/resolved': handleServerRequestResolved,
   'configWarning': handleConfigWarning,
   'deprecationNotice': handleDeprecationNotice,
+  'turn/plan/updated': handleTurnPlanUpdated,
+  'item/plan/delta': handlePlanDelta,
+  'item/mcpToolCall/progress': handleMcpToolCallProgress,
+  'mcpServer/startupStatus/updated': handleMcpStartupStatusUpdated,
+  'account/updated': handleAccountUpdated,
+  'account/rateLimits/updated': handleAccountRateLimitsUpdated,
+  'account/login/completed': handleAccountLoginCompleted,
 
   // Tier 2 — thread/turn lifecycle
   'thread/started': handleThreadStarted,
@@ -490,6 +625,7 @@ const HANDLERS: Record<string, Handler> = {
   'turn/started': handleTurnStarted,
   'thread/compacted': handleThreadCompacted,
   'model/rerouted': handleModelRerouted,
+  'skills/changed': handleSkillsChanged,
 };
 
 // ---------------------------------------------------------------------------

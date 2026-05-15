@@ -14,6 +14,7 @@ import { FileChangeItem } from './turn-items/file-change-item';
 import { DiffViewer } from './turn-items/diff-viewer';
 import { ApprovalItem } from './turn-items/approval-item';
 import { TurnTokenFooter } from './turn-token-footer';
+import { PlanPanel } from './plan-panel';
 import { useTimelineStore } from '@/stores/timeline-store';
 
 interface Props {
@@ -54,6 +55,8 @@ export function TurnBlock({ entry }: Props) {
       </Avatar>
 
       <div className="glass-1 min-w-0 flex-1 space-y-2 rounded-2xl px-4 py-3">
+        {entry.plan && <PlanPanel plan={entry.plan} completed={entry.completed} />}
+
         {entry.items.map((item) => (
           <ItemWithApproval key={item.itemId} item={item} />
         ))}
@@ -62,7 +65,7 @@ export function TurnBlock({ entry }: Props) {
 
         {entry.completed && <TurnTokenFooter turnId={entry.turnId} />}
 
-        {!entry.completed && entry.items.length === 0 && (
+        {!entry.completed && entry.items.length === 0 && !entry.plan && (
           <div className="flex items-center gap-2 text-sm text-muted-foreground">
             <Loader2 className="h-4 w-4 animate-spin" />
             {t('Thinking...')}

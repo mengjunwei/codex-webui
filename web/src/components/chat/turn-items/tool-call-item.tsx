@@ -22,6 +22,11 @@ export function ToolCallItem({ item }: Props) {
           {item.toolArgs}
         </pre>
       )}
+      {item.toolProgress && !item.completed && (
+        <div className="border-b border-border/30 px-3 py-1.5 text-xs text-muted-foreground">
+          {item.toolProgress}
+        </div>
+      )}
       {item.content && (
         <pre className="m-0 max-h-40 overflow-auto px-3 py-2 font-mono text-xs leading-relaxed text-muted-foreground">
           {item.content}

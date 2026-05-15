@@ -4,6 +4,7 @@ import { APP_GUARD } from '@nestjs/core';
 import { ServeStaticModule } from '@nestjs/serve-static';
 import { LoggerModule } from 'nestjs-pino';
 import { join } from 'node:path';
+import { AccountModule } from './account/account.module';
 import { AppController } from './app.controller';
 import { AppService } from './app.service';
 import { ApiKeyGuard } from './auth/api-key.guard';
@@ -12,6 +13,7 @@ import { CodexModule } from './codex/codex.module';
 import { DatabaseModule } from './database/database.module';
 import { FilesModule } from './files/files.module';
 import { LogsModule } from './logs/logs.module';
+import { McpServersModule } from './mcp-servers/mcp-servers.module';
 import { ModelsModule } from './models/models.module';
 import { SettingsModule } from './settings/settings.module';
 import { TerminalModule } from './terminal/terminal.module';
@@ -79,6 +81,7 @@ const PINO_REDACT = {
     AuthModule,
     DatabaseModule,
     CodexModule,
+    AccountModule,
     FilesModule,
     SettingsModule,
     TerminalModule,
@@ -87,6 +90,7 @@ const PINO_REDACT = {
     TurnDiffModule,
     ModelsModule,
     LogsModule,
+    McpServersModule,
   ],
   controllers: [AppController],
   providers: [
