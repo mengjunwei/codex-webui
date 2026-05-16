@@ -13,6 +13,11 @@ export default defineConfig({
   build: {
     outDir: '../public',
     emptyOutDir: true,
+    rolldownOptions: {
+      output: {
+        codeSplitting: true,
+      },
+    },
   },
   server: {
     port: 5173,

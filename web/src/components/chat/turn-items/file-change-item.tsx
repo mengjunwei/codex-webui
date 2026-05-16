@@ -22,6 +22,7 @@ import { useTimelineStore } from '@/stores/timeline-store';
 import type { TurnItem } from '@/types/timeline';
 import type { ApprovalRequest, ResolvableApprovalDecision } from '@/types/approval';
 import { cn } from '@/lib/utils';
+import { GitDiffPanel } from './git-diff-panel';
 
 interface Props {
   item: TurnItem;
@@ -207,29 +208,38 @@ export function FileChangeItem({ item, approval }: Props) {
 
       {/* Collapsible diff body */}
       {expanded && diff && (
-        <pre
-          className={cn(
-            'max-h-64 overflow-auto border-t border-border p-3 font-mono text-xs leading-relaxed',
-            'scrollbar-thin scrollbar-track-transparent scrollbar-thumb-muted-foreground/20',
-          )}
-        >
-          {lines.map((line, i) => (
-            <div
-              key={i}
-              className={cn(
-                line.startsWith('+') && !line.startsWith('+++')
-                  ? 'bg-green-500/10 text-green-400'
-                  : line.startsWith('-') && !line.startsWith('---')
-                    ? 'bg-red-500/10 text-red-400'
-                    : line.startsWith('@@')
-                      ? 'text-blue-400'
-                      : 'text-muted-foreground',
-              )}
-            >
-              {line}
-            </div>
-          ))}
-        </pre>
+        item.completed ? (
+          <GitDiffPanel
+            diff={diff}
+            filePath={item.filePath ?? fileName}
+            showToolbar={false}
+            maxHeightClassName="max-h-64"
+          />
+        ) : (
+          <pre
+            className={cn(
+              'max-h-64 overflow-auto border-t border-border p-3 font-mono text-xs leading-relaxed',
+              'scrollbar-thin scrollbar-track-transparent scrollbar-thumb-muted-foreground/20',
+            )}
+          >
+            {lines.map((line, i) => (
+              <div
+                key={i}
+                className={cn(
+                  line.startsWith('+') && !line.startsWith('+++')
+                    ? 'bg-green-500/10 text-green-400'
+                    : line.startsWith('-') && !line.startsWith('---')
+                      ? 'bg-red-500/10 text-red-400'
+                      : line.startsWith('@@')
+                        ? 'text-blue-400'
+                        : 'text-muted-foreground',
+                )}
+              >
+                {line}
+              </div>
+            ))}
+          </pre>
+        )
       )}
     </div>
   );
