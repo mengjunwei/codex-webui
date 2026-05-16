@@ -9,6 +9,7 @@ import { AppController } from './app.controller';
 import { AppService } from './app.service';
 import { ApiKeyGuard } from './auth/api-key.guard';
 import { AuthModule } from './auth/auth.module';
+import { ChatModule } from './chat/chat.module';
 import { CodexModule } from './codex/codex.module';
 import { DatabaseModule } from './database/database.module';
 import { FilesModule } from './files/files.module';
@@ -17,6 +18,7 @@ import { McpServersModule } from './mcp-servers/mcp-servers.module';
 import { ModelsModule } from './models/models.module';
 import { PendingApprovalsModule } from './pending-approvals/pending-approvals.module';
 import { SettingsModule } from './settings/settings.module';
+import { SkillsModule } from './skills/skills.module';
 import { TerminalModule } from './terminal/terminal.module';
 import { ThreadsModule } from './threads/threads.module';
 import { TokenUsageModule } from './token-usage/token-usage.module';
@@ -80,11 +82,13 @@ const PINO_REDACT = {
       },
     }),
     AuthModule,
+    ChatModule,
     DatabaseModule,
     CodexModule,
     AccountModule,
     FilesModule,
     SettingsModule,
+    SkillsModule,
     TerminalModule,
     ThreadsModule,
     PendingApprovalsModule,

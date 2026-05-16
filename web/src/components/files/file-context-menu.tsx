@@ -9,6 +9,7 @@ import {
   FilePlus,
   FolderPlus,
   FolderUp,
+  MessageSquarePlus,
   Move,
   Pencil,
   RefreshCw,
@@ -34,6 +35,7 @@ export interface FileContextMenuActions {
   onDownload: () => void;
   onUploadFiles: () => void;
   onUploadFolder: () => void;
+  onAttachToChat?: () => void;
 }
 
 interface FileContextMenuProps {
@@ -93,6 +95,15 @@ export function FileContextMenu({ type, actions, onOpenChange, children }: FileC
             <ContextMenuItem onClick={actions.onUploadFolder}>
               <FolderUp className="h-3.5 w-3.5" />
               {t('Upload folder here...')}
+            </ContextMenuItem>
+          </>
+        )}
+        {actions.onAttachToChat && (
+          <>
+            <ContextMenuSeparator />
+            <ContextMenuItem onClick={actions.onAttachToChat}>
+              <MessageSquarePlus className="h-3.5 w-3.5" />
+              {t('Attach to chat')}
             </ContextMenuItem>
           </>
         )}

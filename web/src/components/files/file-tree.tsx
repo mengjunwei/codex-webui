@@ -269,6 +269,11 @@ function TreeRow({ icon, name, path: entryPath, selected, onClick, onDoubleClick
     onDownload: () => { if (!isDir) void ops.downloadFile(entryPath); },
     onUploadFiles: () => fileInputRef.current?.click(),
     onUploadFolder: () => folderInputRef.current?.click(),
+    onAttachToChat: () => {
+      window.dispatchEvent(
+        new CustomEvent('codex-webui:attach-file', { detail: { name, path: entryPath } }),
+      );
+    },
   };
 
   const handleNativeDragOver = useCallback((e: React.DragEvent) => {

@@ -3,8 +3,8 @@
 import { type DefaultError, type InfiniteData, infiniteQueryOptions, queryOptions, type UseMutationOptions } from '@tanstack/react-query';
 
 import { client } from '../client.gen';
-import { accountCancelLogin, accountLogin, accountLogout, accountReadAccount, accountReadRateLimits, appGetStatus, authLogin, authLogout, codexStatusGetStatus, codexStatusUpdateApprovalPolicy, codexStatusUpdateSandboxMode, filesAddRoot, filesCopyPath, filesCreateDirectory, filesCreateFile, filesDeletePath, filesDownloadFile, filesGetMetadata, filesGetRoots, filesMovePath, filesReadFile, filesReadTree, filesRenamePath, filesUploadFiles, filesWriteFile, logsExportDiagnostics, logsListLogs, mcpServersListServers, mcpServersReloadAll, modelsListModels, type Options, pendingApprovalsListPending, pendingApprovalsRespond, settingsGetSetting, settingsListSettings, settingsResetSetting, settingsUpdateSetting, settingsUpdateSettings, threadsArchiveThread, threadsCompactThread, threadsForkThread, threadsInterruptTurn, threadsListThreads, threadsReadThread, threadsResumeThread, threadsRollbackThread, threadsSetThreadName, threadsStartThread, threadsStartTurn, threadsSteerTurn, threadsUnarchiveThread, tokenUsageReadThreadTokenUsage, turnDiffReadThreadTurnDiffs } from '../sdk.gen';
-import type { AccountCancelLoginData, AccountCancelLoginError, AccountCancelLoginResponse, AccountLoginData, AccountLoginError, AccountLoginResponse, AccountLogoutData, AccountLogoutError, AccountLogoutResponse, AccountReadAccountData, AccountReadAccountError, AccountReadAccountResponse, AccountReadRateLimitsData, AccountReadRateLimitsError, AccountReadRateLimitsResponse, AppGetStatusData, AppGetStatusResponse, AuthLoginData, AuthLoginError, AuthLoginResponse, AuthLogoutData, AuthLogoutResponse, CodexStatusGetStatusData, CodexStatusGetStatusError, CodexStatusGetStatusResponse, CodexStatusUpdateApprovalPolicyData, CodexStatusUpdateApprovalPolicyError, CodexStatusUpdateApprovalPolicyResponse, CodexStatusUpdateSandboxModeData, CodexStatusUpdateSandboxModeError, CodexStatusUpdateSandboxModeResponse, FilesAddRootData, FilesAddRootError, FilesAddRootResponse, FilesCopyPathData, FilesCopyPathError, FilesCopyPathResponse, FilesCreateDirectoryData, FilesCreateDirectoryError, FilesCreateDirectoryResponse, FilesCreateFileData, FilesCreateFileError, FilesCreateFileResponse, FilesDeletePathData, FilesDeletePathError, FilesDeletePathResponse, FilesDownloadFileData, FilesDownloadFileError, FilesGetMetadataData, FilesGetMetadataError, FilesGetMetadataResponse, FilesGetRootsData, FilesGetRootsError, FilesGetRootsResponse, FilesMovePathData, FilesMovePathError, FilesMovePathResponse, FilesReadFileData, FilesReadFileError, FilesReadFileResponse, FilesReadTreeData, FilesReadTreeError, FilesReadTreeResponse, FilesRenamePathData, FilesRenamePathError, FilesRenamePathResponse, FilesUploadFilesData, FilesUploadFilesError, FilesUploadFilesResponse, FilesWriteFileData, FilesWriteFileError, FilesWriteFileResponse, LogsExportDiagnosticsData, LogsExportDiagnosticsError, LogsExportDiagnosticsResponse, LogsListLogsData, LogsListLogsError, LogsListLogsResponse, McpServersListServersData, McpServersListServersError, McpServersListServersResponse, McpServersReloadAllData, McpServersReloadAllError, McpServersReloadAllResponse, ModelsListModelsData, ModelsListModelsError, ModelsListModelsResponse, PendingApprovalsListPendingData, PendingApprovalsListPendingResponse, PendingApprovalsRespondData, PendingApprovalsRespondResponse, SettingsGetSettingData, SettingsGetSettingError, SettingsGetSettingResponse, SettingsListSettingsData, SettingsListSettingsError, SettingsListSettingsResponse, SettingsResetSettingData, SettingsResetSettingError, SettingsResetSettingResponse, SettingsUpdateSettingData, SettingsUpdateSettingError, SettingsUpdateSettingResponse, SettingsUpdateSettingsData, SettingsUpdateSettingsError, SettingsUpdateSettingsResponse, ThreadsArchiveThreadData, ThreadsArchiveThreadError, ThreadsArchiveThreadResponse, ThreadsCompactThreadData, ThreadsCompactThreadError, ThreadsCompactThreadResponse, ThreadsForkThreadData, ThreadsForkThreadError, ThreadsForkThreadResponse, ThreadsInterruptTurnData, ThreadsInterruptTurnError, ThreadsInterruptTurnResponse, ThreadsListThreadsData, ThreadsListThreadsError, ThreadsListThreadsResponse, ThreadsReadThreadData, ThreadsReadThreadError, ThreadsReadThreadResponse, ThreadsResumeThreadData, ThreadsResumeThreadError, ThreadsResumeThreadResponse, ThreadsRollbackThreadData, ThreadsRollbackThreadError, ThreadsRollbackThreadResponse, ThreadsSetThreadNameData, ThreadsSetThreadNameError, ThreadsSetThreadNameResponse, ThreadsStartThreadData, ThreadsStartThreadError, ThreadsStartThreadResponse, ThreadsStartTurnData, ThreadsStartTurnError, ThreadsStartTurnResponse, ThreadsSteerTurnData, ThreadsSteerTurnError, ThreadsSteerTurnResponse, ThreadsUnarchiveThreadData, ThreadsUnarchiveThreadError, ThreadsUnarchiveThreadResponse, TokenUsageReadThreadTokenUsageData, TokenUsageReadThreadTokenUsageError, TokenUsageReadThreadTokenUsageResponse, TurnDiffReadThreadTurnDiffsData, TurnDiffReadThreadTurnDiffsError, TurnDiffReadThreadTurnDiffsResponse } from '../types.gen';
+import { accountCancelLogin, accountLogin, accountLogout, accountReadAccount, accountReadRateLimits, appGetStatus, authLogin, authLogout, chatUploadAttachment, codexStatusGetStatus, codexStatusUpdateApprovalPolicy, codexStatusUpdateSandboxMode, filesAddRoot, filesCopyPath, filesCreateDirectory, filesCreateFile, filesDeletePath, filesDownloadFile, filesGetMetadata, filesGetRoots, filesMovePath, filesReadFile, filesReadTree, filesRenamePath, filesUploadFiles, filesWriteFile, logsExportDiagnostics, logsListLogs, mcpServersListServers, mcpServersReloadAll, modelsListModels, type Options, pendingApprovalsListPending, pendingApprovalsRespond, settingsGetSetting, settingsListSettings, settingsResetSetting, settingsUpdateSetting, settingsUpdateSettings, skillsListSkills, threadsArchiveThread, threadsCompactThread, threadsForkThread, threadsInterruptTurn, threadsListThreads, threadsReadThread, threadsResumeThread, threadsRollbackThread, threadsSetThreadName, threadsStartThread, threadsStartTurn, threadsSteerTurn, threadsUnarchiveThread, tokenUsageReadThreadTokenUsage, turnDiffReadThreadTurnDiffs } from '../sdk.gen';
+import type { AccountCancelLoginData, AccountCancelLoginError, AccountCancelLoginResponse, AccountLoginData, AccountLoginError, AccountLoginResponse, AccountLogoutData, AccountLogoutError, AccountLogoutResponse, AccountReadAccountData, AccountReadAccountError, AccountReadAccountResponse, AccountReadRateLimitsData, AccountReadRateLimitsError, AccountReadRateLimitsResponse, AppGetStatusData, AppGetStatusResponse, AuthLoginData, AuthLoginError, AuthLoginResponse, AuthLogoutData, AuthLogoutResponse, ChatUploadAttachmentData, ChatUploadAttachmentError, ChatUploadAttachmentResponse, CodexStatusGetStatusData, CodexStatusGetStatusError, CodexStatusGetStatusResponse, CodexStatusUpdateApprovalPolicyData, CodexStatusUpdateApprovalPolicyError, CodexStatusUpdateApprovalPolicyResponse, CodexStatusUpdateSandboxModeData, CodexStatusUpdateSandboxModeError, CodexStatusUpdateSandboxModeResponse, FilesAddRootData, FilesAddRootError, FilesAddRootResponse, FilesCopyPathData, FilesCopyPathError, FilesCopyPathResponse, FilesCreateDirectoryData, FilesCreateDirectoryError, FilesCreateDirectoryResponse, FilesCreateFileData, FilesCreateFileError, FilesCreateFileResponse, FilesDeletePathData, FilesDeletePathError, FilesDeletePathResponse, FilesDownloadFileData, FilesDownloadFileError, FilesGetMetadataData, FilesGetMetadataError, FilesGetMetadataResponse, FilesGetRootsData, FilesGetRootsError, FilesGetRootsResponse, FilesMovePathData, FilesMovePathError, FilesMovePathResponse, FilesReadFileData, FilesReadFileError, FilesReadFileResponse, FilesReadTreeData, FilesReadTreeError, FilesReadTreeResponse, FilesRenamePathData, FilesRenamePathError, FilesRenamePathResponse, FilesUploadFilesData, FilesUploadFilesError, FilesUploadFilesResponse, FilesWriteFileData, FilesWriteFileError, FilesWriteFileResponse, LogsExportDiagnosticsData, LogsExportDiagnosticsError, LogsExportDiagnosticsResponse, LogsListLogsData, LogsListLogsError, LogsListLogsResponse, McpServersListServersData, McpServersListServersError, McpServersListServersResponse, McpServersReloadAllData, McpServersReloadAllError, McpServersReloadAllResponse, ModelsListModelsData, ModelsListModelsError, ModelsListModelsResponse, PendingApprovalsListPendingData, PendingApprovalsListPendingResponse, PendingApprovalsRespondData, PendingApprovalsRespondResponse, SettingsGetSettingData, SettingsGetSettingError, SettingsGetSettingResponse, SettingsListSettingsData, SettingsListSettingsError, SettingsListSettingsResponse, SettingsResetSettingData, SettingsResetSettingError, SettingsResetSettingResponse, SettingsUpdateSettingData, SettingsUpdateSettingError, SettingsUpdateSettingResponse, SettingsUpdateSettingsData, SettingsUpdateSettingsError, SettingsUpdateSettingsResponse, SkillsListSkillsData, SkillsListSkillsError, SkillsListSkillsResponse, ThreadsArchiveThreadData, ThreadsArchiveThreadError, ThreadsArchiveThreadResponse, ThreadsCompactThreadData, ThreadsCompactThreadError, ThreadsCompactThreadResponse, ThreadsForkThreadData, ThreadsForkThreadError, ThreadsForkThreadResponse, ThreadsInterruptTurnData, ThreadsInterruptTurnError, ThreadsInterruptTurnResponse, ThreadsListThreadsData, ThreadsListThreadsError, ThreadsListThreadsResponse, ThreadsReadThreadData, ThreadsReadThreadError, ThreadsReadThreadResponse, ThreadsResumeThreadData, ThreadsResumeThreadError, ThreadsResumeThreadResponse, ThreadsRollbackThreadData, ThreadsRollbackThreadError, ThreadsRollbackThreadResponse, ThreadsSetThreadNameData, ThreadsSetThreadNameError, ThreadsSetThreadNameResponse, ThreadsStartThreadData, ThreadsStartThreadError, ThreadsStartThreadResponse, ThreadsStartTurnData, ThreadsStartTurnError, ThreadsStartTurnResponse, ThreadsSteerTurnData, ThreadsSteerTurnError, ThreadsSteerTurnResponse, ThreadsUnarchiveThreadData, ThreadsUnarchiveThreadError, ThreadsUnarchiveThreadResponse, TokenUsageReadThreadTokenUsageData, TokenUsageReadThreadTokenUsageError, TokenUsageReadThreadTokenUsageResponse, TurnDiffReadThreadTurnDiffsData, TurnDiffReadThreadTurnDiffsError, TurnDiffReadThreadTurnDiffsResponse } from '../types.gen';
 
 export type QueryKey<TOptions extends Options> = [
     Pick<TOptions, 'baseUrl' | 'body' | 'headers' | 'path' | 'query'> & {
@@ -81,6 +81,110 @@ export const authLogoutMutation = (options?: Partial<Options<AuthLogoutData>>): 
     const mutationOptions: UseMutationOptions<AuthLogoutResponse, DefaultError, Options<AuthLogoutData>> = {
         mutationFn: async (fnOptions) => {
             const { data } = await authLogout({
+                ...options,
+                ...fnOptions,
+                throwOnError: true
+            });
+            return data;
+        }
+    };
+    return mutationOptions;
+};
+
+/**
+ * Upload one chat attachment for rich user input
+ */
+export const chatUploadAttachmentMutation = (options?: Partial<Options<ChatUploadAttachmentData>>): UseMutationOptions<ChatUploadAttachmentResponse, ChatUploadAttachmentError, Options<ChatUploadAttachmentData>> => {
+    const mutationOptions: UseMutationOptions<ChatUploadAttachmentResponse, ChatUploadAttachmentError, Options<ChatUploadAttachmentData>> = {
+        mutationFn: async (fnOptions) => {
+            const { data } = await chatUploadAttachment({
+                ...options,
+                ...fnOptions,
+                throwOnError: true
+            });
+            return data;
+        }
+    };
+    return mutationOptions;
+};
+
+export const settingsListSettingsQueryKey = (options?: Options<SettingsListSettingsData>) => createQueryKey('settingsListSettings', options);
+
+/**
+ * List runtime settings
+ */
+export const settingsListSettingsOptions = (options?: Options<SettingsListSettingsData>) => queryOptions<SettingsListSettingsResponse, SettingsListSettingsError, SettingsListSettingsResponse, ReturnType<typeof settingsListSettingsQueryKey>>({
+    queryFn: async ({ queryKey, signal }) => {
+        const { data } = await settingsListSettings({
+            ...options,
+            ...queryKey[0],
+            signal,
+            throwOnError: true
+        });
+        return data;
+    },
+    queryKey: settingsListSettingsQueryKey(options)
+});
+
+/**
+ * Batch update runtime settings
+ */
+export const settingsUpdateSettingsMutation = (options?: Partial<Options<SettingsUpdateSettingsData>>): UseMutationOptions<SettingsUpdateSettingsResponse, SettingsUpdateSettingsError, Options<SettingsUpdateSettingsData>> => {
+    const mutationOptions: UseMutationOptions<SettingsUpdateSettingsResponse, SettingsUpdateSettingsError, Options<SettingsUpdateSettingsData>> = {
+        mutationFn: async (fnOptions) => {
+            const { data } = await settingsUpdateSettings({
+                ...options,
+                ...fnOptions,
+                throwOnError: true
+            });
+            return data;
+        }
+    };
+    return mutationOptions;
+};
+
+/**
+ * Reset one runtime setting to env/default
+ */
+export const settingsResetSettingMutation = (options?: Partial<Options<SettingsResetSettingData>>): UseMutationOptions<SettingsResetSettingResponse, SettingsResetSettingError, Options<SettingsResetSettingData>> => {
+    const mutationOptions: UseMutationOptions<SettingsResetSettingResponse, SettingsResetSettingError, Options<SettingsResetSettingData>> = {
+        mutationFn: async (fnOptions) => {
+            const { data } = await settingsResetSetting({
+                ...options,
+                ...fnOptions,
+                throwOnError: true
+            });
+            return data;
+        }
+    };
+    return mutationOptions;
+};
+
+export const settingsGetSettingQueryKey = (options: Options<SettingsGetSettingData>) => createQueryKey('settingsGetSetting', options);
+
+/**
+ * Read one runtime setting
+ */
+export const settingsGetSettingOptions = (options: Options<SettingsGetSettingData>) => queryOptions<SettingsGetSettingResponse, SettingsGetSettingError, SettingsGetSettingResponse, ReturnType<typeof settingsGetSettingQueryKey>>({
+    queryFn: async ({ queryKey, signal }) => {
+        const { data } = await settingsGetSetting({
+            ...options,
+            ...queryKey[0],
+            signal,
+            throwOnError: true
+        });
+        return data;
+    },
+    queryKey: settingsGetSettingQueryKey(options)
+});
+
+/**
+ * Update one runtime setting
+ */
+export const settingsUpdateSettingMutation = (options?: Partial<Options<SettingsUpdateSettingData>>): UseMutationOptions<SettingsUpdateSettingResponse, SettingsUpdateSettingError, Options<SettingsUpdateSettingData>> => {
+    const mutationOptions: UseMutationOptions<SettingsUpdateSettingResponse, SettingsUpdateSettingError, Options<SettingsUpdateSettingData>> = {
+        mutationFn: async (fnOptions) => {
+            const { data } = await settingsUpdateSetting({
                 ...options,
                 ...fnOptions,
                 throwOnError: true
@@ -473,14 +577,14 @@ export const filesUploadFilesMutation = (options?: Partial<Options<FilesUploadFi
     return mutationOptions;
 };
 
-export const settingsListSettingsQueryKey = (options?: Options<SettingsListSettingsData>) => createQueryKey('settingsListSettings', options);
+export const skillsListSkillsQueryKey = (options: Options<SkillsListSkillsData>) => createQueryKey('skillsListSkills', options);
 
 /**
- * List runtime settings
+ * List Codex skills for a working directory
  */
-export const settingsListSettingsOptions = (options?: Options<SettingsListSettingsData>) => queryOptions<SettingsListSettingsResponse, SettingsListSettingsError, SettingsListSettingsResponse, ReturnType<typeof settingsListSettingsQueryKey>>({
+export const skillsListSkillsOptions = (options: Options<SkillsListSkillsData>) => queryOptions<SkillsListSkillsResponse, SkillsListSkillsError, SkillsListSkillsResponse, ReturnType<typeof skillsListSkillsQueryKey>>({
     queryFn: async ({ queryKey, signal }) => {
-        const { data } = await settingsListSettings({
+        const { data } = await skillsListSkills({
             ...options,
             ...queryKey[0],
             signal,
@@ -488,77 +592,8 @@ export const settingsListSettingsOptions = (options?: Options<SettingsListSettin
         });
         return data;
     },
-    queryKey: settingsListSettingsQueryKey(options)
+    queryKey: skillsListSkillsQueryKey(options)
 });
-
-/**
- * Batch update runtime settings
- */
-export const settingsUpdateSettingsMutation = (options?: Partial<Options<SettingsUpdateSettingsData>>): UseMutationOptions<SettingsUpdateSettingsResponse, SettingsUpdateSettingsError, Options<SettingsUpdateSettingsData>> => {
-    const mutationOptions: UseMutationOptions<SettingsUpdateSettingsResponse, SettingsUpdateSettingsError, Options<SettingsUpdateSettingsData>> = {
-        mutationFn: async (fnOptions) => {
-            const { data } = await settingsUpdateSettings({
-                ...options,
-                ...fnOptions,
-                throwOnError: true
-            });
-            return data;
-        }
-    };
-    return mutationOptions;
-};
-
-/**
- * Reset one runtime setting to env/default
- */
-export const settingsResetSettingMutation = (options?: Partial<Options<SettingsResetSettingData>>): UseMutationOptions<SettingsResetSettingResponse, SettingsResetSettingError, Options<SettingsResetSettingData>> => {
-    const mutationOptions: UseMutationOptions<SettingsResetSettingResponse, SettingsResetSettingError, Options<SettingsResetSettingData>> = {
-        mutationFn: async (fnOptions) => {
-            const { data } = await settingsResetSetting({
-                ...options,
-                ...fnOptions,
-                throwOnError: true
-            });
-            return data;
-        }
-    };
-    return mutationOptions;
-};
-
-export const settingsGetSettingQueryKey = (options: Options<SettingsGetSettingData>) => createQueryKey('settingsGetSetting', options);
-
-/**
- * Read one runtime setting
- */
-export const settingsGetSettingOptions = (options: Options<SettingsGetSettingData>) => queryOptions<SettingsGetSettingResponse, SettingsGetSettingError, SettingsGetSettingResponse, ReturnType<typeof settingsGetSettingQueryKey>>({
-    queryFn: async ({ queryKey, signal }) => {
-        const { data } = await settingsGetSetting({
-            ...options,
-            ...queryKey[0],
-            signal,
-            throwOnError: true
-        });
-        return data;
-    },
-    queryKey: settingsGetSettingQueryKey(options)
-});
-
-/**
- * Update one runtime setting
- */
-export const settingsUpdateSettingMutation = (options?: Partial<Options<SettingsUpdateSettingData>>): UseMutationOptions<SettingsUpdateSettingResponse, SettingsUpdateSettingError, Options<SettingsUpdateSettingData>> => {
-    const mutationOptions: UseMutationOptions<SettingsUpdateSettingResponse, SettingsUpdateSettingError, Options<SettingsUpdateSettingData>> = {
-        mutationFn: async (fnOptions) => {
-            const { data } = await settingsUpdateSetting({
-                ...options,
-                ...fnOptions,
-                throwOnError: true
-            });
-            return data;
-        }
-    };
-    return mutationOptions;
-};
 
 export const threadsListThreadsQueryKey = (options?: Options<ThreadsListThreadsData>) => createQueryKey('threadsListThreads', options);
 

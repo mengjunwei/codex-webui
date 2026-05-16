@@ -31,7 +31,7 @@ import { tokenUsageReadThreadTokenUsage, turnDiffReadThreadTurnDiffs } from '@/g
 import { useTimelineStore } from '@/stores/timeline-store';
 import type { TimelineEntry } from '@/types/timeline';
 import { TurnBlock } from './turn-block';
-import { MarkdownRenderer } from './markdown-renderer';
+import { UserMessageBubble } from './user-message-bubble';
 
 /** Counts how many turns need to be rolled back when editing this user message. */
 function computeRollbackTurns(timeline: TimelineEntry[], userIndex: number): number {
@@ -55,6 +55,7 @@ export function ChatTimeline({ onEditMessage }: Props) {
   const { t } = useTranslation();
   const timeline = useTimelineStore((s) => s.timeline);
   const threadId = useTimelineStore((s) => s.threadId);
+  const threadCwd = useTimelineStore((s) => s.threadCwd);
   const threadMode = useTimelineStore((s) => s.threadMode);
   const loading = useTimelineStore((s) => s.loading);
   const hydrateTimeline = useTimelineStore((s) => s.hydrateTimeline);
@@ -68,20 +69,6 @@ export function ChatTimeline({ onEditMessage }: Props) {
 
   const rollbackThread = useMutation({
     ...threadsRollbackThreadMutation(),
-    onSuccess: (res) => {
-      const content = rollbackTarget?.content;
-      const tid = res.thread.id;
-      hydrateTimeline(res.thread.turns, res.thread.cwd);
-      void tokenUsageReadThreadTokenUsage({ path: { threadId: tid } })
-        .then(({ data }) => data && hydrateTokenUsage(data.turns))
-        .catch(() => undefined);
-      void turnDiffReadThreadTurnDiffs({ path: { threadId: tid } })
-        .then(({ data }) => data && hydrateTurnDiffs(data.turns))
-        .catch(() => undefined);
-      setRollbackTarget(null);
-      void queryClient.invalidateQueries({ queryKey: threadsListThreadsQueryKey() });
-      if (content) onEditMessage?.(content);
-    },
   });
 
   const canRollback = threadMode === 'live' && !loading && !rollbackThread.isPending;
@@ -199,6 +186,7 @@ export function ChatTimeline({ onEditMessage }: Props) {
                     entry={entry}
                     index={virtualItem.index}
                     timeline={timeline}
+                    threadCwd={threadCwd}
                     canRollback={canRollback}
                     onRollback={setRollbackTarget}
                     t={t}
@@ -224,10 +212,28 @@ export function ChatTimeline({ onEditMessage }: Props) {
               disabled={rollbackThread.isPending}
               onClick={() => {
                 if (!threadId || !rollbackTarget || rollbackTarget.numTurns < 1) return;
-                rollbackThread.mutate({
-                  path: { threadId },
-                  body: { numTurns: rollbackTarget.numTurns },
-                });
+                const editContent = rollbackTarget.content;
+                rollbackThread.mutate(
+                  {
+                    path: { threadId },
+                    body: { numTurns: rollbackTarget.numTurns },
+                  },
+                  {
+                    onSuccess: (res) => {
+                      const tid = res.thread.id;
+                      hydrateTimeline(res.thread.turns, res.thread.cwd);
+                      void tokenUsageReadThreadTokenUsage({ path: { threadId: tid } })
+                        .then(({ data }) => data && hydrateTokenUsage(data.turns))
+                        .catch(() => undefined);
+                      void turnDiffReadThreadTurnDiffs({ path: { threadId: tid } })
+                        .then(({ data }) => data && hydrateTurnDiffs(data.turns))
+                        .catch(() => undefined);
+                      setRollbackTarget(null);
+                      void queryClient.invalidateQueries({ queryKey: threadsListThreadsQueryKey() });
+                      if (editContent) onEditMessage?.(editContent);
+                    },
+                  },
+                );
               }}
             >
               {t('Confirm')}
@@ -244,6 +250,7 @@ function TimelineEntryRow({
   entry,
   index,
   timeline,
+  threadCwd,
   canRollback,
   onRollback,
   t,
@@ -251,6 +258,7 @@ function TimelineEntryRow({
   entry: TimelineEntry;
   index: number;
   timeline: TimelineEntry[];
+  threadCwd: string | null;
   canRollback: boolean;
   onRollback: (target: { numTurns: number; content: string }) => void;
   t: (key: string) => string;
@@ -266,7 +274,7 @@ function TimelineEntryRow({
               '0 8px 24px rgba(59, 130, 246, 0.20), inset 0 1px 0 rgba(255, 255, 255, 0.18), inset 0 -1px 0 rgba(0, 0, 0, 0.12)',
           }}
         >
-          <MarkdownRenderer content={entry.content} completed={true} />
+          <UserMessageBubble content={entry.content} threadCwd={threadCwd} images={entry.images} />
         </div>
         {canRollback && numTurns > 0 && (
           <Tooltip>

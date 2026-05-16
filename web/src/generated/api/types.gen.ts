@@ -26,6 +26,80 @@ export type ApiErrorResponseDto = {
     error?: string;
 };
 
+export type ChatUploadResponseDto = {
+    /**
+     * Absolute filesystem path readable by Codex app-server.
+     */
+    path: string;
+    /**
+     * Stored file size in bytes.
+     */
+    size: number;
+    /**
+     * MIME type reported by the multipart request.
+     */
+    mimeType: string;
+};
+
+export type SettingConstraintsDto = {
+    min?: number;
+    max?: number;
+    /**
+     * Allowed values
+     */
+    enum?: Array<unknown>;
+    integer?: boolean;
+};
+
+export type SettingDto = {
+    key: string;
+    /**
+     * Effective value (JSON-compatible)
+     */
+    value: string | number | boolean | Array<unknown> | {
+        [key: string]: unknown;
+    };
+    source: 'db' | 'env' | 'default';
+    type: 'string' | 'number' | 'boolean' | 'json';
+    category: 'terminal' | 'files' | 'security' | 'general';
+    description: string;
+    /**
+     * Hardcoded default value
+     */
+    defaultValue: string | number | boolean | Array<unknown> | {
+        [key: string]: unknown;
+    };
+    constraints: SettingConstraintsDto;
+    updatedAt: number;
+};
+
+export type SettingsListResponseDto = {
+    settings: Array<SettingDto>;
+};
+
+export type BatchUpdateSettingDto = {
+    key: string;
+    /**
+     * New value or null to reset
+     */
+    value: string | number | boolean | Array<unknown> | {
+        [key: string]: unknown;
+    } | null;
+};
+
+export type BatchUpdateSettingsDto = {
+    updates: Array<BatchUpdateSettingDto>;
+};
+
+export type UpdateSettingDto = {
+    /**
+     * New value or null to reset
+     */
+    value: string | number | boolean | Array<unknown> | {
+        [key: string]: unknown;
+    } | null;
+};
+
 export type CodexStatusErrorDto = {
     message: string;
     code?: string;
@@ -317,63 +391,10 @@ export type UploadFilesResponseDto = {
     files: Array<UploadedFileDto>;
 };
 
-export type SettingConstraintsDto = {
-    min?: number;
-    max?: number;
-    /**
-     * Allowed values
-     */
-    enum?: Array<unknown>;
-    integer?: boolean;
-};
-
-export type SettingDto = {
-    key: string;
-    /**
-     * Effective value (JSON-compatible)
-     */
-    value: string | number | boolean | Array<unknown> | {
+export type SkillsListResponseDto = {
+    data: Array<number | string | boolean | Array<unknown> | {
         [key: string]: unknown;
-    };
-    source: 'db' | 'env' | 'default';
-    type: 'string' | 'number' | 'boolean' | 'json';
-    category: 'terminal' | 'files' | 'security' | 'general';
-    description: string;
-    /**
-     * Hardcoded default value
-     */
-    defaultValue: string | number | boolean | Array<unknown> | {
-        [key: string]: unknown;
-    };
-    constraints: SettingConstraintsDto;
-    updatedAt: number;
-};
-
-export type SettingsListResponseDto = {
-    settings: Array<SettingDto>;
-};
-
-export type BatchUpdateSettingDto = {
-    key: string;
-    /**
-     * New value or null to reset
-     */
-    value: string | number | boolean | Array<unknown> | {
-        [key: string]: unknown;
-    } | null;
-};
-
-export type BatchUpdateSettingsDto = {
-    updates: Array<BatchUpdateSettingDto>;
-};
-
-export type UpdateSettingDto = {
-    /**
-     * New value or null to reset
-     */
-    value: string | number | boolean | Array<unknown> | {
-        [key: string]: unknown;
-    } | null;
+    }>;
 };
 
 export type GranularApprovalOptionsDto = {
@@ -920,13 +941,8 @@ export type CreateThreadDto = {
     approvalPolicy?: 'untrusted' | 'on-failure' | 'on-request' | 'never' | GranularApprovalPolicyDto | null;
 };
 
-export type TextTurnInputDto = {
-    type: 'text';
-    text: string;
-};
-
 export type StartTurnDto = {
-    input: Array<TextTurnInputDto>;
+    input: Array<UserInputTextDto | UserInputImageDto | UserInputLocalImageDto | UserInputSkillDto | UserInputMentionDto>;
     /**
      * Override model for this turn and subsequent turns.
      */
@@ -938,7 +954,7 @@ export type StartTurnDto = {
 };
 
 export type SteerTurnDto = {
-    input: Array<TextTurnInputDto>;
+    input: Array<UserInputTextDto | UserInputImageDto | UserInputLocalImageDto | UserInputSkillDto | UserInputMentionDto>;
 };
 
 export type TurnSteerResponseDto = {
@@ -1102,6 +1118,136 @@ export type AuthLogoutResponses = {
 };
 
 export type AuthLogoutResponse = AuthLogoutResponses[keyof AuthLogoutResponses];
+
+export type ChatUploadAttachmentData = {
+    body: {
+        file: Blob | File;
+    };
+    path?: never;
+    query?: never;
+    url: '/api/chat/upload';
+};
+
+export type ChatUploadAttachmentErrors = {
+    400: ApiErrorResponseDto;
+    401: ApiErrorResponseDto;
+};
+
+export type ChatUploadAttachmentError = ChatUploadAttachmentErrors[keyof ChatUploadAttachmentErrors];
+
+export type ChatUploadAttachmentResponses = {
+    201: ChatUploadResponseDto;
+};
+
+export type ChatUploadAttachmentResponse = ChatUploadAttachmentResponses[keyof ChatUploadAttachmentResponses];
+
+export type SettingsListSettingsData = {
+    body?: never;
+    path?: never;
+    query?: {
+        category?: string;
+    };
+    url: '/api/settings';
+};
+
+export type SettingsListSettingsErrors = {
+    400: ApiErrorResponseDto;
+    401: ApiErrorResponseDto;
+};
+
+export type SettingsListSettingsError = SettingsListSettingsErrors[keyof SettingsListSettingsErrors];
+
+export type SettingsListSettingsResponses = {
+    200: SettingsListResponseDto;
+};
+
+export type SettingsListSettingsResponse = SettingsListSettingsResponses[keyof SettingsListSettingsResponses];
+
+export type SettingsUpdateSettingsData = {
+    body: BatchUpdateSettingsDto;
+    path?: never;
+    query?: never;
+    url: '/api/settings';
+};
+
+export type SettingsUpdateSettingsErrors = {
+    400: ApiErrorResponseDto;
+    401: ApiErrorResponseDto;
+};
+
+export type SettingsUpdateSettingsError = SettingsUpdateSettingsErrors[keyof SettingsUpdateSettingsErrors];
+
+export type SettingsUpdateSettingsResponses = {
+    200: SettingsListResponseDto;
+};
+
+export type SettingsUpdateSettingsResponse = SettingsUpdateSettingsResponses[keyof SettingsUpdateSettingsResponses];
+
+export type SettingsResetSettingData = {
+    body?: never;
+    path: {
+        key: string;
+    };
+    query?: never;
+    url: '/api/settings/{key}';
+};
+
+export type SettingsResetSettingErrors = {
+    400: ApiErrorResponseDto;
+    401: ApiErrorResponseDto;
+};
+
+export type SettingsResetSettingError = SettingsResetSettingErrors[keyof SettingsResetSettingErrors];
+
+export type SettingsResetSettingResponses = {
+    200: SettingDto;
+};
+
+export type SettingsResetSettingResponse = SettingsResetSettingResponses[keyof SettingsResetSettingResponses];
+
+export type SettingsGetSettingData = {
+    body?: never;
+    path: {
+        key: string;
+    };
+    query?: never;
+    url: '/api/settings/{key}';
+};
+
+export type SettingsGetSettingErrors = {
+    400: ApiErrorResponseDto;
+    401: ApiErrorResponseDto;
+};
+
+export type SettingsGetSettingError = SettingsGetSettingErrors[keyof SettingsGetSettingErrors];
+
+export type SettingsGetSettingResponses = {
+    200: SettingDto;
+};
+
+export type SettingsGetSettingResponse = SettingsGetSettingResponses[keyof SettingsGetSettingResponses];
+
+export type SettingsUpdateSettingData = {
+    body: UpdateSettingDto;
+    path: {
+        key: string;
+    };
+    query?: never;
+    url: '/api/settings/{key}';
+};
+
+export type SettingsUpdateSettingErrors = {
+    400: ApiErrorResponseDto;
+    401: ApiErrorResponseDto;
+};
+
+export type SettingsUpdateSettingError = SettingsUpdateSettingErrors[keyof SettingsUpdateSettingErrors];
+
+export type SettingsUpdateSettingResponses = {
+    200: SettingDto;
+};
+
+export type SettingsUpdateSettingResponse = SettingsUpdateSettingResponses[keyof SettingsUpdateSettingResponses];
 
 export type CodexStatusGetStatusData = {
     body?: never;
@@ -1589,113 +1735,27 @@ export type FilesUploadFilesResponses = {
 
 export type FilesUploadFilesResponse = FilesUploadFilesResponses[keyof FilesUploadFilesResponses];
 
-export type SettingsListSettingsData = {
+export type SkillsListSkillsData = {
     body?: never;
     path?: never;
-    query?: {
-        category?: string;
+    query: {
+        cwd: string;
     };
-    url: '/api/settings';
+    url: '/api/skills';
 };
 
-export type SettingsListSettingsErrors = {
+export type SkillsListSkillsErrors = {
     400: ApiErrorResponseDto;
     401: ApiErrorResponseDto;
 };
 
-export type SettingsListSettingsError = SettingsListSettingsErrors[keyof SettingsListSettingsErrors];
+export type SkillsListSkillsError = SkillsListSkillsErrors[keyof SkillsListSkillsErrors];
 
-export type SettingsListSettingsResponses = {
-    200: SettingsListResponseDto;
+export type SkillsListSkillsResponses = {
+    200: SkillsListResponseDto;
 };
 
-export type SettingsListSettingsResponse = SettingsListSettingsResponses[keyof SettingsListSettingsResponses];
-
-export type SettingsUpdateSettingsData = {
-    body: BatchUpdateSettingsDto;
-    path?: never;
-    query?: never;
-    url: '/api/settings';
-};
-
-export type SettingsUpdateSettingsErrors = {
-    400: ApiErrorResponseDto;
-    401: ApiErrorResponseDto;
-};
-
-export type SettingsUpdateSettingsError = SettingsUpdateSettingsErrors[keyof SettingsUpdateSettingsErrors];
-
-export type SettingsUpdateSettingsResponses = {
-    200: SettingsListResponseDto;
-};
-
-export type SettingsUpdateSettingsResponse = SettingsUpdateSettingsResponses[keyof SettingsUpdateSettingsResponses];
-
-export type SettingsResetSettingData = {
-    body?: never;
-    path: {
-        key: string;
-    };
-    query?: never;
-    url: '/api/settings/{key}';
-};
-
-export type SettingsResetSettingErrors = {
-    400: ApiErrorResponseDto;
-    401: ApiErrorResponseDto;
-};
-
-export type SettingsResetSettingError = SettingsResetSettingErrors[keyof SettingsResetSettingErrors];
-
-export type SettingsResetSettingResponses = {
-    200: SettingDto;
-};
-
-export type SettingsResetSettingResponse = SettingsResetSettingResponses[keyof SettingsResetSettingResponses];
-
-export type SettingsGetSettingData = {
-    body?: never;
-    path: {
-        key: string;
-    };
-    query?: never;
-    url: '/api/settings/{key}';
-};
-
-export type SettingsGetSettingErrors = {
-    400: ApiErrorResponseDto;
-    401: ApiErrorResponseDto;
-};
-
-export type SettingsGetSettingError = SettingsGetSettingErrors[keyof SettingsGetSettingErrors];
-
-export type SettingsGetSettingResponses = {
-    200: SettingDto;
-};
-
-export type SettingsGetSettingResponse = SettingsGetSettingResponses[keyof SettingsGetSettingResponses];
-
-export type SettingsUpdateSettingData = {
-    body: UpdateSettingDto;
-    path: {
-        key: string;
-    };
-    query?: never;
-    url: '/api/settings/{key}';
-};
-
-export type SettingsUpdateSettingErrors = {
-    400: ApiErrorResponseDto;
-    401: ApiErrorResponseDto;
-};
-
-export type SettingsUpdateSettingError = SettingsUpdateSettingErrors[keyof SettingsUpdateSettingErrors];
-
-export type SettingsUpdateSettingResponses = {
-    200: SettingDto;
-};
-
-export type SettingsUpdateSettingResponse = SettingsUpdateSettingResponses[keyof SettingsUpdateSettingResponses];
+export type SkillsListSkillsResponse = SkillsListSkillsResponses[keyof SkillsListSkillsResponses];
 
 export type ThreadsListThreadsData = {
     body?: never;

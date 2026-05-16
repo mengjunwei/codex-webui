@@ -1,23 +1,31 @@
 /**
- * Chat message input with embedded send button and session panel toggle.
+ * Chat message input orchestrator.
+ * Delegates attachment management to useChatAttachments and @ mention to useChatMention.
  */
-import { forwardRef, useCallback, useImperativeHandle, useRef, useState } from 'react';
+import { forwardRef, useCallback, useEffect, useImperativeHandle, useRef, useState } from 'react';
 import { Send, Square, TerminalSquare } from 'lucide-react';
 import { useMutation } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 import { Button } from '@/components/ui/button';
 import { Textarea } from '@/components/ui/textarea';
 import { threadsInterruptTurnMutation, threadsStartTurnMutation, threadsSteerTurnMutation } from '@/generated/api/@tanstack/react-query.gen';
+import { cn } from '@/lib/utils';
 import { useTimelineStore } from '@/stores/timeline-store';
 import { useModelStore } from '@/stores/model-store';
+import { useChatAttachments } from '@/hooks/use-chat-attachments';
+import { useChatMention } from '@/hooks/use-chat-mention';
 import { SecurityPolicyBadge } from './security-policy-badge';
 import { ModelSelector } from './model-selector';
 import { TokenUsageRing } from './token-usage-ring';
 import { McpStatusBadge } from './mcp-status-badge';
+import { SkillSelector } from './skill-selector';
+import { AttachmentChips } from './attachment-chips';
+import { MentionPopover } from './mention-popover';
 
 /** Imperative handle exposed via ref for external input manipulation. */
 export interface ChatInputHandle {
   setInput: (value: string) => void;
+  addFileAttachment: (displayName: string, absolutePath: string) => void;
 }
 
 interface Props {
@@ -30,11 +38,13 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput(
   ref,
 ) {
   const [value, setValue] = useState('');
-  const onChange = setValue;
+  const valueRef = useRef(value);
+  useEffect(() => { valueRef.current = value; }, [value]);
+  const textareaRef = useRef<HTMLTextAreaElement>(null);
 
-  useImperativeHandle(ref, () => ({ setInput: setValue }), []);
   const { t } = useTranslation();
   const threadId = useTimelineStore((s) => s.threadId);
+  const threadCwd = useTimelineStore((s) => s.threadCwd);
   const threadMode = useTimelineStore((s) => s.threadMode);
   const loading = useTimelineStore((s) => s.loading);
   const activeTurnId = useTimelineStore((s) => s.activeTurnId);
@@ -48,60 +58,100 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput(
     return flagBlocked || cardBlocked;
   });
   const addUserMessage = useTimelineStore((s) => s.addUserMessage);
-  const addSystemMessage = useTimelineStore((s) => s.addSystemMessage);
   const addSystemError = useTimelineStore((s) => s.addSystemError);
-  const textareaRef = useRef<HTMLTextAreaElement>(null);
   const readOnly = threadMode === 'readOnly';
   const hasActiveTurn = Boolean(threadId && activeTurnId && !readOnly);
   const canSteer = hasActiveTurn && !hasPendingApproval;
 
+  // ── Attachment hook ──────────────────────────────────────
+  const {
+    attachments,
+    attachmentsRef,
+    setAttachments,
+    chipAttachments,
+    buildInput,
+    clearAfterSend,
+    handlePaste,
+    addFileMention,
+    handleRemoveAttachment,
+    handleSkillSelect,
+    toRelativePath,
+  } = useChatAttachments({
+    textareaRef,
+    valueRef,
+    setValue,
+    threadCwd,
+    addSystemError,
+  });
+
+  // ── Mention hook ─────────────────────────────────────────
+  const {
+    mentionOpen,
+    mentionQuery,
+    mentionSelectedIndex,
+    mentionFilteredRef,
+    detectMention,
+    handleMentionSelect,
+    handleMentionNavigate,
+    handleMentionNavigateUp,
+    handleMentionKeyDown,
+  } = useChatMention({
+    textareaRef,
+    valueRef,
+    setValue,
+    setAttachments,
+    toRelativePath,
+  });
+
+  // ── Imperative handle ────────────────────────────────────
+  useImperativeHandle(ref, () => ({
+    setInput: setValue,
+    addFileAttachment: addFileMention,
+  }), [addFileMention]);
+
+  // ── Turn mutations ───────────────────────────────────────
   const startTurn = useMutation({
     ...threadsStartTurnMutation(),
     onError: (err) => addSystemError(String(err.message)),
   });
-
   const steer = useMutation({
     ...threadsSteerTurnMutation(),
     onError: (err) => addSystemError(String(err.message)),
   });
-
   const interruptTurn = useMutation({
     ...threadsInterruptTurnMutation(),
     onError: (err) => addSystemError(String(err.message)),
   });
 
   const handleSend = useCallback(() => {
-    if (!value.trim() || !threadId || loading || readOnly) return;
-    const text = value.trim();
-    addUserMessage(text);
-    onChange('');
+    const input = buildInput();
+    if (input.length === 0 || !threadId || loading || readOnly) return;
+    // Collect image paths for timeline display
+    const imageAttachments = attachmentsRef.current
+      .filter((a): a is import('@/types/attachments').ChatImageAttachment => a.type === 'localImage')
+      .map((a) => a.path);
+    addUserMessage(valueRef.current.trim(), imageAttachments.length > 0 ? imageAttachments : undefined);
+    clearAfterSend();
     const { modelOverride, effortOverride } = useModelStore.getState();
     startTurn.mutate({
       path: { threadId },
       body: {
-        input: [{ type: 'text' as const, text }],
+        input: input as never,
         ...(modelOverride && { model: modelOverride }),
         ...(effortOverride && { effort: effortOverride }),
       },
     });
-  }, [value, onChange, threadId, loading, readOnly, addUserMessage, startTurn]);
+  }, [buildInput, threadId, loading, readOnly, attachmentsRef, addUserMessage, clearAfterSend, startTurn]);
 
   const handleSteer = useCallback(() => {
-    if (!value.trim() || !canSteer || !threadId || !activeTurnId || steer.isPending) return;
-    const text = value.trim();
-    onChange('');
-    steer.mutate(
-      {
-        path: { threadId, turnId: activeTurnId },
-        body: { input: [{ type: 'text' as const, text }] },
-      },
-      {
-        onSuccess: () =>
-          addSystemMessage(t('Steered current turn: {{text}}', { text }), 'info'),
-        onError: () => onChange(text),
-      },
-    );
-  }, [value, canSteer, threadId, activeTurnId, steer, onChange, addSystemMessage, t]);
+    const input = buildInput();
+    if (input.length === 0 || !canSteer || !threadId || !activeTurnId || steer.isPending) return;
+    clearAfterSend();
+    steer.mutate({
+      path: { threadId, turnId: activeTurnId },
+      body: { input: input as never },
+    });
+  }, [buildInput, clearAfterSend, canSteer, threadId, activeTurnId, steer]);
 
   const handleStop = useCallback(() => {
     if (!threadId || !activeTurnId || interruptTurn.isPending) return;
@@ -109,23 +159,27 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput(
   }, [threadId, activeTurnId, interruptTurn]);
 
   const handleSubmit = useCallback(() => {
-    if (hasActiveTurn) {
-      handleSteer();
-      return;
-    }
+    if (hasActiveTurn) { handleSteer(); return; }
     handleSend();
   }, [hasActiveTurn, handleSteer, handleSend]);
 
-  const handleKeyDown = useCallback(
-    (e: React.KeyboardEvent) => {
-      if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) {
-        e.preventDefault();
-        handleSubmit();
-      }
-    },
-    [handleSubmit],
-  );
+  // ── Input handlers ───────────────────────────────────────
+  const handleChange = useCallback((newValue: string) => {
+    setValue(newValue);
+    detectMention(newValue);
+  }, [detectMention]);
 
+  const handleKeyDown = useCallback((e: React.KeyboardEvent) => {
+    if (handleMentionKeyDown(e)) return;
+    if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) {
+      e.preventDefault();
+      handleSubmit();
+    }
+  }, [handleMentionKeyDown, handleSubmit]);
+
+  const hasContent = value.trim().length > 0 || attachments.length > 0;
+
+  // ── Render ───────────────────────────────────────────────
   return (
     <footer className="glass-4 sticky bottom-0 z-10 px-4 py-3 md:px-6">
       {readOnly && (
@@ -134,29 +188,55 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput(
         </p>
       )}
       <div className="relative">
+        <AttachmentChips
+          attachments={chipAttachments}
+          onRemove={handleRemoveAttachment}
+          className="rounded-t-xl border border-b-0 border-border/40 bg-background/40"
+        />
+
+        <MentionPopover
+          open={mentionOpen}
+          query={mentionQuery}
+          cwd={threadCwd}
+          selectedIndex={mentionSelectedIndex}
+          filteredRef={mentionFilteredRef}
+          onSelect={handleMentionSelect}
+          onNavigate={handleMentionNavigate}
+          onNavigateUp={handleMentionNavigateUp}
+        />
+
         <Textarea
           ref={textareaRef}
           value={value}
-          onChange={(e) => onChange(e.target.value)}
+          onChange={(e) => handleChange(e.target.value)}
           onKeyDown={handleKeyDown}
+          onPaste={handlePaste}
           placeholder={
             readOnly
               ? t('Archived thread is read-only')
               : hasActiveTurn
                 ? t('Add input to the active turn...')
                 : threadId
-                ? t('Type a message... (Enter to send)')
-                : t('Create a thread first')
+                  ? t('Type a message... (@ to mention files, paste images)')
+                  : t('Create a thread first')
           }
           disabled={!threadId || readOnly}
           rows={1}
-          className="max-h-32 min-h-0 resize-none rounded-xl bg-background/60 pb-10 pr-4 pt-2.5 backdrop-blur-sm transition-all duration-200 focus:ring-2 focus:ring-primary/30"
+          className={cn(
+            'max-h-32 min-h-0 resize-none bg-background/60 pb-10 pr-4 pt-2.5 backdrop-blur-sm transition-all duration-200 focus:ring-2 focus:ring-primary/30',
+            chipAttachments.length > 0 ? 'rounded-b-xl rounded-t-none border-t-0' : 'rounded-xl',
+          )}
         />
         <div className="absolute bottom-2 left-2 right-2 flex items-center justify-between">
           <div className="flex items-center gap-1">
             <ModelSelector />
             <SecurityPolicyBadge />
             <McpStatusBadge />
+            <SkillSelector
+              cwd={threadCwd}
+              disabled={!threadId || readOnly}
+              onSelect={handleSkillSelect}
+            />
             <Button
               size="sm"
               variant={panelOpen ? 'secondary' : 'ghost'}
@@ -177,7 +257,7 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput(
                 <Button
                   size="sm"
                   className="h-7 rounded-lg px-2.5 text-xs transition-transform duration-200 hover:scale-105 active:scale-95"
-                  disabled={!value.trim() || !canSteer || steer.isPending}
+                  disabled={!hasContent || !canSteer || steer.isPending}
                   onClick={handleSteer}
                   title={t('Steer current turn')}
                 >
@@ -198,7 +278,7 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput(
               <Button
                 size="icon"
                 className="h-7 w-7 rounded-lg transition-transform duration-200 hover:scale-105 active:scale-95"
-                disabled={!threadId || !value.trim() || loading || readOnly}
+                disabled={!threadId || !hasContent || loading || readOnly}
                 onClick={handleSend}
               >
                 <Send className="h-3.5 w-3.5" />

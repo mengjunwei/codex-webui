@@ -118,9 +118,15 @@ function turnsToTimeline(turns: TurnDto[]): TimelineEntry[] {
 
     const userMsg = items.find((it) => it.type === 'userMessage');
     if (userMsg) {
-      const content = userMsg.content as Array<{ type: string; text?: string }> | undefined;
-      const text = content?.[0]?.text ?? (userMsg.text as string) ?? '';
-      entries.push({ kind: 'user', content: text });
+      const content = userMsg.content as Array<{ type: string; text?: string; path?: string; url?: string }> | undefined;
+      const textParts = content?.filter((c) => c.type === 'text').map((c) => c.text ?? '') ?? [];
+      const text = textParts.join('\n') || ((userMsg.text as string) ?? '');
+      const images: string[] = [];
+      for (const block of content ?? []) {
+        if (block.type === 'localImage' && block.path) images.push(block.path);
+        else if (block.type === 'image' && block.url) images.push(block.url);
+      }
+      entries.push({ kind: 'user', content: text, ...(images.length > 0 && { images }) });
     }
 
     const plan = parsePersistedPlan(items);
@@ -348,7 +354,7 @@ interface TimelineState {
   clearThread: () => void;
   hydrateTimeline: (turns: TurnDto[], cwd?: string | null) => void;
   setThreadTitle: (title: string | null) => void;
-  addUserMessage: (text: string) => void;
+  addUserMessage: (text: string, images?: string[]) => void;
   addSystemError: (message: string) => void;
   addSystemMessage: (message: string, severity?: 'info' | 'warning' | 'error') => void;
 
@@ -535,12 +541,15 @@ export const useTimelineStore = create<TimelineState>((set, get) => {
       if (threadId) get().setThreadTitleForThread(threadId, title);
     },
 
-    addUserMessage: (text) => {
+    addUserMessage: (text, images) => {
       const threadId = selectedThread();
       if (!threadId) return;
       applyThreadUpdate(threadId, (runtime) => ({
         ...runtime,
-        timeline: [...runtime.timeline, { kind: 'user' as const, content: text }],
+        timeline: [
+          ...runtime.timeline,
+          { kind: 'user' as const, content: text, ...(images?.length && { images }) },
+        ],
         loading: true,
       }));
     },

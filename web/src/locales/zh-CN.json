@@ -310,5 +310,14 @@
   "bearerToken": "令牌",
   "oAuth": "OAuth",
   "Approval needed in {{thread}}": "{{thread}} 需要审批",
-  "Open thread": "打开会话"
+  "Open thread": "打开会话",
+  "Type a message... (@ to mention files, paste images)": "输入消息…（@ 引用文件，粘贴图片）",
+  "Failed to upload pasted file": "粘贴文件上传失败",
+  "Attach to chat": "附加到对话",
+  "Skill": "技能",
+  "Add skill": "添加技能",
+  "Search skills...": "搜索技能…",
+  "No skills available": "无可用技能",
+  "No matching skills": "无匹配技能",
+  "No matching files": "无匹配文件"
 }
