@@ -26,12 +26,57 @@ COPY --from=frontend-builder /app/public ./public/
 RUN pnpm build
 
 # ── Stage 3: Runtime ─────────────────────────────────────────────────
-FROM node:22-bookworm-slim AS runtime
+FROM debian:trixie-slim AS runtime
 # Runtime dependencies: git, bash (terminal), node-pty native rebuild deps
-RUN apt-get update \
-  && apt-get install -y --no-install-recommends \
-    ca-certificates git bash curl python3 make g++ \
-  && rm -rf /var/lib/apt/lists/*
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    ca-certificates \
+    curl \
+    git \
+    bash \
+    tar \
+    gzip \
+    ripgrep \
+    fd-find \
+    jq \
+    less \
+    file \
+    openssh-client \
+    procps \
+    bubblewrap \
+    build-essential \
+    pkg-config \
+    python3 \
+    make \
+    g++ \
+    libssl-dev \
+    zlib1g-dev \
+    libbz2-dev \
+    libreadline-dev \
+    libsqlite3-dev \
+    libffi-dev \
+    liblzma-dev \
+    tk-dev \
+    uuid-dev \
+    xz-utils \
+ && rm -rf /var/lib/apt/lists/*
+
+RUN curl -fsSL https://mise.run | sh
+
+RUN grep -q 'mise activate bash' /root/.bashrc 2>/dev/null || \
+    printf '\n# mise\nexport PATH="$HOME/.local/bin:$HOME/.local/share/mise/shims:$PATH"\neval "$(mise activate bash)"\n' >> /root/.bashrc
+
+RUN mise use -g node@22 uv@latest python@3.14
+
+RUN node --version \
+ && npm --version \
+ && uv --version \
+ && python --version \
+ && mise --version
+
+RUN npm install -g \
+    @openai/codex@latest \
+    mcp-safe-proxy \
+    mcp-remote
 
 # Install pinned Codex CLI version (must match builder for schema compat)
 ARG CODEX_CLI_VERSION=0.123.0
