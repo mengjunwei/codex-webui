@@ -14,7 +14,7 @@ RUN apt-get update \
   && rm -rf /var/lib/apt/lists/*
 RUN npm install -g pnpm@10.18.3
 WORKDIR /app
-COPY package.json pnpm-lock.yaml* pnpm-workspace.yaml ./
+COPY package.json pnpm-lock.yaml* ./
 RUN pnpm install --frozen-lockfile
 COPY src/ ./src/
 COPY tsconfig*.json nest-cli.json ./
