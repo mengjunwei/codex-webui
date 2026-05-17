@@ -2,6 +2,7 @@
 FROM node:22-bookworm-slim AS frontend-builder
 RUN corepack enable && corepack prepare pnpm@latest --activate
 WORKDIR /app/web
+COPY pnpm-workspace.yaml /app/
 COPY web/package.json web/pnpm-lock.yaml* ./
 RUN pnpm install --frozen-lockfile
 COPY web/ ./
@@ -14,7 +15,7 @@ RUN apt-get update \
   && rm -rf /var/lib/apt/lists/*
 RUN corepack enable && corepack prepare pnpm@latest --activate
 WORKDIR /app
-COPY package.json pnpm-lock.yaml* ./
+COPY package.json pnpm-lock.yaml* pnpm-workspace.yaml ./
 RUN pnpm install --frozen-lockfile
 COPY src/ ./src/
 COPY tsconfig*.json nest-cli.json ./
