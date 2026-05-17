@@ -35,7 +35,7 @@ interface MultipartFileOptions {
   };
 }
 
-interface MultipartFileRequest extends FastifyRequest {
+interface MultipartFileRequest {
   file: (
     options?: MultipartFileOptions,
   ) => Promise<MultipartFilePart | undefined>;

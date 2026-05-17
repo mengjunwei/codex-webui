@@ -61,7 +61,7 @@ interface MultipartFilePart {
   file: Readable;
 }
 
-interface MultipartFilesRequest extends FastifyRequest {
+interface MultipartFilesRequest {
   files: () => AsyncIterableIterator<MultipartFilePart>;
 }
 
