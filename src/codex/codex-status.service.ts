@@ -3,6 +3,7 @@
  */
 import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
+import { toJsonSafe, type JsonSafeValue } from '../common/json-safe';
 import { CodexProcessManager } from './codex-process-manager.service';
 import { CodexService } from './codex.service';
 import type { v2 } from './codex-schema';
@@ -18,14 +19,6 @@ const PROVIDER_ENV_KEYS: Record<string, string> = {
 };
 
 export type CodexRuntimeStatus = 'ready' | 'degraded' | 'unavailable';
-
-export type JsonSafeValue =
-  | string
-  | number
-  | boolean
-  | null
-  | JsonSafeValue[]
-  | { [key: string]: JsonSafeValue };
 
 export interface CodexStatusError {
   message: string;
@@ -231,7 +224,7 @@ export class CodexStatusService {
       },
       initialize: {
         ok: true,
-        data: this.toJsonSafe(initResult),
+        data: toJsonSafe(initResult),
       },
       account,
       config,
@@ -267,7 +260,7 @@ export class CodexStatusService {
 
     return {
       ok: true,
-      data: this.toJsonSafe(probe.data),
+      data: toJsonSafe(probe.data),
     };
   }
 
@@ -286,12 +279,12 @@ export class CodexStatusService {
       sandboxMode: config.sandbox_mode ?? null,
       sandboxNetworkAccess:
         config.sandbox_workspace_write?.network_access ?? null,
-      approvalPolicy: this.toJsonSafe(config.approval_policy),
+      approvalPolicy: toJsonSafe(config.approval_policy),
       model: config.model ?? null,
       modelProvider: config.model_provider ?? null,
     };
 
-    return { ok: true, data: this.toJsonSafe(summary) };
+    return { ok: true, data: toJsonSafe(summary) };
   }
 
   private buildProviderStatus(
@@ -634,48 +627,5 @@ export class CodexStatusService {
       return { code, message: err.message };
     }
     return { code, message: String(err) };
-  }
-
-  /**
-   * Recursively converts generated schema values into JSON-safe values.
-   * Config currently contains bigint fields that Fastify cannot serialize.
-   */
-  private toJsonSafe(value: unknown): JsonSafeValue {
-    if (value === null || value === undefined) return null;
-
-    if (typeof value === 'bigint') {
-      return Number(value);
-    }
-
-    if (typeof value === 'number') {
-      return Number.isFinite(value) ? value : null;
-    }
-
-    if (typeof value === 'string' || typeof value === 'boolean') {
-      return value;
-    }
-
-    if (Array.isArray(value)) {
-      return value.map((item) => this.toJsonSafe(item));
-    }
-
-    if (typeof value === 'object') {
-      const result: Record<string, JsonSafeValue> = {};
-      for (const [key, child] of Object.entries(
-        value as Record<string, unknown>,
-      )) {
-        result[key] = this.toJsonSafe(child);
-      }
-      return result;
-    }
-
-    // Remaining types (symbol, function) after all narrowing above
-    if (typeof value === 'symbol') {
-      return value.toString();
-    }
-    if (typeof value === 'function') {
-      return value.name || 'anonymous';
-    }
-    return null;
   }
 }

@@ -14,6 +14,7 @@ import { resetSocket } from '@/socket';
 import { sectionLabel } from './setting-helpers';
 import { GeneralSettings } from './general-settings';
 import { AccountSettings } from './account/account-settings';
+import { CodexSettings } from './codex-settings';
 import { TerminalSettings } from './terminal-settings';
 import { FilesSettings } from './files-settings';
 import { SecuritySettings } from './security-settings';
@@ -21,6 +22,7 @@ import { SecuritySettings } from './security-settings';
 const SECTIONS = [
   'general',
   'account',
+  'codex',
   'terminal',
   'files',
   'security',
@@ -91,6 +93,7 @@ export function SettingsPage() {
           />
         )}
         {section === 'account' && <AccountSettings />}
+        {section === 'codex' && <CodexSettings />}
         {section === 'terminal' && <TerminalSettings />}
         {section === 'files' && <FilesSettings />}
         {section === 'security' && <SecuritySettings />}

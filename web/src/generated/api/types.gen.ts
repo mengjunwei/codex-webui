@@ -187,6 +187,39 @@ export type UpdateSandboxModeDto = {
     sandboxMode: 'read-only' | 'workspace-write' | 'danger-full-access';
 };
 
+export type CodexConfigResponseDto = {
+    config: {
+        [key: string]: unknown;
+    };
+    origins: {
+        [key: string]: unknown;
+    };
+};
+
+export type ConfigEditDto = {
+    keyPath: 'profile' | 'model' | 'review_model' | 'model_provider' | 'model_context_window' | 'model_auto_compact_token_limit' | 'instructions' | 'developer_instructions' | 'compact_prompt' | 'model_reasoning_effort' | 'model_reasoning_summary' | 'model_verbosity' | 'web_search' | 'service_tier';
+    value: number | string | boolean | Array<unknown> | {
+        [key: string]: unknown;
+    } | null;
+};
+
+export type UpdateCodexConfigDto = {
+    edits: Array<ConfigEditDto>;
+};
+
+export type RawConfigResponseDto = {
+    filePath: string;
+    content: string;
+};
+
+export type UpdateRawConfigDto = {
+    content: string;
+};
+
+export type RawConfigWriteResponseDto = {
+    filePath: string;
+};
+
 export type AccountDto = {
     type: 'apiKey' | 'chatgpt';
     /**
@@ -1312,6 +1345,84 @@ export type CodexStatusUpdateSandboxModeResponses = {
 };
 
 export type CodexStatusUpdateSandboxModeResponse = CodexStatusUpdateSandboxModeResponses[keyof CodexStatusUpdateSandboxModeResponses];
+
+export type CodexConfigReadConfigData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/api/codex/config';
+};
+
+export type CodexConfigReadConfigErrors = {
+    401: ApiErrorResponseDto;
+};
+
+export type CodexConfigReadConfigError = CodexConfigReadConfigErrors[keyof CodexConfigReadConfigErrors];
+
+export type CodexConfigReadConfigResponses = {
+    200: CodexConfigResponseDto;
+};
+
+export type CodexConfigReadConfigResponse = CodexConfigReadConfigResponses[keyof CodexConfigReadConfigResponses];
+
+export type CodexConfigUpdateConfigData = {
+    body: UpdateCodexConfigDto;
+    path?: never;
+    query?: never;
+    url: '/api/codex/config';
+};
+
+export type CodexConfigUpdateConfigErrors = {
+    400: ApiErrorResponseDto;
+    401: ApiErrorResponseDto;
+};
+
+export type CodexConfigUpdateConfigError = CodexConfigUpdateConfigErrors[keyof CodexConfigUpdateConfigErrors];
+
+export type CodexConfigUpdateConfigResponses = {
+    200: CodexConfigResponseDto;
+};
+
+export type CodexConfigUpdateConfigResponse = CodexConfigUpdateConfigResponses[keyof CodexConfigUpdateConfigResponses];
+
+export type CodexConfigReadRawConfigData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/api/codex/config/raw';
+};
+
+export type CodexConfigReadRawConfigErrors = {
+    401: ApiErrorResponseDto;
+};
+
+export type CodexConfigReadRawConfigError = CodexConfigReadRawConfigErrors[keyof CodexConfigReadRawConfigErrors];
+
+export type CodexConfigReadRawConfigResponses = {
+    200: RawConfigResponseDto;
+};
+
+export type CodexConfigReadRawConfigResponse = CodexConfigReadRawConfigResponses[keyof CodexConfigReadRawConfigResponses];
+
+export type CodexConfigUpdateRawConfigData = {
+    body: UpdateRawConfigDto;
+    path?: never;
+    query?: never;
+    url: '/api/codex/config/raw';
+};
+
+export type CodexConfigUpdateRawConfigErrors = {
+    400: ApiErrorResponseDto;
+    401: ApiErrorResponseDto;
+};
+
+export type CodexConfigUpdateRawConfigError = CodexConfigUpdateRawConfigErrors[keyof CodexConfigUpdateRawConfigErrors];
+
+export type CodexConfigUpdateRawConfigResponses = {
+    200: RawConfigWriteResponseDto;
+};
+
+export type CodexConfigUpdateRawConfigResponse = CodexConfigUpdateRawConfigResponses[keyof CodexConfigUpdateRawConfigResponses];
 
 export type AccountReadAccountData = {
     body?: never;

@@ -2,7 +2,7 @@
 
 import { type Client, formDataBodySerializer, type Options as Options2, type TDataShape } from './client';
 import { client } from './client.gen';
-import type { AccountCancelLoginData, AccountCancelLoginErrors, AccountCancelLoginResponses, AccountLoginData, AccountLoginErrors, AccountLoginResponses, AccountLogoutData, AccountLogoutErrors, AccountLogoutResponses, AccountReadAccountData, AccountReadAccountErrors, AccountReadAccountResponses, AccountReadRateLimitsData, AccountReadRateLimitsErrors, AccountReadRateLimitsResponses, AppGetStatusData, AppGetStatusResponses, AuthLoginData, AuthLoginErrors, AuthLoginResponses, AuthLogoutData, AuthLogoutResponses, ChatUploadAttachmentData, ChatUploadAttachmentErrors, ChatUploadAttachmentResponses, CodexStatusGetStatusData, CodexStatusGetStatusErrors, CodexStatusGetStatusResponses, CodexStatusUpdateApprovalPolicyData, CodexStatusUpdateApprovalPolicyErrors, CodexStatusUpdateApprovalPolicyResponses, CodexStatusUpdateSandboxModeData, CodexStatusUpdateSandboxModeErrors, CodexStatusUpdateSandboxModeResponses, FilesAddRootData, FilesAddRootErrors, FilesAddRootResponses, FilesCopyPathData, FilesCopyPathErrors, FilesCopyPathResponses, FilesCreateDirectoryData, FilesCreateDirectoryErrors, FilesCreateDirectoryResponses, FilesCreateFileData, FilesCreateFileErrors, FilesCreateFileResponses, FilesDeletePathData, FilesDeletePathErrors, FilesDeletePathResponses, FilesDownloadFileData, FilesDownloadFileErrors, FilesGetMetadataData, FilesGetMetadataErrors, FilesGetMetadataResponses, FilesGetRootsData, FilesGetRootsErrors, FilesGetRootsResponses, FilesMovePathData, FilesMovePathErrors, FilesMovePathResponses, FilesReadFileData, FilesReadFileErrors, FilesReadFileResponses, FilesReadTreeData, FilesReadTreeErrors, FilesReadTreeResponses, FilesRenamePathData, FilesRenamePathErrors, FilesRenamePathResponses, FilesServeFileData, FilesServeFileErrors, FilesUploadFilesData, FilesUploadFilesErrors, FilesUploadFilesResponses, FilesWriteFileData, FilesWriteFileErrors, FilesWriteFileResponses, LogsExportDiagnosticsData, LogsExportDiagnosticsErrors, LogsExportDiagnosticsResponses, LogsListLogsData, LogsListLogsErrors, LogsListLogsResponses, McpServersListServersData, McpServersListServersErrors, McpServersListServersResponses, McpServersReloadAllData, McpServersReloadAllErrors, McpServersReloadAllResponses, ModelsListModelsData, ModelsListModelsErrors, ModelsListModelsResponses, PendingApprovalsListPendingData, PendingApprovalsListPendingResponses, PendingApprovalsRespondData, PendingApprovalsRespondResponses, SettingsGetSettingData, SettingsGetSettingErrors, SettingsGetSettingResponses, SettingsListSettingsData, SettingsListSettingsErrors, SettingsListSettingsResponses, SettingsResetSettingData, SettingsResetSettingErrors, SettingsResetSettingResponses, SettingsUpdateSettingData, SettingsUpdateSettingErrors, SettingsUpdateSettingResponses, SettingsUpdateSettingsData, SettingsUpdateSettingsErrors, SettingsUpdateSettingsResponses, SkillsListSkillsData, SkillsListSkillsErrors, SkillsListSkillsResponses, ThreadsArchiveThreadData, ThreadsArchiveThreadErrors, ThreadsArchiveThreadResponses, ThreadsCompactThreadData, ThreadsCompactThreadErrors, ThreadsCompactThreadResponses, ThreadsForkThreadData, ThreadsForkThreadErrors, ThreadsForkThreadResponses, ThreadsInterruptTurnData, ThreadsInterruptTurnErrors, ThreadsInterruptTurnResponses, ThreadsListLoadedThreadsData, ThreadsListLoadedThreadsErrors, ThreadsListLoadedThreadsResponses, ThreadsListThreadsData, ThreadsListThreadsErrors, ThreadsListThreadsResponses, ThreadsReadThreadData, ThreadsReadThreadErrors, ThreadsReadThreadResponses, ThreadsResumeThreadData, ThreadsResumeThreadErrors, ThreadsResumeThreadResponses, ThreadsRollbackThreadData, ThreadsRollbackThreadErrors, ThreadsRollbackThreadResponses, ThreadsSetThreadNameData, ThreadsSetThreadNameErrors, ThreadsSetThreadNameResponses, ThreadsStartThreadData, ThreadsStartThreadErrors, ThreadsStartThreadResponses, ThreadsStartTurnData, ThreadsStartTurnErrors, ThreadsStartTurnResponses, ThreadsSteerTurnData, ThreadsSteerTurnErrors, ThreadsSteerTurnResponses, ThreadsUnarchiveThreadData, ThreadsUnarchiveThreadErrors, ThreadsUnarchiveThreadResponses, TokenUsageReadThreadTokenUsageData, TokenUsageReadThreadTokenUsageErrors, TokenUsageReadThreadTokenUsageResponses, TurnDiffReadThreadTurnDiffsData, TurnDiffReadThreadTurnDiffsErrors, TurnDiffReadThreadTurnDiffsResponses } from './types.gen';
+import type { AccountCancelLoginData, AccountCancelLoginErrors, AccountCancelLoginResponses, AccountLoginData, AccountLoginErrors, AccountLoginResponses, AccountLogoutData, AccountLogoutErrors, AccountLogoutResponses, AccountReadAccountData, AccountReadAccountErrors, AccountReadAccountResponses, AccountReadRateLimitsData, AccountReadRateLimitsErrors, AccountReadRateLimitsResponses, AppGetStatusData, AppGetStatusResponses, AuthLoginData, AuthLoginErrors, AuthLoginResponses, AuthLogoutData, AuthLogoutResponses, ChatUploadAttachmentData, ChatUploadAttachmentErrors, ChatUploadAttachmentResponses, CodexConfigReadConfigData, CodexConfigReadConfigErrors, CodexConfigReadConfigResponses, CodexConfigReadRawConfigData, CodexConfigReadRawConfigErrors, CodexConfigReadRawConfigResponses, CodexConfigUpdateConfigData, CodexConfigUpdateConfigErrors, CodexConfigUpdateConfigResponses, CodexConfigUpdateRawConfigData, CodexConfigUpdateRawConfigErrors, CodexConfigUpdateRawConfigResponses, CodexStatusGetStatusData, CodexStatusGetStatusErrors, CodexStatusGetStatusResponses, CodexStatusUpdateApprovalPolicyData, CodexStatusUpdateApprovalPolicyErrors, CodexStatusUpdateApprovalPolicyResponses, CodexStatusUpdateSandboxModeData, CodexStatusUpdateSandboxModeErrors, CodexStatusUpdateSandboxModeResponses, FilesAddRootData, FilesAddRootErrors, FilesAddRootResponses, FilesCopyPathData, FilesCopyPathErrors, FilesCopyPathResponses, FilesCreateDirectoryData, FilesCreateDirectoryErrors, FilesCreateDirectoryResponses, FilesCreateFileData, FilesCreateFileErrors, FilesCreateFileResponses, FilesDeletePathData, FilesDeletePathErrors, FilesDeletePathResponses, FilesDownloadFileData, FilesDownloadFileErrors, FilesGetMetadataData, FilesGetMetadataErrors, FilesGetMetadataResponses, FilesGetRootsData, FilesGetRootsErrors, FilesGetRootsResponses, FilesMovePathData, FilesMovePathErrors, FilesMovePathResponses, FilesReadFileData, FilesReadFileErrors, FilesReadFileResponses, FilesReadTreeData, FilesReadTreeErrors, FilesReadTreeResponses, FilesRenamePathData, FilesRenamePathErrors, FilesRenamePathResponses, FilesServeFileData, FilesServeFileErrors, FilesUploadFilesData, FilesUploadFilesErrors, FilesUploadFilesResponses, FilesWriteFileData, FilesWriteFileErrors, FilesWriteFileResponses, LogsExportDiagnosticsData, LogsExportDiagnosticsErrors, LogsExportDiagnosticsResponses, LogsListLogsData, LogsListLogsErrors, LogsListLogsResponses, McpServersListServersData, McpServersListServersErrors, McpServersListServersResponses, McpServersReloadAllData, McpServersReloadAllErrors, McpServersReloadAllResponses, ModelsListModelsData, ModelsListModelsErrors, ModelsListModelsResponses, PendingApprovalsListPendingData, PendingApprovalsListPendingResponses, PendingApprovalsRespondData, PendingApprovalsRespondResponses, SettingsGetSettingData, SettingsGetSettingErrors, SettingsGetSettingResponses, SettingsListSettingsData, SettingsListSettingsErrors, SettingsListSettingsResponses, SettingsResetSettingData, SettingsResetSettingErrors, SettingsResetSettingResponses, SettingsUpdateSettingData, SettingsUpdateSettingErrors, SettingsUpdateSettingResponses, SettingsUpdateSettingsData, SettingsUpdateSettingsErrors, SettingsUpdateSettingsResponses, SkillsListSkillsData, SkillsListSkillsErrors, SkillsListSkillsResponses, ThreadsArchiveThreadData, ThreadsArchiveThreadErrors, ThreadsArchiveThreadResponses, ThreadsCompactThreadData, ThreadsCompactThreadErrors, ThreadsCompactThreadResponses, ThreadsForkThreadData, ThreadsForkThreadErrors, ThreadsForkThreadResponses, ThreadsInterruptTurnData, ThreadsInterruptTurnErrors, ThreadsInterruptTurnResponses, ThreadsListLoadedThreadsData, ThreadsListLoadedThreadsErrors, ThreadsListLoadedThreadsResponses, ThreadsListThreadsData, ThreadsListThreadsErrors, ThreadsListThreadsResponses, ThreadsReadThreadData, ThreadsReadThreadErrors, ThreadsReadThreadResponses, ThreadsResumeThreadData, ThreadsResumeThreadErrors, ThreadsResumeThreadResponses, ThreadsRollbackThreadData, ThreadsRollbackThreadErrors, ThreadsRollbackThreadResponses, ThreadsSetThreadNameData, ThreadsSetThreadNameErrors, ThreadsSetThreadNameResponses, ThreadsStartThreadData, ThreadsStartThreadErrors, ThreadsStartThreadResponses, ThreadsStartTurnData, ThreadsStartTurnErrors, ThreadsStartTurnResponses, ThreadsSteerTurnData, ThreadsSteerTurnErrors, ThreadsSteerTurnResponses, ThreadsUnarchiveThreadData, ThreadsUnarchiveThreadErrors, ThreadsUnarchiveThreadResponses, TokenUsageReadThreadTokenUsageData, TokenUsageReadThreadTokenUsageErrors, TokenUsageReadThreadTokenUsageResponses, TurnDiffReadThreadTurnDiffsData, TurnDiffReadThreadTurnDiffsErrors, TurnDiffReadThreadTurnDiffsResponses } from './types.gen';
 
 export type Options<TData extends TDataShape = TDataShape, ThrowOnError extends boolean = boolean, TResponse = unknown> = Options2<TData, ThrowOnError, TResponse> & {
     /**
@@ -139,6 +139,50 @@ export const codexStatusUpdateApprovalPolicy = <ThrowOnError extends boolean = f
 export const codexStatusUpdateSandboxMode = <ThrowOnError extends boolean = false>(options: Options<CodexStatusUpdateSandboxModeData, ThrowOnError>) => (options.client ?? client).post<CodexStatusUpdateSandboxModeResponses, CodexStatusUpdateSandboxModeErrors, ThrowOnError>({
     security: [{ scheme: 'bearer', type: 'http' }],
     url: '/api/codex/sandbox-mode',
+    ...options,
+    headers: {
+        'Content-Type': 'application/json',
+        ...options.headers
+    }
+});
+
+/**
+ * Read Codex config with origin metadata
+ */
+export const codexConfigReadConfig = <ThrowOnError extends boolean = false>(options?: Options<CodexConfigReadConfigData, ThrowOnError>) => (options?.client ?? client).get<CodexConfigReadConfigResponses, CodexConfigReadConfigErrors, ThrowOnError>({
+    security: [{ scheme: 'bearer', type: 'http' }],
+    url: '/api/codex/config',
+    ...options
+});
+
+/**
+ * Update curated Codex config fields
+ */
+export const codexConfigUpdateConfig = <ThrowOnError extends boolean = false>(options: Options<CodexConfigUpdateConfigData, ThrowOnError>) => (options.client ?? client).patch<CodexConfigUpdateConfigResponses, CodexConfigUpdateConfigErrors, ThrowOnError>({
+    security: [{ scheme: 'bearer', type: 'http' }],
+    url: '/api/codex/config',
+    ...options,
+    headers: {
+        'Content-Type': 'application/json',
+        ...options.headers
+    }
+});
+
+/**
+ * Read raw user config.toml
+ */
+export const codexConfigReadRawConfig = <ThrowOnError extends boolean = false>(options?: Options<CodexConfigReadRawConfigData, ThrowOnError>) => (options?.client ?? client).get<CodexConfigReadRawConfigResponses, CodexConfigReadRawConfigErrors, ThrowOnError>({
+    security: [{ scheme: 'bearer', type: 'http' }],
+    url: '/api/codex/config/raw',
+    ...options
+});
+
+/**
+ * Write raw user config.toml and reload Codex config
+ */
+export const codexConfigUpdateRawConfig = <ThrowOnError extends boolean = false>(options: Options<CodexConfigUpdateRawConfigData, ThrowOnError>) => (options.client ?? client).put<CodexConfigUpdateRawConfigResponses, CodexConfigUpdateRawConfigErrors, ThrowOnError>({
+    security: [{ scheme: 'bearer', type: 'http' }],
+    url: '/api/codex/config/raw',
     ...options,
     headers: {
         'Content-Type': 'application/json',
