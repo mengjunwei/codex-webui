@@ -12,11 +12,46 @@ import { ToolCallItem } from './turn-items/tool-call-item';
 import { CommandItem } from './turn-items/command-item';
 import { FileChangeItem } from './turn-items/file-change-item';
 import { DiffViewer } from './turn-items/diff-viewer';
+import { ToolCallGroup } from './turn-items/tool-call-group';
 import { ApprovalItem } from './turn-items/approval-item';
 import { UserInputCard } from './turn-items/user-input-card';
 import { TurnTokenFooter } from './turn-token-footer';
 import { PlanPanel } from './plan-panel';
 import { useTimelineStore } from '@/stores/timeline-store';
+
+/* ── Grouping consecutive mcpToolCall items ── */
+
+type GroupedEntry =
+  | { kind: 'single'; item: TurnItem }
+  | { kind: 'toolGroup'; items: TurnItem[] };
+
+/** Groups consecutive mcpToolCall items so they can be rendered in a collapsible block. */
+function groupConsecutiveToolCalls(items: TurnItem[]): GroupedEntry[] {
+  const result: GroupedEntry[] = [];
+  let buffer: TurnItem[] = [];
+
+  const flush = () => {
+    if (buffer.length === 0) return;
+    if (buffer.length === 1) {
+      result.push({ kind: 'single', item: buffer[0] });
+    } else {
+      result.push({ kind: 'toolGroup', items: buffer });
+    }
+    buffer = [];
+  };
+
+  for (const item of items) {
+    if (item.type === 'mcpToolCall') {
+      buffer.push(item);
+    } else {
+      flush();
+      result.push({ kind: 'single', item });
+    }
+  }
+  flush();
+
+  return result;
+}
 
 interface Props {
   entry: Extract<TimelineEntry, { kind: 'turn' }>;
@@ -97,9 +132,18 @@ export function TurnBlock({ entry }: Props) {
       <div className="glass-1 min-w-0 flex-1 space-y-2 rounded-2xl px-4 py-3">
         {entry.plan && <PlanPanel plan={entry.plan} completed={entry.completed} />}
 
-        {entry.items.map((item) => (
-          <ItemWithRequests key={item.itemId} item={item} />
-        ))}
+        {groupConsecutiveToolCalls(entry.items).map((group) => {
+          if (group.kind === 'single') {
+            return <ItemWithRequests key={group.item.itemId} item={group.item} />;
+          }
+          return (
+            <ToolCallGroup key={group.items[0].itemId} items={group.items}>
+              {group.items.map((item) => (
+                <ItemWithRequests key={item.itemId} item={item} />
+              ))}
+            </ToolCallGroup>
+          );
+        })}
 
         {unattachedInputs.map((req) => (
           <UserInputCard key={String(req.requestId)} request={req} />
