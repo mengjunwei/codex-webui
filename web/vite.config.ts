@@ -13,9 +13,6 @@ export default defineConfig({
   build: {
     outDir: '../public',
     emptyOutDir: true,
-    // Target modern browsers so the CSS minifier keeps unprefixed
-    // backdrop-filter (the -webkit- only output breaks glass effects).
-    cssTarget: ['chrome100', 'safari16', 'firefox100'],
     rolldownOptions: {
       output: {
         codeSplitting: true,

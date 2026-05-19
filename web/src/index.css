@@ -197,51 +197,57 @@ body {
    GLASS UTILITY CLASSES — 5 elevation levels
    ══════════════════════════════════════════════════════ */
 
+/*
+ * Lightning CSS minifier merges duplicate properties and keeps the LAST one.
+ * -webkit- MUST come BEFORE unprefixed so the unprefixed version survives.
+ * See: https://github.com/parcel-bundler/lightningcss/issues/1229
+ */
+
 /* Level 2 — sidebar, subtle panels */
 .glass {
   background: var(--glass-3-surface);
-  backdrop-filter: blur(var(--glass-3-blur)) saturate(var(--glass-saturate));
   -webkit-backdrop-filter: blur(var(--glass-3-blur)) saturate(var(--glass-saturate));
+  backdrop-filter: blur(var(--glass-3-blur)) saturate(var(--glass-saturate));
   border: 1px solid var(--glass-border);
   box-shadow: var(--glass-shadow-sm), var(--glass-inset);
 }
 
 .glass-1 {
   background: var(--glass-1-surface);
-  backdrop-filter: blur(var(--glass-1-blur)) saturate(var(--glass-saturate));
   -webkit-backdrop-filter: blur(var(--glass-1-blur)) saturate(var(--glass-saturate));
+  backdrop-filter: blur(var(--glass-1-blur)) saturate(var(--glass-saturate));
   border: 1px solid var(--glass-border-subtle);
   box-shadow: var(--glass-shadow-sm);
 }
 
 .glass-2 {
   background: var(--glass-2-surface);
-  backdrop-filter: blur(var(--glass-2-blur)) saturate(var(--glass-saturate));
   -webkit-backdrop-filter: blur(var(--glass-2-blur)) saturate(var(--glass-saturate));
+  backdrop-filter: blur(var(--glass-2-blur)) saturate(var(--glass-saturate));
   border: 1px solid var(--glass-border-subtle);
   box-shadow: var(--glass-shadow-sm), var(--glass-inset);
 }
 
 .glass-3 {
   background: var(--glass-3-surface);
-  backdrop-filter: blur(var(--glass-3-blur)) saturate(var(--glass-saturate));
   -webkit-backdrop-filter: blur(var(--glass-3-blur)) saturate(var(--glass-saturate));
+  backdrop-filter: blur(var(--glass-3-blur)) saturate(var(--glass-saturate));
   border: 1px solid var(--glass-border);
   box-shadow: var(--glass-shadow-md), var(--glass-inset);
 }
 
 .glass-4 {
   background: var(--glass-4-surface);
-  backdrop-filter: blur(var(--glass-4-blur)) saturate(var(--glass-saturate));
   -webkit-backdrop-filter: blur(var(--glass-4-blur)) saturate(var(--glass-saturate));
+  backdrop-filter: blur(var(--glass-4-blur)) saturate(var(--glass-saturate));
   border: 1px solid var(--glass-border);
   box-shadow: var(--glass-shadow-md), var(--glass-inset);
 }
 
 .glass-5 {
   background: var(--glass-5-surface);
-  backdrop-filter: blur(var(--glass-5-blur)) saturate(var(--glass-saturate));
   -webkit-backdrop-filter: blur(var(--glass-5-blur)) saturate(var(--glass-saturate));
+  backdrop-filter: blur(var(--glass-5-blur)) saturate(var(--glass-saturate));
   border: 1px solid var(--glass-border);
   box-shadow: var(--glass-shadow-lg), var(--glass-inset);
 }
