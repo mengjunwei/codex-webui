@@ -82,6 +82,7 @@ RUN node --version \
 
 # Install global npm tools (codex + MCP utilities)
 ARG CODEX_CLI_VERSION=0.123.0
+ENV CODEX_CLI_VERSION=${CODEX_CLI_VERSION}
 RUN npm install -g \
     @openai/codex@${CODEX_CLI_VERSION} \
     mcp-safe-proxy \
@@ -125,22 +126,25 @@ COPY drizzle/ ./drizzle/
 RUN tar -C /root -czf /opt/root-seed.tar.gz .
 
 # ── Entrypoint ───────────────────────────────────────────────────────
-RUN cat > /usr/local/bin/entrypoint.sh <<'EOF'
+RUN cat > /usr/local/bin/entrypoint.sh <<'ENTRYPOINT_EOF'
 #!/usr/bin/env bash
 set -euo pipefail
 
 ROOT_SEED="/opt/root-seed.tar.gz"
 ROOT_MARKER="/root/.codex-webui-initialized"
+VERSION_MARKER="/root/.codex-webui-version"
 
 is_root_empty() {
   find /root -mindepth 1 -maxdepth 1 -print -quit | grep -q . && return 1
   return 0
 }
 
+# ── Phase 1: Root seed restore ──────────────────────────────────────
 if is_root_empty; then
   echo "[entrypoint] /root is empty, restoring seed data..."
   tar -C /root -xzf "${ROOT_SEED}"
   touch "${ROOT_MARKER}"
+  echo "${CODEX_CLI_VERSION:-unknown}" > "${VERSION_MARKER}"
 elif [ ! -e "${ROOT_MARKER}" ] && [ ! -d /root/.local/share/mise ]; then
   echo "[entrypoint] /root has data but mise seed is missing; leaving unchanged."
   echo "[entrypoint] Clear the host volume and restart if this is unintended."
@@ -148,11 +152,40 @@ else
   echo "[entrypoint] /root already initialized."
 fi
 
+# ── Phase 2: Codex version upgrade ─────────────────────────────────
+# Compare image-embedded CODEX_CLI_VERSION with installed version.
+# If different, upgrade codex and rebuild arg0 symlinks.
+EXPECTED_VER="${CODEX_CLI_VERSION:-}"
+INSTALLED_VER=""
+if [ -f "${VERSION_MARKER}" ]; then
+  INSTALLED_VER="$(cat "${VERSION_MARKER}" 2>/dev/null || true)"
+fi
+
+if [ -n "${EXPECTED_VER}" ] && [ "${EXPECTED_VER}" != "${INSTALLED_VER}" ]; then
+  echo "[entrypoint] Codex version mismatch: installed=${INSTALLED_VER:-none}, expected=${EXPECTED_VER}"
+  echo "[entrypoint] Upgrading @openai/codex to ${EXPECTED_VER}..."
+  if npm install -g "@openai/codex@${EXPECTED_VER}" 2>&1; then
+    echo "${EXPECTED_VER}" > "${VERSION_MARKER}"
+    echo "[entrypoint] Codex upgraded to ${EXPECTED_VER}"
+
+    # Rebuild arg0 symlinks (codex multi-call binary may have moved)
+    CODEX_BIN="$(find /root/.local/share/mise -name codex -path '*/vendor/*/codex/codex' -type f 2>/dev/null | head -1)"
+    if [ -n "${CODEX_BIN}" ]; then
+      for tool in apply_patch applypatch codex-execve-wrapper codex-linux-sandbox; do
+        ln -sf "${CODEX_BIN}" "/usr/local/bin/${tool}"
+      done
+      echo "[entrypoint] Rebuilt arg0 symlinks -> ${CODEX_BIN}"
+    fi
+  else
+    echo "[entrypoint] WARNING: Codex upgrade failed, continuing with installed version"
+  fi
+fi
+
 # Ensure directories exist (in case volume is pre-populated but partial)
 mkdir -p /root/.codex /workspaces /app/logs
 
 exec "$@"
-EOF
+ENTRYPOINT_EOF
 
 RUN chmod +x /usr/local/bin/entrypoint.sh
 
