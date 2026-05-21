@@ -1262,6 +1262,14 @@ export type OnlyOfficeConfigResponseDto = {
     };
 };
 
+export type OnlyOfficeCallbackDto = {
+    status: number;
+    url?: string;
+    key?: string;
+    token?: string;
+    users?: Array<string>;
+};
+
 export type TurnDiffEntryDto = {
     turnId: string;
     diff: string;
@@ -2650,6 +2658,7 @@ export type OnlyOfficeGetConfigData = {
     path?: never;
     query: {
         path: string;
+        mode?: 'edit' | 'view';
     };
     url: '/api/onlyoffice/config';
 };
@@ -2666,6 +2675,33 @@ export type OnlyOfficeGetConfigResponses = {
 };
 
 export type OnlyOfficeGetConfigResponse = OnlyOfficeGetConfigResponses[keyof OnlyOfficeGetConfigResponses];
+
+export type OnlyOfficeHandleCallbackData = {
+    body: OnlyOfficeCallbackDto;
+    path?: never;
+    query: {
+        /**
+         * Workspace file path
+         */
+        path: string;
+        /**
+         * Signed callback state token
+         */
+        state?: string;
+    };
+    url: '/api/onlyoffice/callback';
+};
+
+export type OnlyOfficeHandleCallbackResponses = {
+    /**
+     * Acknowledged
+     */
+    200: {
+        error?: number;
+    };
+};
+
+export type OnlyOfficeHandleCallbackResponse = OnlyOfficeHandleCallbackResponses[keyof OnlyOfficeHandleCallbackResponses];
 
 export type TurnDiffReadThreadTurnDiffsData = {
     body?: never;

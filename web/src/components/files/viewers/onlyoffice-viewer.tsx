@@ -1,4 +1,4 @@
-/** OnlyOffice Docs integration for DOCX/XLSX/PPTX read-only previews. */
+/** OnlyOffice Docs integration for DOCX/XLSX/PPTX editing and preview. */
 import { useEffect, useId, useRef, useState } from 'react';
 import { FileText, Loader2 } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
@@ -62,7 +62,7 @@ export function OnlyOfficeViewer({ filePath }: Props) {
       {status === 'loading' && (
         <OnlyOfficeMessage icon={<Loader2 className="h-4 w-4 animate-spin" />} message={t('Loading...')} />
       )}
-      {status === 'error' && <OnlyOfficeMessage message={t('Failed to load OnlyOffice preview')} />}
+      {status === 'error' && <OnlyOfficeMessage message={t('Failed to load OnlyOffice editor')} />}
       <div id={elementId} className="h-full w-full" />
     </div>
   );

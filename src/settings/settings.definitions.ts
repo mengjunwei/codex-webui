@@ -60,6 +60,7 @@ export const GENERAL_SETTING_KEYS = {
   maxIdleSubscriptions: 'general.maxIdleSubscriptions',
   onlyofficeUrl: 'general.onlyofficeUrl',
   onlyofficeJwtSecret: 'general.onlyofficeJwtSecret',
+  onlyofficeSaveMaxBytes: 'general.onlyofficeSaveMaxBytes',
   publicBaseUrl: 'general.publicBaseUrl',
 } as const;
 
@@ -73,6 +74,7 @@ export const GENERAL_SETTING_DEFAULTS = {
   maxIdleSubscriptions: 30,
   onlyofficeUrl: '',
   onlyofficeJwtSecret: '',
+  onlyofficeSaveMaxBytes: 104_857_600,
   publicBaseUrl: '',
 } as const;
 
@@ -112,8 +114,17 @@ export const SETTINGS_DEFINITIONS = [
     type: 'string',
     category: 'general',
     description:
-      'JWT secret for signing OnlyOffice editor config. Leave empty only when the Document Server has JWT disabled.',
+      'JWT secret for signing OnlyOffice editor config and verifying save callbacks. Must match the Document Server browser/outbox secret for edit mode.',
     defaultValue: GENERAL_SETTING_DEFAULTS.onlyofficeJwtSecret,
+  },
+  {
+    key: GENERAL_SETTING_KEYS.onlyofficeSaveMaxBytes,
+    type: 'number',
+    category: 'general',
+    description:
+      'Maximum file size in bytes accepted from OnlyOffice save callback. Increase for large Office documents.',
+    defaultValue: GENERAL_SETTING_DEFAULTS.onlyofficeSaveMaxBytes,
+    constraints: { min: 1_048_576, max: 1_073_741_824, integer: true },
   },
   {
     key: GENERAL_SETTING_KEYS.publicBaseUrl,

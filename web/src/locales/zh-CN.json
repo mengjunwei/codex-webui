@@ -419,7 +419,8 @@
   "{{name}} login failed: {{error}}": "{{name}} 登录失败：{{error}}",
   "Manage skills": "管理技能",
   "OnlyOffice Document Server base URL. Leave empty to use native viewers and disable PPTX preview.": "OnlyOffice Document Server 基础 URL。留空则使用原生预览器并禁用 PPTX 预览。",
-  "JWT secret for signing OnlyOffice editor config. Leave empty only when the Document Server has JWT disabled.": "用于签名 OnlyOffice 编辑器配置的 JWT 密钥。仅当 Document Server 禁用 JWT 时才留空。",
+  "Maximum file size in bytes accepted from OnlyOffice save callback. Increase for large Office documents.": "OnlyOffice 保存回调接受的最大文件大小（字节）。大型 Office 文档可适当增大。",
+  "JWT secret for signing OnlyOffice editor config and verifying save callbacks. Must match the Document Server browser/outbox secret for edit mode.": "用于签名 OnlyOffice 编辑器配置并校验保存回调的 JWT 密钥。编辑模式下必须与 Document Server 的 browser/outbox 密钥一致。",
   "Public base URL of this WebUI instance (e.g. https://codex.example.com). Used to build document URLs reachable by OnlyOffice. Auto-detected from request headers when empty.": "本 WebUI 实例的公开基础 URL（如 https://codex.example.com）。用于构建 OnlyOffice 可访问的文档 URL。留空时从请求头自动检测。",
   "Failed to load file": "文件加载失败",
   "Failed to load PDF": "PDF 加载失败",
@@ -450,5 +451,6 @@
   "Archive entry exceeds the preview size limit": "压缩包内文件超过预览大小限制",
   "Nested archive previews are not supported": "暂不支持嵌套压缩包预览",
   "Configure OnlyOffice to preview presentations": "请配置 OnlyOffice 以预览演示文稿",
-  "Failed to load OnlyOffice preview": "OnlyOffice 预览加载失败"
+  "Failed to load OnlyOffice preview": "OnlyOffice 预览加载失败",
+  "Failed to load OnlyOffice editor": "OnlyOffice 编辑器加载失败"
 }
