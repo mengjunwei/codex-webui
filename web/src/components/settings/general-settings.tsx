@@ -3,6 +3,8 @@ import { Globe, LogOut, Moon, Sun } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { Button } from '@/components/ui/button';
 import { Separator } from '@/components/ui/separator';
+import { SettingEditor } from './setting-editor';
+import { useCategorySettings } from './use-category-settings';
 
 interface Props {
   dark: boolean;
@@ -20,6 +22,7 @@ export function GeneralSettings({
   onLogout,
 }: Props) {
   const { t } = useTranslation();
+  const runtimeSettings = useCategorySettings('general');
 
   return (
     <>
@@ -70,6 +73,39 @@ export function GeneralSettings({
             </Button>
           </div>
         </div>
+      </section>
+
+      <Separator />
+
+      <section className="space-y-4">
+        <div className="space-y-1">
+          <h2 className="text-sm font-medium text-muted-foreground">
+            {t('Runtime Settings')}
+          </h2>
+          <p className="text-xs text-muted-foreground">
+            {t(
+              'Idle thread subscriptions are cleaned up in the browser while active or approval-blocked threads stay subscribed.',
+            )}
+          </p>
+        </div>
+
+        {runtimeSettings.isLoading && (
+          <div className="rounded-lg border border-border bg-card/50 px-4 py-3 text-sm text-muted-foreground">
+            {t('Loading...')}
+          </div>
+        )}
+
+        {runtimeSettings.settings.map((setting) => (
+          <SettingEditor
+            key={setting.key}
+            setting={setting}
+            draft={runtimeSettings.drafts[setting.key] ?? ''}
+            disabled={runtimeSettings.isSaving}
+            onDraftChange={runtimeSettings.handleDraftChange}
+            onSave={runtimeSettings.handleSave}
+            onReset={runtimeSettings.handleReset}
+          />
+        ))}
       </section>
 
       <Separator />

@@ -132,16 +132,16 @@ cd web && pnpm dev
 |------|:----:|--------|------|
 | `WEBUI_API_KEY` | 是 | — | 登录密钥，同时用于派生 JWT 签名 |
 | `PORT` | 否 | `8172` | 后端监听端口 |
+| `OPENAI_API_KEY` | 否 | — | Codex 使用 OpenAI API 时的密钥 |
 | `CODEX_BIN` | 否 | `codex` | codex CLI 可执行文件路径 |
 | `CODEX_HOME` | 否 | `~/.codex` | Codex 主目录 |
-| `WORKSPACE_ROOTS` | 否 | — | 逗号分隔的允许访问目录 |
 | `LOG_LEVEL` | 否 | `info` | Pino 日志级别 |
 | `WEBUI_DB_PATH` | 否 | `CODEX_HOME/codex-webui.sqlite` | SQLite 数据库路径 |
-| `WEBUI_UPLOAD_MAX_BYTES` | 否 | `104857600` | 上传文件大小限制（100MB） |
-| `DEFAULT_TERMINAL_CWD` | 否 | — | 终端默认工作目录 |
-| `WEBUI_TERMINAL_MAX_SESSIONS` | 否 | `10` | 最大并发终端会话数（1-50） |
-| `WEBUI_TERMINAL_GRACE_MS` | 否 | `45000` | 断开连接后终端保活时长 |
-| `WEBUI_TERMINAL_SCROLLBACK` | 否 | `5000` | 终端回滚缓冲区行数 |
+
+### Runtime Settings
+
+`security.workspaceRoots`、`files.uploadMaxBytes`、`terminal.defaultCwd`、`terminal.maxSessions`、`terminal.graceMs`、`terminal.scrollback` 已迁入 SQLite runtime settings，可在 Settings 页面或 `/api/settings` 修改；同名历史环境变量仍作为 DB 未设置时的 fallback 生效。
+Docker Compose 保留 `WORKSPACE_ROOTS=/workspaces`，用于首次启动时为挂载的 `/workspaces` 提供 bootstrap fallback。
 
 ## 项目结构
 

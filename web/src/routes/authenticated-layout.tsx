@@ -3,6 +3,7 @@
  * Replaces the old App.tsx conditional rendering.
  */
 import { useCallback, useEffect, useState } from 'react';
+import { useQuery } from '@tanstack/react-query';
 import { Outlet, useNavigate, useRouterState } from '@tanstack/react-router';
 import { useTranslation } from 'react-i18next';
 import { TooltipProvider } from '@/components/ui/tooltip';
@@ -27,13 +28,19 @@ import { getSocket, resetSocket } from '@/socket';
 import { filesGetRoots, filesAddRoot } from '@/generated/api';
 import {
   pendingApprovalsListPending,
+  settingsListSettings,
   threadsListLoadedThreads,
   threadsResumeThread,
 } from '@/generated/api/sdk.gen';
+import { settingsListSettingsQueryKey } from '@/generated/api/@tanstack/react-query.gen';
 import type { PendingServerRequestDto } from '@/generated/api';
 import type { ApprovalRequest } from '@/types/approval';
 import { parseAvailableDecisions, parseStringArray, parseNetworkAmendments } from '@/lib/approval-parsers';
 import { userInputFromPending } from '@/lib/user-input-parsers';
+
+const MAX_IDLE_SUBSCRIPTIONS_KEY = 'general.maxIdleSubscriptions';
+const DEFAULT_MAX_IDLE_SUBSCRIPTIONS = 30;
+const IDLE_SUBSCRIPTION_CLEANUP_INTERVAL_MS = 5 * 60 * 1000;
 
 function approvalFromPending(request: PendingServerRequestDto): ApprovalRequest | null {
   const params = request.params;
@@ -74,6 +81,17 @@ function approvalFromPending(request: PendingServerRequestDto): ApprovalRequest 
   return null;
 }
 
+function readMaxIdleSubscriptions(
+  settings: Array<{ key: string; value: unknown }> | undefined,
+): number {
+  const value = settings?.find(
+    (setting) => setting.key === MAX_IDLE_SUBSCRIPTIONS_KEY,
+  )?.value;
+  return typeof value === 'number' && Number.isFinite(value)
+    ? value
+    : DEFAULT_MAX_IDLE_SUBSCRIPTIONS;
+}
+
 export function AuthenticatedLayout() {
   const navigate = useNavigate();
   const pathname = useRouterState({ select: (s) => s.location.pathname });
@@ -89,11 +107,38 @@ export function AuthenticatedLayout() {
   const setActiveTurnIdForThread = useTimelineStore((s) => s.setActiveTurnIdForThread);
   const setThreadTitleForThread = useTimelineStore((s) => s.setThreadTitleForThread);
   const setActiveThread = useTimelineStore((s) => s.setActiveThread);
+  const setMaxIdleSubscriptions = useTimelineStore((s) => s.setMaxIdleSubscriptions);
+  const cleanupIdleThreadSubscriptions = useTimelineStore((s) => s.cleanupIdleThreadSubscriptions);
   const setRootDir = useFilesStore((s) => s.setRootDir);
   const dark = useThemeStore((s) => s.dark);
   const toggleDark = useThemeStore((s) => s.toggleDark);
+  const generalSettingsQuery = useQuery({
+    queryKey: settingsListSettingsQueryKey({ query: { category: 'general' } }),
+    queryFn: async () => {
+      const { data } = await settingsListSettings({
+        query: { category: 'general' },
+        throwOnError: true,
+      });
+      return data;
+    },
+  });
+  const maxIdleSubscriptions = readMaxIdleSubscriptions(
+    generalSettingsQuery.data?.settings,
+  );
 
   useCodexSocket(true);
+
+  useEffect(() => {
+    setMaxIdleSubscriptions(maxIdleSubscriptions);
+  }, [maxIdleSubscriptions, setMaxIdleSubscriptions]);
+
+  useEffect(() => {
+    const timer = window.setInterval(
+      () => cleanupIdleThreadSubscriptions(maxIdleSubscriptions),
+      IDLE_SUBSCRIPTION_CLEANUP_INTERVAL_MS,
+    );
+    return () => window.clearInterval(timer);
+  }, [cleanupIdleThreadSubscriptions, maxIdleSubscriptions]);
 
   // Fetch home dir on mount
   useEffect(() => {

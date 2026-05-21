@@ -9,6 +9,20 @@ import type { ApprovalRequest, ResolvableApprovalDecision, UserInputRequest } fr
 import type { ThreadDto, TurnDto, FileUpdateChangeDto } from '../generated/api';
 import type { ThreadTokenUsage, ThreadStatusType } from '../types/codex-notifications';
 
+const DEFAULT_MAX_IDLE_SUBSCRIPTIONS = 30;
+const MIN_MAX_IDLE_SUBSCRIPTIONS = 5;
+const MAX_MAX_IDLE_SUBSCRIPTIONS = 200;
+const IDLE_SUBSCRIPTION_TTL_MS = 15 * 60 * 1000;
+
+/** Keeps the store-side fallback aligned with the backend runtime setting. */
+function normalizeMaxIdleSubscriptions(limit: number): number {
+  if (!Number.isFinite(limit)) return DEFAULT_MAX_IDLE_SUBSCRIPTIONS;
+  return Math.min(
+    MAX_MAX_IDLE_SUBSCRIPTIONS,
+    Math.max(MIN_MAX_IDLE_SUBSCRIPTIONS, Math.trunc(limit)),
+  );
+}
+
 export type ThreadMode = 'live' | 'readOnly';
 
 export interface ThreadRuntimeState {
@@ -30,6 +44,8 @@ export interface ThreadRuntimeState {
   activeTurnId: string | null;
   pendingResolvedRequestIds: Set<string>;
   hydrated: boolean;
+  /** Millisecond timestamp for LRU-style idle subscription cleanup. */
+  lastActivityAt: number;
 }
 
 interface ThreadRuntimeInput {
@@ -166,6 +182,7 @@ function createRuntime(input: ThreadRuntimeInput): ThreadRuntimeState {
     activeTurnId: null,
     pendingResolvedRequestIds: new Set<string>(),
     hydrated: false,
+    lastActivityAt: Date.now(),
   };
 }
 
@@ -187,6 +204,7 @@ function runtimeFromSelected(state: TimelineState): ThreadRuntimeState | null {
     activeTurnId: state.activeTurnId,
     pendingResolvedRequestIds: state.pendingResolvedRequestIds,
     hydrated: true,
+    lastActivityAt: state.lastActivityAt,
   };
 }
 
@@ -212,6 +230,7 @@ function selectedFields(runtime: ThreadRuntimeState | null): Partial<TimelineSta
       threadStatus: null,
       activeTurnId: null,
       pendingResolvedRequestIds: new Set<string>(),
+      lastActivityAt: 0,
     };
   }
   return {
@@ -229,6 +248,7 @@ function selectedFields(runtime: ThreadRuntimeState | null): Partial<TimelineSta
     threadStatus: runtime.threadStatus,
     activeTurnId: runtime.activeTurnId,
     pendingResolvedRequestIds: runtime.pendingResolvedRequestIds,
+    lastActivityAt: runtime.lastActivityAt,
   };
 }
 
@@ -245,6 +265,42 @@ function hasPendingApproval(runtime: ThreadRuntimeState | null): boolean {
     runtime.threadStatus.activeFlags.includes('waitingOnApproval');
   const cardBlocked = Object.values(runtime.approvals).some((approval) => approval.status === 'pending');
   return flagBlocked || cardBlocked;
+}
+
+function hasPendingUserInput(runtime: ThreadRuntimeState | null): boolean {
+  if (!runtime) return false;
+  return Object.values(runtime.userInputRequests).some((request) => request.status === 'pending');
+}
+
+function touchRuntime(runtime: ThreadRuntimeState): ThreadRuntimeState {
+  return { ...runtime, lastActivityAt: Date.now() };
+}
+
+function isSafeToCleanupIdleRuntime(
+  runtime: ThreadRuntimeState | null,
+  selectedThreadId: string | null,
+): runtime is ThreadRuntimeState {
+  return Boolean(
+    runtime &&
+      runtime.threadId !== selectedThreadId &&
+      !runtime.loading &&
+      !runtime.activeTurnId &&
+      runtime.pendingResolvedRequestIds.size === 0 &&
+      runtime.threadStatus?.type !== 'active' &&
+      !hasPendingApproval(runtime) &&
+      !hasPendingUserInput(runtime),
+  );
+}
+
+function compareIdleCleanupCandidates(
+  now: number,
+  a: { lastActivityAt: number },
+  b: { lastActivityAt: number },
+): number {
+  const aExpired = now - a.lastActivityAt >= IDLE_SUBSCRIPTION_TTL_MS;
+  const bExpired = now - b.lastActivityAt >= IDLE_SUBSCRIPTION_TTL_MS;
+  if (aExpired !== bExpired) return aExpired ? -1 : 1;
+  return a.lastActivityAt - b.lastActivityAt;
 }
 
 /** Ensures a turn entry exists in timeline for a given turnId (needed for request-only cards). */
@@ -349,6 +405,7 @@ interface TimelineState {
   selectedThreadId: string | null;
   threadsById: Record<string, ThreadRuntimeState>;
   subscribedThreadIds: Set<string>;
+  maxIdleSubscriptions: number;
 
   threadId: string | null;
   threadCwd: string | null;
@@ -364,11 +421,14 @@ interface TimelineState {
   threadStatus: ThreadStatusType | null;
   activeTurnId: string | null;
   pendingResolvedRequestIds: Set<string>;
+  lastActivityAt: number;
 
   ensureThreadState: (input: ThreadRuntimeInput) => void;
   selectThread: (threadId: string | null) => void;
   resubscribeAll: () => void;
   unsubscribeThread: (threadId: string) => void;
+  setMaxIdleSubscriptions: (limit: number) => void;
+  cleanupIdleThreadSubscriptions: (limit?: number) => void;
   getThreadTitle: (threadId: string) => string;
   getThreadRuntime: (threadId: string) => ThreadRuntimeState | null;
   isThreadLoading: (threadId: string) => boolean;
@@ -456,7 +516,7 @@ export const useTimelineStore = create<TimelineState>((set, get) => {
   ) => {
     set((state) => {
       const base = readRuntime(state, threadId) ?? createRuntime({ threadId });
-      const runtime = updater(base);
+      const runtime = touchRuntime(updater(base));
       const threadsById = { ...persistSelectedRuntime(state), [threadId]: runtime };
       const patch: Partial<TimelineState> = { threadsById };
       if (state.threadId === threadId) Object.assign(patch, selectedFields(runtime));
@@ -470,6 +530,7 @@ export const useTimelineStore = create<TimelineState>((set, get) => {
     selectedThreadId: null,
     threadsById: {},
     subscribedThreadIds: new Set<string>(),
+    maxIdleSubscriptions: DEFAULT_MAX_IDLE_SUBSCRIPTIONS,
 
     threadId: null,
     threadCwd: null,
@@ -485,6 +546,7 @@ export const useTimelineStore = create<TimelineState>((set, get) => {
     threadStatus: null,
     activeTurnId: null,
     pendingResolvedRequestIds: new Set(),
+    lastActivityAt: 0,
 
     ensureThreadState: (input) => {
       set((state) => {
@@ -509,7 +571,7 @@ export const useTimelineStore = create<TimelineState>((set, get) => {
             threadsById,
           };
         }
-        const runtime = threadsById[threadId] ?? createRuntime({ threadId });
+        const runtime = touchRuntime(threadsById[threadId] ?? createRuntime({ threadId }));
         return {
           ...selectedFields(runtime),
           selectedThreadId: threadId,
@@ -534,6 +596,50 @@ export const useTimelineStore = create<TimelineState>((set, get) => {
       });
     },
 
+    setMaxIdleSubscriptions: (limit) => {
+      const maxIdleSubscriptions = normalizeMaxIdleSubscriptions(limit);
+      set({ maxIdleSubscriptions });
+      get().cleanupIdleThreadSubscriptions(maxIdleSubscriptions);
+    },
+
+    cleanupIdleThreadSubscriptions: (limit) => {
+      const maxIdleSubscriptions = normalizeMaxIdleSubscriptions(
+        limit ?? get().maxIdleSubscriptions,
+      );
+      const evictedThreadIds: string[] = [];
+
+      set((state) => {
+        const candidates: Array<{ threadId: string; lastActivityAt: number }> = [];
+        for (const threadId of state.subscribedThreadIds) {
+          const runtime = readRuntime(state, threadId);
+          if (isSafeToCleanupIdleRuntime(runtime, state.threadId)) {
+            candidates.push({ threadId, lastActivityAt: runtime.lastActivityAt });
+          }
+        }
+
+        if (candidates.length <= maxIdleSubscriptions) return {};
+
+        const now = Date.now();
+        candidates.sort((a, b) => compareIdleCleanupCandidates(now, a, b));
+        const evictCount = candidates.length - maxIdleSubscriptions;
+        const subscribedThreadIds = new Set(state.subscribedThreadIds);
+        const threadsById = { ...persistSelectedRuntime(state) };
+
+        for (const candidate of candidates.slice(0, evictCount)) {
+          subscribedThreadIds.delete(candidate.threadId);
+          delete threadsById[candidate.threadId];
+          evictedThreadIds.push(candidate.threadId);
+        }
+
+        return { subscribedThreadIds, threadsById };
+      });
+
+      const socket = getSocket();
+      for (const threadId of evictedThreadIds) {
+        socket.emit('thread.unsubscribe', { threadId });
+      }
+    },
+
     getThreadTitle: (threadId) => {
       const runtime = readRuntime(get(), threadId);
       return runtime?.threadTitle ?? threadId.slice(0, 8);
@@ -548,6 +654,7 @@ export const useTimelineStore = create<TimelineState>((set, get) => {
       get().selectThread(threadId);
       getSocket().emit('thread.subscribe', { threadId });
       set((state) => ({ subscribedThreadIds: new Set(state.subscribedThreadIds).add(threadId) }));
+      get().cleanupIdleThreadSubscriptions();
     },
 
     setReadOnlyThread: (thread) => {

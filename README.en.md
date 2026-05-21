@@ -132,16 +132,16 @@ Open `http://localhost:5173`.
 | ------------------------------ | :------: | ------------------------------ | ---------------------------------------------- |
 | `WEBUI_API_KEY`                |   Yes    | —                              | Login key; also derives JWT signing secret      |
 | `PORT`                         |    No    | `8172`                         | Backend listen port                            |
+| `OPENAI_API_KEY`               |    No    | —                              | OpenAI API key used by Codex                   |
 | `CODEX_BIN`                    |    No    | `codex`                        | Path to codex CLI binary                       |
 | `CODEX_HOME`                   |    No    | `~/.codex`                     | Codex home directory                           |
-| `WORKSPACE_ROOTS`              |    No    | —                              | Comma-separated allowed directories            |
 | `LOG_LEVEL`                    |    No    | `info`                         | Pino log level                                 |
 | `WEBUI_DB_PATH`                |    No    | `CODEX_HOME/codex-webui.sqlite`| SQLite database path                           |
-| `WEBUI_UPLOAD_MAX_BYTES`       |    No    | `104857600`                    | Max upload file size (100MB)                   |
-| `DEFAULT_TERMINAL_CWD`         |    No    | —                              | Default terminal working directory             |
-| `WEBUI_TERMINAL_MAX_SESSIONS`  |    No    | `10`                           | Max concurrent terminal sessions (1-50)        |
-| `WEBUI_TERMINAL_GRACE_MS`      |    No    | `45000`                        | Grace period before killing detached terminals |
-| `WEBUI_TERMINAL_SCROLLBACK`    |    No    | `5000`                         | Terminal scrollback buffer lines                |
+
+### Runtime Settings
+
+`security.workspaceRoots`, `files.uploadMaxBytes`, `terminal.defaultCwd`, `terminal.maxSessions`, `terminal.graceMs`, and `terminal.scrollback` now live in SQLite runtime settings and can be changed from Settings or `/api/settings`; the legacy env vars still work as fallbacks when no DB value is set.
+Docker Compose keeps `WORKSPACE_ROOTS=/workspaces` as a bootstrap fallback for the mounted `/workspaces` volume on first startup.
 
 ## Project Structure
 

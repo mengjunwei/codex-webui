@@ -56,10 +56,18 @@ export const SECURITY_SETTING_KEYS = {
   workspaceRoots: 'security.workspaceRoots',
 } as const;
 
+export const GENERAL_SETTING_KEYS = {
+  maxIdleSubscriptions: 'general.maxIdleSubscriptions',
+} as const;
+
 export const TERMINAL_SETTING_DEFAULTS = {
   maxSessions: 10,
   graceMs: 45_000,
   scrollback: 5_000,
+} as const;
+
+export const GENERAL_SETTING_DEFAULTS = {
+  maxIdleSubscriptions: 30,
 } as const;
 
 const DEFAULT_UPLOAD_MAX_BYTES = 104_857_600; // 100 MB
@@ -76,6 +84,15 @@ export const DEFAULT_EXCLUDED_DIRS =
  * and UPDATE metadata/constraints/defaults if they change.
  */
 export const SETTINGS_DEFINITIONS = [
+  {
+    key: GENERAL_SETTING_KEYS.maxIdleSubscriptions,
+    type: 'number',
+    category: 'general',
+    description:
+      'Maximum idle thread socket subscriptions retained in the browser before cleanup.',
+    defaultValue: GENERAL_SETTING_DEFAULTS.maxIdleSubscriptions,
+    constraints: { min: 5, max: 200, integer: true },
+  },
   {
     key: TERMINAL_SETTING_KEYS.maxSessions,
     type: 'number',
