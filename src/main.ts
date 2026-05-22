@@ -8,6 +8,7 @@ import { IoAdapter } from '@nestjs/platform-socket.io';
 import { DocumentBuilder, SwaggerModule } from '@nestjs/swagger';
 import { Logger } from 'nestjs-pino';
 import { AppModule } from './app.module';
+import { AllExceptionsFilter } from './common/all-exceptions.filter';
 import { FILES_SETTING_KEYS } from './settings/settings.definitions';
 import { SettingsService } from './settings/settings.service';
 
@@ -39,6 +40,7 @@ async function bootstrap() {
   });
 
   app.useLogger(app.get(Logger));
+  app.useGlobalFilters(new AllExceptionsFilter());
   app.useWebSocketAdapter(new IoAdapter(app));
   app.setGlobalPrefix('api', { exclude: ['/'] });
 

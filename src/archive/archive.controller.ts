@@ -1,12 +1,5 @@
 /** REST endpoints for archive browsing and read-only entry streaming. */
-import {
-  BadRequestException,
-  Controller,
-  Get,
-  Query,
-  Req,
-  Res,
-} from '@nestjs/common';
+import { Controller, Get, Query, Req, Res } from '@nestjs/common';
 import {
   ApiBadRequestResponse,
   ApiBearerAuth,
@@ -18,6 +11,8 @@ import {
   ApiUnauthorizedResponse,
 } from '@nestjs/swagger';
 import type { FastifyReply, FastifyRequest } from 'fastify';
+import { BusinessException } from '../common/business.exception';
+import { ErrorCode } from '../common/error-codes';
 import { ApiErrorResponseDto } from '../common/dto/api-responses.dto';
 import {
   guessMimeType,
@@ -43,7 +38,12 @@ export class ArchiveController {
   async listArchive(
     @Query('path') archivePath: string,
   ): Promise<ArchiveListResponseDto> {
-    if (!archivePath) throw new BadRequestException('path is required');
+    if (!archivePath) {
+      throw BusinessException.badRequest(
+        ErrorCode.files.pathRequired,
+        'path is required',
+      );
+    }
     const result = await this.archiveService.listArchive(archivePath);
     return { path: result.path, entries: result.entries };
   }
@@ -63,7 +63,10 @@ export class ArchiveController {
     @Res() reply: FastifyReply,
   ) {
     if (!archivePath || !entryPath) {
-      throw new BadRequestException('path and entry are required');
+      throw BusinessException.badRequest(
+        ErrorCode.archive.invalidEntryPath,
+        'path and entry are required',
+      );
     }
 
     const entry = await this.archiveService.openEntry(archivePath, entryPath);

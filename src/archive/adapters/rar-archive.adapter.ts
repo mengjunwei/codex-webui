@@ -1,5 +1,7 @@
 /** RAR archive adapter using unrar-async worker-thread extraction. */
-import { BadRequestException, Injectable } from '@nestjs/common';
+import { Injectable } from '@nestjs/common';
+import { BusinessException } from '../../common/business.exception';
+import { ErrorCode } from '../../common/error-codes';
 import type { Readable } from 'node:stream';
 import { archiveEntryName, normalizeArchiveEntryPath } from '../archive-path';
 import type { ArchiveAdapter, ArchiveEntry } from '../archive.types';
@@ -71,21 +73,35 @@ export class RarArchiveAdapter implements ArchiveAdapter {
       const normalized = normalizeArchiveEntryPath(file.fileHeader.name);
       if (normalized !== entryPath) continue;
       if (file.fileHeader.flags?.encrypted) {
-        throw new BadRequestException('Encrypted files are not supported');
+        throw BusinessException.badRequest(
+          ErrorCode.archive.entryEncrypted,
+          'Encrypted files are not supported',
+        );
       }
-      if (!file.extraction)
-        throw new BadRequestException('RAR entry has no readable stream');
+      if (!file.extraction) {
+        throw BusinessException.badRequest(
+          ErrorCode.archive.rarEntryNoStream,
+          'RAR entry has no readable stream',
+        );
+      }
       return file.extraction;
     }
-    throw new BadRequestException('RAR entry not found');
+    throw BusinessException.notFound(
+      ErrorCode.archive.entryNotFound,
+      'RAR entry not found',
+    );
   }
 
   /** Creates an unrar-async extractor with worker idle safeguards. */
   private async createExtractor(archivePath: string): Promise<RarExtractor> {
     const module = (await import('unrar-async')) as RarModule;
     const factory = module.RarExtractor ?? module.RARExtractor;
-    if (!factory)
-      throw new BadRequestException('unrar-async extractor is unavailable');
+    if (!factory) {
+      throw BusinessException.badRequest(
+        ErrorCode.archive.rarUnavailable,
+        'unrar-async extractor is unavailable',
+      );
+    }
     return factory.fromFile(archivePath, {
       idleTimeoutMs: 60_000,
       outputSizeLimitFactor: 2,
@@ -95,7 +111,12 @@ export class RarArchiveAdapter implements ArchiveAdapter {
   /** Converts a RAR file header to the shared archive entry shape. */
   private toEntry(header: RarFileHeader): ArchiveEntry {
     const normalized = normalizeArchiveEntryPath(header.name);
-    if (!normalized) throw new BadRequestException('Unsafe RAR entry path');
+    if (!normalized) {
+      throw BusinessException.badRequest(
+        ErrorCode.archive.unsafeEntryPath,
+        'Unsafe RAR entry path',
+      );
+    }
     const isDirectory = header.flags?.directory ?? false;
     return {
       name: archiveEntryName(normalized),

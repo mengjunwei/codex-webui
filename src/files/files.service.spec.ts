@@ -1,10 +1,5 @@
-import {
-  BadRequestException,
-  ConflictException,
-  ForbiddenException,
-  NotFoundException,
-} from '@nestjs/common';
 import { Test } from '@nestjs/testing';
+import { BusinessException } from '../common/business.exception';
 import * as fs from 'node:fs/promises';
 import * as os from 'node:os';
 import * as path from 'node:path';
@@ -83,20 +78,20 @@ describe('FilesService', () => {
 
     it('should reject path outside workspace root', async () => {
       await expect(service.resolveSafePath('/etc/passwd')).rejects.toThrow(
-        ForbiddenException,
+        BusinessException,
       );
     });
 
     it('should reject empty path', async () => {
       await expect(service.resolveSafePath('')).rejects.toThrow(
-        BadRequestException,
+        BusinessException,
       );
     });
 
     it('should reject non-existent path', async () => {
       await expect(
         service.resolveSafePath(path.join(tmpDir, 'nope.txt')),
-      ).rejects.toThrow(NotFoundException);
+      ).rejects.toThrow(BusinessException);
     });
   });
 
@@ -130,9 +125,7 @@ describe('FilesService', () => {
     });
 
     it('should reject directory path', async () => {
-      await expect(service.readFile(tmpDir)).rejects.toThrow(
-        BadRequestException,
-      );
+      await expect(service.readFile(tmpDir)).rejects.toThrow(BusinessException);
     });
   });
 
@@ -148,7 +141,7 @@ describe('FilesService', () => {
     it('should reject existing targets unless overwrite is explicit', async () => {
       await expect(
         service.createFile(path.join(tmpDir, 'hello.txt'), 'replace'),
-      ).rejects.toThrow(ConflictException);
+      ).rejects.toThrow(BusinessException);
     });
 
     it('should reject targets outside workspace roots', async () => {
@@ -157,7 +150,7 @@ describe('FilesService', () => {
       try {
         await expect(
           service.createFile(path.join(resolvedOutside, 'blocked.txt')),
-        ).rejects.toThrow(ForbiddenException);
+        ).rejects.toThrow(BusinessException);
       } finally {
         await fs.rm(resolvedOutside, { recursive: true, force: true });
       }
@@ -175,7 +168,7 @@ describe('FilesService', () => {
     it('should reject existing directories unless overwrite is explicit', async () => {
       await expect(
         service.createDirectory(path.join(tmpDir, 'subdir')),
-      ).rejects.toThrow(ConflictException);
+      ).rejects.toThrow(BusinessException);
     });
   });
 
@@ -192,7 +185,7 @@ describe('FilesService', () => {
     it('should reject write with stale mtime', async () => {
       const target = path.join(tmpDir, 'hello.txt');
       await expect(service.writeFile(target, 'updated', 0)).rejects.toThrow(
-        BadRequestException,
+        BusinessException,
       );
     });
   });
@@ -213,7 +206,7 @@ describe('FilesService', () => {
     it('should reject path traversal in the new name', async () => {
       await expect(
         service.renamePath(path.join(tmpDir, 'hello.txt'), '../bad.txt'),
-      ).rejects.toThrow(BadRequestException);
+      ).rejects.toThrow(BusinessException);
     });
   });
 
@@ -239,7 +232,7 @@ describe('FilesService', () => {
 
       await expect(
         service.copyPath(source, path.join(child, 'copy')),
-      ).rejects.toThrow(BadRequestException);
+      ).rejects.toThrow(BusinessException);
     });
 
     it('should reject destinations outside workspace roots', async () => {
@@ -251,7 +244,7 @@ describe('FilesService', () => {
             path.join(tmpDir, 'hello.txt'),
             path.join(resolvedOutside, 'hello-copy.txt'),
           ),
-        ).rejects.toThrow(ForbiddenException);
+        ).rejects.toThrow(BusinessException);
       } finally {
         await fs.rm(resolvedOutside, { recursive: true, force: true });
       }
@@ -279,7 +272,7 @@ describe('FilesService', () => {
       await fs.writeFile(source, 'conflict data');
 
       await expect(service.movePath(source, destination)).rejects.toThrow(
-        ConflictException,
+        BusinessException,
       );
       // Source untouched
       await expect(fs.readFile(source, 'utf-8')).resolves.toBe('conflict data');
@@ -316,7 +309,7 @@ describe('FilesService', () => {
       await fs.writeFile(path.join(target, 'child.txt'), 'keep me');
 
       await expect(service.deletePath(target)).rejects.toThrow(
-        BadRequestException,
+        BusinessException,
       );
     });
 
@@ -344,7 +337,7 @@ describe('FilesService', () => {
 
     it('should reject directories', async () => {
       await expect(service.prepareDownload(tmpDir)).rejects.toThrow(
-        BadRequestException,
+        BusinessException,
       );
     });
   });
@@ -370,7 +363,7 @@ describe('FilesService', () => {
           tmpDir,
           uploadInputs([{ relativePath: '../evil.txt', content: 'blocked' }]),
         ),
-      ).rejects.toThrow(BadRequestException);
+      ).rejects.toThrow(BusinessException);
     });
 
     it('should reject empty upload path segments', async () => {
@@ -379,7 +372,7 @@ describe('FilesService', () => {
           tmpDir,
           uploadInputs([{ relativePath: 'bad//file.txt', content: 'blocked' }]),
         ),
-      ).rejects.toThrow(BadRequestException);
+      ).rejects.toThrow(BusinessException);
     });
 
     it('should reject overwrite by default', async () => {
@@ -388,7 +381,7 @@ describe('FilesService', () => {
           tmpDir,
           uploadInputs([{ relativePath: 'hello.txt', content: 'blocked' }]),
         ),
-      ).rejects.toThrow(ConflictException);
+      ).rejects.toThrow(BusinessException);
     });
   });
 
@@ -422,7 +415,7 @@ describe('FilesService', () => {
       const resolvedOutside = await fs.realpath(outsideRoot);
       try {
         expect(() => service.addWorkspaceRoot(resolvedOutside)).toThrow(
-          ForbiddenException,
+          BusinessException,
         );
       } finally {
         await fs.rm(resolvedOutside, { recursive: true, force: true });

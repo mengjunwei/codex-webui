@@ -6,19 +6,27 @@ export class OkResponseDto {
   ok!: boolean;
 }
 
-/** Standard NestJS HTTP error response shape. */
+/** Standardized HTTP error response shape with i18n error code. */
 export class ApiErrorResponseDto {
   @ApiProperty({ example: 400 })
   statusCode!: number;
 
+  @ApiProperty({ example: 'files.path_not_found' })
+  errorCode!: string;
+
   @ApiProperty({
     oneOf: [
-      { type: 'string', example: 'Bad Request' },
+      { type: 'string', example: 'Path not found' },
       { type: 'array', items: { type: 'string' } },
     ],
   })
   message!: string | string[];
 
-  @ApiPropertyOptional({ example: 'Bad Request' })
-  error?: string;
+  @ApiPropertyOptional({
+    type: Object,
+    example: { path: '/workspace/file.txt' },
+    description:
+      'Interpolation parameters for frontend i18n translation of errorCode.',
+  })
+  params?: Record<string, string | number>;
 }

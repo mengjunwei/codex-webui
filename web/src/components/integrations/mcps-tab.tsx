@@ -26,6 +26,7 @@ import type { McpServerStatus, McpServerStartupState } from '@/types/mcp';
 import { useMcpStore, type McpServerRuntimeStatus } from '@/stores/mcp-store';
 import { cn } from '@/lib/utils';
 import { showSnackbar } from '@/stores/snackbar-store';
+import { getApiErrorMessage } from '@/lib/api-error';
 
 export function McpsTab() {
   const { t } = useTranslation();
@@ -50,7 +51,7 @@ export function McpsTab() {
       showSnackbar(t('MCP servers reloading'), 'success');
       void queryClient.invalidateQueries({ queryKey: mcpServersListServersQueryKey() });
     },
-    onError: (err) => showSnackbar(String(err.message), 'error'),
+    onError: (err) => showSnackbar(getApiErrorMessage(err), 'error'),
   });
 
   // Build merged rows from inventory + runtime status
@@ -161,7 +162,7 @@ function McpServerRow({ row }: { row: McpRow }) {
       }
     } catch (err) {
       loginTab?.close();
-      showSnackbar(String((err as Error).message), 'error');
+      showSnackbar(getApiErrorMessage(err), 'error');
     } finally {
       setLoggingIn(false);
     }

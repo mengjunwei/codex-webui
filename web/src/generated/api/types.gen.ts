@@ -22,8 +22,14 @@ export type LoginResponseDto = {
 
 export type ApiErrorResponseDto = {
     statusCode: number;
+    errorCode: string;
     message: string | Array<string>;
-    error?: string;
+    /**
+     * Interpolation parameters for frontend i18n translation of errorCode.
+     */
+    params?: {
+        [key: string]: unknown;
+    };
 };
 
 export type ArchiveEntryDto = {

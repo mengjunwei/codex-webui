@@ -1,13 +1,7 @@
 /** Handles temporary uploads that become rich Codex chat inputs. */
-import {
-  BadRequestException,
-  ForbiddenException,
-  HttpException,
-  Injectable,
-  Logger,
-  NotFoundException,
-  PayloadTooLargeException,
-} from '@nestjs/common';
+import { HttpException, Injectable, Logger } from '@nestjs/common';
+import { BusinessException } from '../common/business.exception';
+import { ErrorCode } from '../common/error-codes';
 import { ConfigService } from '@nestjs/config';
 import { randomUUID } from 'node:crypto';
 import * as fs from 'node:fs/promises';
@@ -74,7 +68,8 @@ export class ChatUploadService {
       );
 
       if (upload.stream.truncated) {
-        throw new PayloadTooLargeException(
+        throw BusinessException.payloadTooLarge(
+          ErrorCode.files.uploadTooLarge,
           'Uploaded file exceeds maximum size',
         );
       }
@@ -99,12 +94,18 @@ export class ChatUploadService {
   /** Resolves a previously staged local image path and verifies it remains inside upload root. */
   async resolveStoredUploadPath(inputPath: string): Promise<string> {
     if (typeof inputPath !== 'string' || inputPath.trim().length === 0) {
-      throw new BadRequestException('localImage path is required');
+      throw BusinessException.badRequest(
+        ErrorCode.chat.imagePathRequired,
+        'localImage path is required',
+      );
     }
 
     const absoluteInputPath = inputPath.trim();
     if (!path.isAbsolute(absoluteInputPath)) {
-      throw new BadRequestException('localImage path must be absolute');
+      throw BusinessException.badRequest(
+        ErrorCode.chat.imagePathAbsolute,
+        'localImage path must be absolute',
+      );
     }
 
     const uploadRoot = await this.ensureUploadRoot();
@@ -112,16 +113,26 @@ export class ChatUploadService {
     try {
       resolvedPath = await fs.realpath(absoluteInputPath);
     } catch {
-      throw new NotFoundException(`Upload not found: ${absoluteInputPath}`);
+      throw BusinessException.notFound(
+        ErrorCode.chat.uploadNotFound,
+        `Upload not found: ${absoluteInputPath}`,
+        { path: absoluteInputPath },
+      );
     }
 
     if (!this.isPathInside(resolvedPath, uploadRoot)) {
-      throw new ForbiddenException('localImage path outside chat upload root');
+      throw BusinessException.forbidden(
+        ErrorCode.chat.imageOutsideRoot,
+        'localImage path outside chat upload root',
+      );
     }
 
     const stat = await fs.stat(resolvedPath);
     if (!stat.isFile()) {
-      throw new BadRequestException('localImage path must be a file');
+      throw BusinessException.badRequest(
+        ErrorCode.chat.imageNotFile,
+        'localImage path must be a file',
+      );
     }
     return resolvedPath;
   }
@@ -143,18 +154,25 @@ export class ChatUploadService {
   /** Rejects invalid multipart file metadata before using any client-controlled filename. */
   private validateUploadFile(upload: ChatUploadInput): void {
     if (!upload || typeof upload.filename !== 'string') {
-      throw new BadRequestException('Uploaded file is required');
+      throw BusinessException.badRequest(
+        ErrorCode.chat.fileRequired,
+        'Uploaded file is required',
+      );
     }
     const filename = upload.filename.trim();
     if (filename.length === 0) {
-      throw new BadRequestException('Uploaded file filename is required');
+      throw BusinessException.badRequest(
+        ErrorCode.chat.filenameRequired,
+        'Uploaded file filename is required',
+      );
     }
     if (
       filename.includes('/') ||
       filename.includes('\\') ||
       filename.includes('\0')
     ) {
-      throw new BadRequestException(
+      throw BusinessException.badRequest(
+        ErrorCode.chat.fileInvalid,
         'Uploaded file filename must not contain path separators',
       );
     }
@@ -200,22 +218,39 @@ export class ChatUploadService {
       throw error;
     }
     if (this.isFileSizeLimitError(error)) {
-      throw new PayloadTooLargeException('Uploaded file exceeds maximum size');
+      throw BusinessException.payloadTooLarge(
+        ErrorCode.files.uploadTooLarge,
+        'Uploaded file exceeds maximum size',
+      );
     }
 
     const code = this.getErrorCode(error);
     if (code === 'ENOENT') {
-      throw new NotFoundException(`Path not found: ${targetPath}`);
+      throw BusinessException.notFound(
+        ErrorCode.files.pathNotFound,
+        `Path not found: ${targetPath}`,
+        { path: targetPath },
+      );
     }
     if (code === 'EACCES' || code === 'EPERM') {
-      throw new BadRequestException('Upload directory is not writable');
+      throw BusinessException.badRequest(
+        ErrorCode.files.notWritable,
+        'Upload directory is not writable',
+      );
     }
     if (code === 'ENOSPC') {
-      throw new BadRequestException('Insufficient disk space for upload');
+      throw BusinessException.badRequest(
+        ErrorCode.files.insufficientSpace,
+        'Insufficient disk space for upload',
+      );
     }
 
-    const message = error instanceof Error ? error.message : 'Upload failed';
-    throw new BadRequestException(message);
+    const rawMessage = error instanceof Error ? error.message : String(error);
+    this.logger.error(`Chat upload failed: ${rawMessage}`);
+    throw BusinessException.badRequest(
+      ErrorCode.files.operationFailed,
+      'Upload failed',
+    );
   }
 
   /** Checks if an error came from multipart file-size enforcement. */

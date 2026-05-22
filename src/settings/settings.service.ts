@@ -6,14 +6,9 @@
  * inserted, changed metadata/constraints/defaults are updated, but user-set values
  * are never overwritten.
  */
-import {
-  BadRequestException,
-  Inject,
-  Injectable,
-  Logger,
-  NotFoundException,
-  OnModuleInit,
-} from '@nestjs/common';
+import { Inject, Injectable, Logger, OnModuleInit } from '@nestjs/common';
+import { BusinessException } from '../common/business.exception';
+import { ErrorCode } from '../common/error-codes';
 import { ConfigService } from '@nestjs/config';
 import { eq } from 'drizzle-orm';
 import { DRIZZLE_DB, type AppDatabase } from '../database/database.constants';
@@ -120,16 +115,26 @@ export class SettingsService implements OnModuleInit {
   ): ResolvedSetting[] {
     this.ensureInitialized();
     if (!Array.isArray(updates)) {
-      throw new BadRequestException('updates must be an array');
+      throw BusinessException.badRequest(
+        ErrorCode.settings.updatesRequired,
+        'updates must be an array',
+      );
     }
 
     const seen = new Set<string>();
     const prepared = updates.map((entry: { key: string; value: unknown }) => {
       if (!entry || typeof entry.key !== 'string') {
-        throw new BadRequestException('Each update requires a setting key');
+        throw BusinessException.badRequest(
+          ErrorCode.settings.keyRequired,
+          'Each update requires a setting key',
+        );
       }
       if (seen.has(entry.key)) {
-        throw new BadRequestException(`Duplicate setting key: ${entry.key}`);
+        throw BusinessException.badRequest(
+          ErrorCode.settings.duplicateKey,
+          `Duplicate setting key: ${entry.key}`,
+          { key: entry.key },
+        );
       }
       seen.add(entry.key);
       return this.prepareUpdate(entry.key, entry.value);
@@ -231,8 +236,10 @@ export class SettingsService implements OnModuleInit {
   private resolveDefinition(definition: SettingDefinition): ResolvedSetting {
     const row = this.cache.get(definition.key);
     if (!row) {
-      throw new NotFoundException(
+      throw BusinessException.notFound(
+        ErrorCode.settings.notFound,
         `Runtime setting not found: ${definition.key}`,
+        { key: definition.key },
       );
     }
 
@@ -322,41 +329,73 @@ export class SettingsService implements OnModuleInit {
 
     if (definition.type === 'string') {
       if (typeof value !== 'string') {
-        throw new BadRequestException(`${definition.key} must be a string`);
+        throw BusinessException.badRequest(
+          ErrorCode.settings.invalidValue,
+          `${definition.key} must be a string`,
+          { key: definition.key, type: 'string' },
+        );
       }
       normalized = value;
     } else if (definition.type === 'number') {
       if (typeof value !== 'number' || !Number.isFinite(value)) {
-        throw new BadRequestException(`${definition.key} must be a number`);
+        throw BusinessException.badRequest(
+          ErrorCode.settings.invalidValue,
+          `${definition.key} must be a number`,
+          { key: definition.key, type: 'number' },
+        );
       }
       if (definition.constraints?.integer && !Number.isInteger(value)) {
-        throw new BadRequestException(`${definition.key} must be an integer`);
+        throw BusinessException.badRequest(
+          ErrorCode.settings.invalidValue,
+          `${definition.key} must be an integer`,
+          { key: definition.key, type: 'integer' },
+        );
       }
       if (
         definition.constraints?.min !== undefined &&
         value < definition.constraints.min
       ) {
-        throw new BadRequestException(
+        throw BusinessException.badRequest(
+          ErrorCode.settings.outOfRange,
           `${definition.key} must be >= ${definition.constraints.min}`,
+          {
+            key: definition.key,
+            min: definition.constraints.min,
+            max: definition.constraints.max ?? '',
+          },
         );
       }
       if (
         definition.constraints?.max !== undefined &&
         value > definition.constraints.max
       ) {
-        throw new BadRequestException(
+        throw BusinessException.badRequest(
+          ErrorCode.settings.outOfRange,
           `${definition.key} must be <= ${definition.constraints.max}`,
+          {
+            key: definition.key,
+            min: definition.constraints.min ?? '',
+            max: definition.constraints.max,
+          },
         );
       }
       normalized = value;
     } else if (definition.type === 'boolean') {
       if (typeof value !== 'boolean') {
-        throw new BadRequestException(`${definition.key} must be a boolean`);
+        throw BusinessException.badRequest(
+          ErrorCode.settings.invalidValue,
+          `${definition.key} must be a boolean`,
+          { key: definition.key, type: 'boolean' },
+        );
       }
       normalized = value;
     } else {
       if (!this.isJsonValue(value) || value === null) {
-        throw new BadRequestException(`${definition.key} must be JSON`);
+        throw BusinessException.badRequest(
+          ErrorCode.settings.invalidValue,
+          `${definition.key} must be JSON`,
+          { key: definition.key, type: 'json' },
+        );
       }
       normalized = value;
     }
@@ -367,8 +406,13 @@ export class SettingsService implements OnModuleInit {
         this.sameJsonValue(c, normalized),
       )
     ) {
-      throw new BadRequestException(
+      throw BusinessException.badRequest(
+        ErrorCode.settings.notInEnum,
         `${definition.key} is not an allowed value`,
+        {
+          key: definition.key,
+          values: definition.constraints.enum.map(String).join(', '),
+        },
       );
     }
 
@@ -411,7 +455,11 @@ export class SettingsService implements OnModuleInit {
   private getDefinitionOrThrow(key: string): SettingDefinition {
     const def = SETTINGS_DEFINITION_BY_KEY.get(key);
     if (!def) {
-      throw new NotFoundException(`Runtime setting not found: ${key}`);
+      throw BusinessException.notFound(
+        ErrorCode.settings.notFound,
+        `Runtime setting not found: ${key}`,
+        { key },
+      );
     }
     return def;
   }
@@ -423,7 +471,11 @@ export class SettingsService implements OnModuleInit {
     if ((SETTING_CATEGORIES as readonly string[]).includes(category)) {
       return category as SettingCategory;
     }
-    throw new BadRequestException(`Invalid settings category: ${category}`);
+    throw BusinessException.badRequest(
+      ErrorCode.settings.invalidCategory,
+      `Invalid settings category: ${category}`,
+      { category },
+    );
   }
 
   private toMetadataRow(

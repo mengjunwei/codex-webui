@@ -1,6 +1,6 @@
 /** Unit tests for SettingsService: seed, reconcile, DB/env/default chain. */
-import { BadRequestException, NotFoundException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
+import { BusinessException } from '../common/business.exception';
 import Database from 'better-sqlite3';
 import { drizzle } from 'drizzle-orm/better-sqlite3';
 import type { AppDatabase } from '../database/database.constants';
@@ -80,12 +80,12 @@ describe('SettingsService', () => {
       // Out-of-range → 400
       expect(() =>
         service.updateSetting(TERMINAL_SETTING_KEYS.maxSessions, 0),
-      ).toThrow(BadRequestException);
+      ).toThrow(BusinessException);
 
       // Non-integer → 400
       expect(() =>
         service.updateSetting(TERMINAL_SETTING_KEYS.maxSessions, 3.5),
-      ).toThrow(BadRequestException);
+      ).toThrow(BusinessException);
 
       // Valid override → source 'db'
       const updated = service.updateSetting(
@@ -158,7 +158,7 @@ describe('SettingsService', () => {
           { key: TERMINAL_SETTING_KEYS.scrollback, value: 500 },
           { key: TERMINAL_SETTING_KEYS.maxSessions, value: -1 }, // invalid
         ]),
-      ).toThrow(BadRequestException);
+      ).toThrow(BusinessException);
 
       // scrollback should still be default (batch was atomic)
       const s = service.getSetting(TERMINAL_SETTING_KEYS.scrollback);
@@ -168,11 +168,11 @@ describe('SettingsService', () => {
     }
   });
 
-  it('throws NotFoundException for unknown setting key', () => {
+  it('throws BusinessException for unknown setting key', () => {
     const { service, sqlite } = createService();
     try {
       expect(() => service.getSetting('nonexistent.key')).toThrow(
-        NotFoundException,
+        BusinessException,
       );
     } finally {
       sqlite.close();

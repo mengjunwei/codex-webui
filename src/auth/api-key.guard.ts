@@ -2,12 +2,9 @@
  * Global guard that validates API and WebSocket requests with JWT or API key.
  * Static assets are served outside controllers; API routes and gateway events are protected.
  */
-import {
-  CanActivate,
-  ExecutionContext,
-  Injectable,
-  UnauthorizedException,
-} from '@nestjs/common';
+import { CanActivate, ExecutionContext, Injectable } from '@nestjs/common';
+import { BusinessException } from '../common/business.exception';
+import { ErrorCode } from '../common/error-codes';
 import { Reflector } from '@nestjs/core';
 import { FastifyRequest } from 'fastify';
 import type { Socket } from 'socket.io';
@@ -39,13 +36,17 @@ export class ApiKeyGuard implements CanActivate {
       const socket = context.switchToWs().getClient<Socket>();
       const token = this.getSocketToken(socket);
       if (!token) {
-        throw new UnauthorizedException(
+        throw BusinessException.unauthorized(
+          ErrorCode.auth.missingToken,
           'Missing or invalid authentication token',
         );
       }
       const result = await this.authService.authenticateToken(token, socket.id);
       if (!result.ok) {
-        throw new UnauthorizedException('Invalid authentication token');
+        throw BusinessException.unauthorized(
+          ErrorCode.auth.invalidToken,
+          'Invalid authentication token',
+        );
       }
       return true;
     }
@@ -53,7 +54,8 @@ export class ApiKeyGuard implements CanActivate {
     const request = context.switchToHttp().getRequest<FastifyRequest>();
     const httpToken = this.getHttpToken(request);
     if (!httpToken) {
-      throw new UnauthorizedException(
+      throw BusinessException.unauthorized(
+        ErrorCode.auth.missingHeader,
         'Missing or invalid Authorization header',
       );
     }
@@ -67,7 +69,10 @@ export class ApiKeyGuard implements CanActivate {
             this.getRequestId(request),
           );
     if (!result.ok) {
-      throw new UnauthorizedException('Invalid authentication token');
+      throw BusinessException.unauthorized(
+        ErrorCode.auth.invalidToken,
+        'Invalid authentication token',
+      );
     }
 
     return true;

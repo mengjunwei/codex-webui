@@ -6,13 +6,9 @@
  * a headless xterm mirror as the authoritative VT state for reconnection and
  * download snapshots.
  */
-import {
-  BadRequestException,
-  ForbiddenException,
-  Injectable,
-  Logger,
-  OnModuleDestroy,
-} from '@nestjs/common';
+import { Injectable, Logger, OnModuleDestroy } from '@nestjs/common';
+import { BusinessException } from '../common/business.exception';
+import { ErrorCode } from '../common/error-codes';
 import { SerializeAddon } from '@xterm/addon-serialize';
 import { Terminal as HeadlessTerminal } from '@xterm/headless';
 import * as pty from 'node-pty';
@@ -149,8 +145,10 @@ export class TerminalService implements OnModuleDestroy {
     params: TerminalOpenParams,
   ): Promise<TerminalMetadata> {
     if (this.sessions.size >= this.config.maxSessions) {
-      throw new BadRequestException(
+      throw BusinessException.badRequest(
+        ErrorCode.terminal.maxSessionsReached,
         `Maximum terminal sessions reached (${this.config.maxSessions})`,
+        { max: this.config.maxSessions },
       );
     }
 
@@ -242,10 +240,16 @@ export class TerminalService implements OnModuleDestroy {
   ): void {
     const session = this.getAttachedSession(socketId, contextKey, terminalId);
     if (session.status !== 'running') {
-      throw new BadRequestException('Terminal process has exited');
+      throw BusinessException.badRequest(
+        ErrorCode.terminal.exited,
+        'Terminal process has exited',
+      );
     }
     if (Buffer.byteLength(data, 'utf8') > MAX_INPUT_BYTES) {
-      throw new BadRequestException('Terminal input is too large');
+      throw BusinessException.badRequest(
+        ErrorCode.terminal.inputTooLarge,
+        'Terminal input is too large',
+      );
     }
     session.process.write(data);
   }
@@ -375,7 +379,10 @@ export class TerminalService implements OnModuleDestroy {
     if (value.startsWith('thread:') && value.length > 'thread:'.length) {
       return value;
     }
-    throw new BadRequestException('contextKey must be global or thread:<id>');
+    throw BusinessException.badRequest(
+      ErrorCode.terminal.invalidContext,
+      'contextKey must be global or thread:<id>',
+    );
   }
 
   private normalizeTitle(value: string | undefined, fallback: string): string {
@@ -402,16 +409,24 @@ export class TerminalService implements OnModuleDestroy {
       try {
         return await this.resolveDirectory(this.config.defaultCwd);
       } catch (error) {
-        const message = error instanceof Error ? error.message : String(error);
-        throw new BadRequestException(
-          `DEFAULT_TERMINAL_CWD is invalid or outside workspace roots: ${message}`,
+        const rawMessage =
+          error instanceof Error ? error.message : String(error);
+        this.logger.warn(
+          `DEFAULT_TERMINAL_CWD is invalid or outside workspace roots: ${rawMessage}`,
+        );
+        throw BusinessException.badRequest(
+          ErrorCode.terminal.invalidCwd,
+          'Default terminal cwd is invalid or outside allowed workspace roots',
         );
       }
     }
 
     if (contextKey.startsWith('thread:')) {
       if (!requestedCwd?.trim()) {
-        throw new BadRequestException('Thread terminal cwd is required');
+        throw BusinessException.badRequest(
+          ErrorCode.terminal.cwdRequired,
+          'Thread terminal cwd is required',
+        );
       }
       return this.resolveDirectory(requestedCwd);
     }
@@ -424,12 +439,18 @@ export class TerminalService implements OnModuleDestroy {
     if (fs.existsSync(safeCwd) && fs.statSync(safeCwd).isDirectory()) {
       return safeCwd;
     }
-    throw new ForbiddenException('Terminal cwd must be an existing directory');
+    throw BusinessException.forbidden(
+      ErrorCode.terminal.cwdNotDirectory,
+      'Terminal cwd must be an existing directory',
+    );
   }
 
   private attachSocket(session: TerminalSession, socketId: string): void {
     if (session.closed) {
-      throw new BadRequestException('Terminal is closed');
+      throw BusinessException.badRequest(
+        ErrorCode.terminal.closed,
+        'Terminal is closed',
+      );
     }
     if (session.graceTimer) {
       clearTimeout(session.graceTimer);
@@ -472,9 +493,17 @@ export class TerminalService implements OnModuleDestroy {
   ): TerminalSession {
     const normalizedContext = this.normalizeContextKey(contextKey);
     const session = this.sessions.get(terminalId);
-    if (!session) throw new BadRequestException('Terminal not found');
+    if (!session) {
+      throw BusinessException.notFound(
+        ErrorCode.terminal.notFound,
+        'Terminal not found',
+      );
+    }
     if (session.contextKey !== normalizedContext) {
-      throw new ForbiddenException('Terminal context mismatch');
+      throw BusinessException.forbidden(
+        ErrorCode.terminal.contextMismatch,
+        'Terminal context mismatch',
+      );
     }
     return session;
   }
@@ -486,7 +515,10 @@ export class TerminalService implements OnModuleDestroy {
   ): TerminalSession {
     const session = this.getContextSession(contextKey, terminalId);
     if (!session.attachedSocketIds.has(socketId)) {
-      throw new ForbiddenException('Socket is not attached to this terminal');
+      throw BusinessException.forbidden(
+        ErrorCode.terminal.socketNotAttached,
+        'Socket is not attached to this terminal',
+      );
     }
     return session;
   }

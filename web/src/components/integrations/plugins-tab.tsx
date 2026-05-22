@@ -18,6 +18,7 @@ import { appsListAppsQueryKey, mcpServersListServersQueryKey } from '@/generated
 import { pluginsListPlugins } from '@/generated/api/sdk.gen';
 import type { PluginSummaryDto, PluginMarketplaceEntryDto } from '@/generated/api/types.gen';
 import { showSnackbar } from '@/stores/snackbar-store';
+import { getApiErrorMessage } from '@/lib/api-error';
 import { PluginCard } from './plugin-card';
 import { PluginDetailSheet, type PluginKey } from './plugin-detail-sheet';
 
@@ -88,7 +89,7 @@ export function PluginsTab() {
         'success',
       );
     },
-    onError: (err) => showSnackbar(String(err.message), 'error'),
+    onError: (err) => showSnackbar(getApiErrorMessage(err), 'error'),
   });
 
   const uninstallMutation = useMutation({
@@ -97,7 +98,7 @@ export function PluginsTab() {
       invalidateAll();
       showSnackbar(t('Plugin uninstalled'), 'success');
     },
-    onError: (err) => showSnackbar(String(err.message), 'error'),
+    onError: (err) => showSnackbar(getApiErrorMessage(err), 'error'),
   });
 
   const refreshMutation = useMutation({
@@ -112,7 +113,7 @@ export function PluginsTab() {
       void queryClient.invalidateQueries({ queryKey: pluginsListPluginsQueryKey() });
       showSnackbar(t('Marketplace refreshed'), 'success');
     },
-    onError: (err) => showSnackbar(String(err.message), 'error'),
+    onError: (err) => showSnackbar(getApiErrorMessage(err), 'error'),
   });
 
   const mutating = installMutation.isPending || uninstallMutation.isPending;

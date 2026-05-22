@@ -1,5 +1,7 @@
 /** TAR family adapter using tar-stream and streaming decompression. */
-import { BadRequestException, Injectable } from '@nestjs/common';
+import { Injectable } from '@nestjs/common';
+import { BusinessException } from '../../common/business.exception';
+import { ErrorCode } from '../../common/error-codes';
 import * as fsSync from 'node:fs';
 import { spawn, spawnSync } from 'node:child_process';
 import { createGunzip } from 'node:zlib';
@@ -29,7 +31,12 @@ export class TarArchiveAdapter implements ArchiveAdapter {
 
     for await (const entry of extract) {
       const normalized = normalizeArchiveEntryPath(entry.header.name);
-      if (!normalized) throw new BadRequestException('Unsafe TAR entry path');
+      if (!normalized) {
+        throw BusinessException.badRequest(
+          ErrorCode.archive.unsafeEntryPath,
+          'Unsafe TAR entry path',
+        );
+      }
       const isDirectory = entry.header.type === 'directory';
       const unsupported = !isDirectory && entry.header.type !== 'file';
       entries.push({
@@ -76,7 +83,12 @@ export class TarArchiveAdapter implements ArchiveAdapter {
         }
 
         if (header.type !== 'file') {
-          reject(new BadRequestException('TAR entry is not a regular file'));
+          reject(
+            BusinessException.badRequest(
+              ErrorCode.archive.entryNotFile,
+              'TAR entry is not a regular file',
+            ),
+          );
           stream.resume();
           return;
         }
@@ -91,7 +103,12 @@ export class TarArchiveAdapter implements ArchiveAdapter {
       });
       extract.once('finish', () => {
         if (!found && !settled)
-          reject(new BadRequestException('TAR entry not found'));
+          reject(
+            BusinessException.notFound(
+              ErrorCode.archive.entryNotFound,
+              'TAR entry not found',
+            ),
+          );
       });
       extract.once('error', reject);
     });
@@ -120,8 +137,7 @@ export class TarArchiveAdapter implements ArchiveAdapter {
       stdio: ['ignore', 'pipe', 'pipe'],
     });
     let childDone = false;
-    const stderrChunks: Buffer[] = [];
-    child.stderr.on('data', (chunk: Buffer) => stderrChunks.push(chunk));
+    child.stderr.resume();
     child.stdout.once('end', () => {
       childDone = true;
     });
@@ -132,10 +148,10 @@ export class TarArchiveAdapter implements ArchiveAdapter {
     child.on('close', (code) => {
       childDone = true;
       if (code !== 0) {
-        const stderr = Buffer.concat(stderrChunks).toString('utf-8').trim();
         child.stdout.destroy(
-          new BadRequestException(
-            stderr || '7za failed to decompress TAR archive',
+          BusinessException.badRequest(
+            ErrorCode.archive.unsupportedFormat,
+            'Unable to decompress TAR archive',
           ),
         );
       }
@@ -147,7 +163,8 @@ export class TarArchiveAdapter implements ArchiveAdapter {
   private assert7zaAvailable(): void {
     if (this.sevenZaChecked) {
       if (!this.sevenZaAvailable) {
-        throw new BadRequestException(
+        throw BusinessException.badRequest(
+          ErrorCode.archive.sevenZipUnavailable,
           '7za binary is not available on the host',
         );
       }
@@ -157,7 +174,10 @@ export class TarArchiveAdapter implements ArchiveAdapter {
     this.sevenZaChecked = true;
     this.sevenZaAvailable = !result.error && result.status === 0;
     if (!this.sevenZaAvailable) {
-      throw new BadRequestException('7za binary is not available on the host');
+      throw BusinessException.badRequest(
+        ErrorCode.archive.sevenZipUnavailable,
+        '7za binary is not available on the host',
+      );
     }
   }
 }

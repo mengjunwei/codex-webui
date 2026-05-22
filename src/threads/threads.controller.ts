@@ -2,7 +2,6 @@
  * REST controller for thread and turn operations.
  */
 import {
-  BadRequestException,
   Body,
   Controller,
   Get,
@@ -12,6 +11,8 @@ import {
   Post,
   Query,
 } from '@nestjs/common';
+import { BusinessException } from '../common/business.exception';
+import { ErrorCode } from '../common/error-codes';
 import {
   ApiBadRequestResponse,
   ApiBearerAuth,
@@ -115,14 +116,20 @@ export class ThreadsController {
   ) {
     const parsedLimit = limit ? Number(limit) : undefined;
     if (parsedLimit !== undefined && (isNaN(parsedLimit) || parsedLimit < 1)) {
-      throw new BadRequestException('limit must be a positive number');
+      throw BusinessException.badRequest(
+        ErrorCode.threads.invalidLimit,
+        'limit must be a positive number',
+      );
     }
     if (
       sortKey !== undefined &&
       sortKey !== 'created_at' &&
       sortKey !== 'updated_at'
     ) {
-      throw new BadRequestException('sortKey must be created_at or updated_at');
+      throw BusinessException.badRequest(
+        ErrorCode.threads.invalidSortKey,
+        'sortKey must be created_at or updated_at',
+      );
     }
 
     return this.threadsService.listThreads({
@@ -151,7 +158,10 @@ export class ThreadsController {
   ) {
     const parsedLimit = limit ? Number(limit) : undefined;
     if (parsedLimit !== undefined && (isNaN(parsedLimit) || parsedLimit < 1)) {
-      throw new BadRequestException('limit must be a positive number');
+      throw BusinessException.badRequest(
+        ErrorCode.threads.invalidLimit,
+        'limit must be a positive number',
+      );
     }
 
     return this.threadsService.listLoadedThreads({
@@ -190,17 +200,26 @@ export class ThreadsController {
     const input = await this.validateTurnInput(body.input);
     const model = typeof body.model === 'string' ? body.model.trim() : null;
     if (body.model !== undefined && !model) {
-      throw new BadRequestException('model must be a non-empty string');
+      throw BusinessException.badRequest(
+        ErrorCode.threads.invalidModel,
+        'model must be a non-empty string',
+      );
     }
     const effort = typeof body.effort === 'string' ? body.effort : null;
     if (body.effort !== undefined && !effort) {
-      throw new BadRequestException('Invalid reasoning effort');
+      throw BusinessException.badRequest(
+        ErrorCode.threads.invalidEffort,
+        'Invalid reasoning effort',
+      );
     }
     if (
       effort &&
       !(REASONING_EFFORT_VALUES as readonly string[]).includes(effort)
     ) {
-      throw new BadRequestException('Invalid reasoning effort');
+      throw BusinessException.badRequest(
+        ErrorCode.threads.invalidEffort,
+        'Invalid reasoning effort',
+      );
     }
     return this.threadsService.startTurn({
       threadId,
@@ -282,7 +301,10 @@ export class ThreadsController {
       !Number.isInteger(body.numTurns) ||
       body.numTurns < 1
     ) {
-      throw new BadRequestException('numTurns must be a positive integer');
+      throw BusinessException.badRequest(
+        ErrorCode.threads.invalidRollbackTurns,
+        'numTurns must be a positive integer',
+      );
     }
     return this.threadsService.rollbackThread(threadId, body.numTurns);
   }
@@ -298,11 +320,17 @@ export class ThreadsController {
     @Body() body: ThreadSetNameRequestDto,
   ) {
     if (typeof body?.name !== 'string') {
-      throw new BadRequestException('name must be a non-empty string');
+      throw BusinessException.badRequest(
+        ErrorCode.threads.invalidName,
+        'name must be a non-empty string',
+      );
     }
     const name = body.name.trim();
     if (name.length === 0) {
-      throw new BadRequestException('name must be a non-empty string');
+      throw BusinessException.badRequest(
+        ErrorCode.threads.invalidName,
+        'name must be a non-empty string',
+      );
     }
     await this.threadsService.setThreadName(threadId, name);
   }
@@ -310,7 +338,10 @@ export class ThreadsController {
   /** Validates and normalizes the discriminated UserInput union accepted by Codex. */
   private async validateTurnInput(input: unknown): Promise<v2.UserInput[]> {
     if (!Array.isArray(input) || input.length === 0) {
-      throw new BadRequestException('input must be a non-empty array');
+      throw BusinessException.badRequest(
+        ErrorCode.threads.invalidInput,
+        'input must be a non-empty array',
+      );
     }
 
     const validatedInput: v2.UserInput[] = [];
@@ -326,7 +357,11 @@ export class ThreadsController {
     index: number,
   ): Promise<v2.UserInput> {
     if (!this.isRecord(item)) {
-      throw new BadRequestException(`input[${index}] must be an object`);
+      throw BusinessException.badRequest(
+        ErrorCode.threads.invalidInputItem,
+        `input[${index}] must be an object`,
+        { index },
+      );
     }
 
     switch (item.type) {
@@ -341,8 +376,10 @@ export class ThreadsController {
       case 'mention':
         return this.validateMentionInput(item, index);
       default:
-        throw new BadRequestException(
+        throw BusinessException.badRequest(
+          ErrorCode.threads.invalidInputType,
           `input[${index}].type must be one of ${USER_INPUT_TYPES.join(', ')}`,
+          { index },
         );
     }
   }
@@ -371,11 +408,17 @@ export class ThreadsController {
     try {
       parsedUrl = new URL(url);
     } catch {
-      throw new BadRequestException(`input[${index}].url must be a valid URL`);
+      throw BusinessException.badRequest(
+        ErrorCode.threads.invalidInputUrl,
+        `input[${index}].url must be a valid URL`,
+        { index },
+      );
     }
     if (parsedUrl.protocol !== 'http:' && parsedUrl.protocol !== 'https:') {
-      throw new BadRequestException(
+      throw BusinessException.badRequest(
+        ErrorCode.threads.invalidInputUrl,
         `input[${index}].url must use http or https`,
+        { index },
       );
     }
     return { type: 'image', url };
@@ -457,16 +500,23 @@ export class ThreadsController {
       return [];
     }
     if (!Array.isArray(value)) {
-      throw new BadRequestException(
+      throw BusinessException.badRequest(
+        ErrorCode.threads.invalidInputField,
         `input[${inputIndex}].text_elements must be an array`,
+        { index: inputIndex, field: 'text_elements' },
       );
     }
 
     const textByteLength = Buffer.byteLength(text, 'utf8');
     return value.map((element: unknown, elementIndex: number) => {
       if (!this.isRecord(element) || !this.isRecord(element.byteRange)) {
-        throw new BadRequestException(
+        throw BusinessException.badRequest(
+          ErrorCode.threads.invalidInputField,
           `input[${inputIndex}].text_elements[${elementIndex}] must include byteRange`,
+          {
+            index: inputIndex,
+            field: `text_elements[${elementIndex}].byteRange`,
+          },
         );
       }
 
@@ -481,8 +531,13 @@ export class ThreadsController {
         end < start ||
         end > textByteLength
       ) {
-        throw new BadRequestException(
+        throw BusinessException.badRequest(
+          ErrorCode.threads.invalidInputField,
           `input[${inputIndex}].text_elements[${elementIndex}].byteRange is invalid`,
+          {
+            index: inputIndex,
+            field: `text_elements[${elementIndex}].byteRange`,
+          },
         );
       }
 
@@ -492,8 +547,13 @@ export class ThreadsController {
         placeholder !== null &&
         typeof placeholder !== 'string'
       ) {
-        throw new BadRequestException(
+        throw BusinessException.badRequest(
+          ErrorCode.threads.invalidInputField,
           `input[${inputIndex}].text_elements[${elementIndex}].placeholder must be a string or null`,
+          {
+            index: inputIndex,
+            field: `text_elements[${elementIndex}].placeholder`,
+          },
         );
       }
 
@@ -514,8 +574,10 @@ export class ThreadsController {
   ): string {
     const value = item[field];
     if (typeof value !== 'string') {
-      throw new BadRequestException(
+      throw BusinessException.badRequest(
+        ErrorCode.threads.invalidInputField,
         `input[${index}].${field} must be a string`,
+        { index, field },
       );
     }
     return value;
@@ -529,8 +591,10 @@ export class ThreadsController {
   ): string {
     const value = this.readString(item, field, index).trim();
     if (value.length === 0) {
-      throw new BadRequestException(
+      throw BusinessException.badRequest(
+        ErrorCode.threads.invalidInputField,
         `input[${index}].${field} must be a non-empty string`,
+        { index, field },
       );
     }
     return value;

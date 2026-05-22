@@ -7,6 +7,8 @@ import {
 import request from 'supertest';
 import { App } from 'supertest/types';
 import { AppModule } from '../src/app.module';
+import { AllExceptionsFilter } from '../src/common/all-exceptions.filter';
+import { ErrorCode } from '../src/common/error-codes';
 
 const TEST_API_KEY = process.env.WEBUI_API_KEY ?? 'test-api-key';
 
@@ -23,6 +25,7 @@ describe('AppController (e2e)', () => {
     app = moduleFixture.createNestApplication<NestFastifyApplication>(
       new FastifyAdapter(),
     );
+    app.useGlobalFilters(new AllExceptionsFilter());
     app.setGlobalPrefix('api');
     await app.init();
   });
@@ -35,8 +38,16 @@ describe('AppController (e2e)', () => {
       .expect({ status: 'ok' });
   });
 
-  it('/api/status (GET) without auth should 401', () => {
-    return request(app.getHttpServer()).get('/api/status').expect(401);
+  it('/api/status (GET) without auth should 401 with errorCode', () => {
+    return request(app.getHttpServer())
+      .get('/api/status')
+      .expect(401)
+      .expect(({ body }) => {
+        expect(body).toMatchObject({
+          statusCode: 401,
+          errorCode: ErrorCode.auth.missingHeader,
+        });
+      });
   });
 
   afterEach(async () => {

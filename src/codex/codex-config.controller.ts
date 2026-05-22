@@ -4,16 +4,9 @@
  * Provides structured config editing (curated allowlist via config/batchWrite)
  * and raw config.toml file editing for power users.
  */
-import {
-  BadRequestException,
-  Body,
-  Controller,
-  Get,
-  InternalServerErrorException,
-  Logger,
-  Patch,
-  Put,
-} from '@nestjs/common';
+import { Body, Controller, Get, Logger, Patch, Put } from '@nestjs/common';
+import { BusinessException } from '../common/business.exception';
+import { ErrorCode } from '../common/error-codes';
 import {
   ApiBadRequestResponse,
   ApiBearerAuth,
@@ -121,7 +114,10 @@ export class CodexConfigController {
     @Body() body: UpdateRawConfigDto,
   ): Promise<RawConfigWriteResponseDto> {
     if (!body || typeof body.content !== 'string') {
-      throw new BadRequestException('Raw config content must be a string');
+      throw BusinessException.badRequest(
+        ErrorCode.codex.rawContentInvalid,
+        'Raw config content must be a string',
+      );
     }
 
     const filePath = await this.getUserConfigPath();
@@ -153,28 +149,45 @@ export class CodexConfigController {
   /** Validates and normalizes incoming config edits against the allowlist. */
   private validateEdits(body: UpdateCodexConfigDto): v2.ConfigEdit[] {
     if (!body || !Array.isArray(body.edits)) {
-      throw new BadRequestException('Config edits must be an array');
+      throw BusinessException.badRequest(
+        ErrorCode.codex.editsNotArray,
+        'Config edits must be an array',
+      );
     }
 
     return body.edits.map((edit, index) => {
       if (!edit || typeof edit.keyPath !== 'string') {
-        throw new BadRequestException(`Invalid config edit at index ${index}`);
+        throw BusinessException.badRequest(
+          ErrorCode.codex.editInvalid,
+          `Invalid config edit at index ${index}`,
+          { index },
+        );
       }
 
       const keyPath = edit.keyPath.trim();
       if (!isCodexConfigEditableKey(keyPath)) {
-        throw new BadRequestException(`Unsupported config key: ${keyPath}`);
+        throw BusinessException.badRequest(
+          ErrorCode.codex.keyUnsupported,
+          `Unsupported config key: ${keyPath}`,
+          { key: keyPath },
+        );
       }
 
       // V1: null/clear semantics for config/batchWrite are unverified
       if (edit.value === null) {
-        throw new BadRequestException(
+        throw BusinessException.badRequest(
+          ErrorCode.codex.valueInvalid,
           'Clearing config values is not supported',
+          { key: keyPath },
         );
       }
 
       if (!isJsonValue(edit.value)) {
-        throw new BadRequestException(`Invalid JSON value for ${keyPath}`);
+        throw BusinessException.badRequest(
+          ErrorCode.codex.valueInvalidJson,
+          `Invalid JSON value for ${keyPath}`,
+          { key: keyPath },
+        );
       }
 
       return {
@@ -197,7 +210,11 @@ export class CodexConfigController {
         if (typeof file === 'string' && file.trim()) return file;
       }
     }
-    throw new InternalServerErrorException(
+    this.logger.error(
+      'Codex user config.toml path was not reported by config/read',
+    );
+    throw BusinessException.internal(
+      ErrorCode.codex.writeFailed,
       'Codex user config.toml path was not reported by config/read',
     );
   }

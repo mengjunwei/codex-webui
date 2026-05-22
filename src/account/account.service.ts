@@ -3,7 +3,9 @@
  * Runtime provider readiness remains owned by CodexStatusService; this service
  * only enriches account state with safe provider display metadata.
  */
-import { BadRequestException, Injectable } from '@nestjs/common';
+import { Injectable } from '@nestjs/common';
+import { BusinessException } from '../common/business.exception';
+import { ErrorCode } from '../common/error-codes';
 import {
   CodexStatusService,
   type CodexProviderStatus,
@@ -49,7 +51,12 @@ export class AccountService {
   /** Cancels an in-progress browser/device login by login id. */
   async cancelLogin(loginId: unknown): Promise<void> {
     const value = typeof loginId === 'string' ? loginId.trim() : '';
-    if (!value) throw new BadRequestException('loginId is required');
+    if (!value) {
+      throw BusinessException.badRequest(
+        ErrorCode.account.loginIdRequired,
+        'loginId is required',
+      );
+    }
     await this.codex.request<v2.CancelLoginAccountResponse>(
       'account/login/cancel',
       { loginId: value } satisfies v2.CancelLoginAccountParams,
@@ -74,7 +81,12 @@ export class AccountService {
       case 'apiKey': {
         const apiKey =
           typeof body.apiKey === 'string' ? body.apiKey.trim() : '';
-        if (!apiKey) throw new BadRequestException('apiKey is required');
+        if (!apiKey) {
+          throw BusinessException.badRequest(
+            ErrorCode.account.apiKeyRequired,
+            'apiKey is required',
+          );
+        }
         return { type: 'apiKey', apiKey };
       }
       case 'chatgpt':
@@ -88,10 +100,17 @@ export class AccountService {
           typeof body.chatgptAccountId === 'string'
             ? body.chatgptAccountId.trim()
             : '';
-        if (!accessToken)
-          throw new BadRequestException('accessToken is required');
+        if (!accessToken) {
+          throw BusinessException.badRequest(
+            ErrorCode.account.accessTokenRequired,
+            'accessToken is required',
+          );
+        }
         if (!chatgptAccountId) {
-          throw new BadRequestException('chatgptAccountId is required');
+          throw BusinessException.badRequest(
+            ErrorCode.account.chatgptAccountIdRequired,
+            'chatgptAccountId is required',
+          );
         }
         return {
           type: 'chatgptAuthTokens',
@@ -101,7 +120,10 @@ export class AccountService {
         };
       }
       default:
-        throw new BadRequestException('Invalid login type');
+        throw BusinessException.badRequest(
+          ErrorCode.account.invalidLoginType,
+          'Invalid login type',
+        );
     }
   }
 }

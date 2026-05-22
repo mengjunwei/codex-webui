@@ -1,12 +1,7 @@
 /** REST controller for Codex plugin marketplace operations. */
-import {
-  BadRequestException,
-  Body,
-  Controller,
-  Get,
-  Post,
-  Query,
-} from '@nestjs/common';
+import { Body, Controller, Get, Post, Query } from '@nestjs/common';
+import { BusinessException } from '../common/business.exception';
+import { ErrorCode } from '../common/error-codes';
 import {
   ApiBadRequestResponse,
   ApiBearerAuth,
@@ -83,7 +78,12 @@ export class PluginsController {
   installPlugin(
     @Body() body: PluginInstallRequestDto | undefined,
   ): Promise<v2.PluginInstallResponse> {
-    if (!body) throw new BadRequestException('Request body is required');
+    if (!body) {
+      throw BusinessException.badRequest(
+        ErrorCode.validation.bodyRequired,
+        'Request body is required',
+      );
+    }
     return this.pluginsService.installPlugin({
       marketplacePath: this.requireTrimmedString(
         body.marketplacePath,
@@ -105,7 +105,12 @@ export class PluginsController {
   uninstallPlugin(
     @Body() body: PluginUninstallRequestDto | undefined,
   ): Promise<v2.PluginUninstallResponse> {
-    if (!body) throw new BadRequestException('Request body is required');
+    if (!body) {
+      throw BusinessException.badRequest(
+        ErrorCode.validation.bodyRequired,
+        'Request body is required',
+      );
+    }
     return this.pluginsService.uninstallPlugin({
       pluginId: this.requireTrimmedString(body.pluginId, 'pluginId'),
       forceRemoteSync: this.parseOptionalBoolean(
@@ -117,7 +122,11 @@ export class PluginsController {
 
   private requireTrimmedString(value: unknown, field: string): string {
     if (typeof value !== 'string' || !value.trim()) {
-      throw new BadRequestException(`${field} is required`);
+      throw BusinessException.badRequest(
+        ErrorCode.plugins.fieldRequired,
+        `${field} is required`,
+        { field },
+      );
     }
     return value.trim();
   }
@@ -130,7 +139,11 @@ export class PluginsController {
     if (typeof value === 'boolean') return value;
     if (value === 'true') return true;
     if (value === 'false') return false;
-    throw new BadRequestException(`${field} must be a boolean`);
+    throw BusinessException.badRequest(
+      ErrorCode.validation.typeMismatch,
+      `${field} must be a boolean`,
+      { field, type: 'boolean' },
+    );
   }
 
   private parseStringList(value?: string | string[]): string[] | undefined {

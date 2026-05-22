@@ -27,6 +27,7 @@ import type { ThreadDto } from '@/generated/api';
 import { useTimelineStore } from '@/stores/timeline-store';
 import { useLayoutStore } from '@/stores/layout-store';
 import { cn } from '@/lib/utils';
+import { getApiErrorMessage } from '@/lib/api-error';
 import type { ConfirmAction } from './sidebar/sidebar-types';
 import { threadLabel, groupByWorkspace } from './sidebar/sidebar-types';
 import { ThreadRow } from './sidebar/thread-row';
@@ -171,7 +172,7 @@ export function ThreadSidebar() {
       invalidateThreads();
       void navigate({ to: '/t/$threadId', params: { threadId: res.thread.id } });
     },
-    onError: (err) => addSystemError(String(err.message)),
+    onError: (err) => addSystemError(getApiErrorMessage(err)),
   });
 
   const archiveThread = useMutation({

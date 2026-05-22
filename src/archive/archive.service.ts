@@ -1,5 +1,7 @@
 /** Archive browsing service with zip-slip checks and decompression bomb limits. */
-import { BadRequestException, Injectable } from '@nestjs/common';
+import { Injectable } from '@nestjs/common';
+import { BusinessException } from '../common/business.exception';
+import { ErrorCode } from '../common/error-codes';
 import * as path from 'node:path';
 import { Readable } from 'node:stream';
 import { FilesService } from '../files/files.service';
@@ -62,7 +64,10 @@ export class ArchiveService {
     const adapter = this.getAdapter(resolved);
     const normalizedEntryPath = normalizeArchiveEntryPath(entryPath);
     if (!normalizedEntryPath) {
-      throw new BadRequestException('Invalid archive entry path');
+      throw BusinessException.badRequest(
+        ErrorCode.archive.invalidEntryPath,
+        'Invalid archive entry path',
+      );
     }
 
     const entries = await adapter.list(resolved);
@@ -70,18 +75,41 @@ export class ArchiveService {
     const entry = entries.find(
       (candidate) => candidate.path === normalizedEntryPath,
     );
-    if (!entry) throw new BadRequestException('Archive entry not found');
-    if (entry.type !== 'file')
-      throw new BadRequestException('Archive entry is not a file');
-    if (entry.encrypted)
-      throw new BadRequestException('Encrypted files are not supported');
-    if (entry.unsupported)
-      throw new BadRequestException('Archive entry type is not supported');
-    if (entry.size === undefined)
-      throw new BadRequestException('Archive entry size is unknown');
+    if (!entry) {
+      throw BusinessException.notFound(
+        ErrorCode.archive.entryNotFound,
+        'Archive entry not found',
+      );
+    }
+    if (entry.type !== 'file') {
+      throw BusinessException.badRequest(
+        ErrorCode.archive.entryNotFile,
+        'Archive entry is not a file',
+      );
+    }
+    if (entry.encrypted) {
+      throw BusinessException.badRequest(
+        ErrorCode.archive.entryEncrypted,
+        'Encrypted files are not supported',
+      );
+    }
+    if (entry.unsupported) {
+      throw BusinessException.badRequest(
+        ErrorCode.archive.entryUnsupported,
+        'Archive entry type is not supported',
+      );
+    }
+    if (entry.size === undefined) {
+      throw BusinessException.badRequest(
+        ErrorCode.archive.entrySizeUnknown,
+        'Archive entry size is unknown',
+      );
+    }
     if (entry.size > MAX_ARCHIVE_ENTRY_BYTES) {
-      throw new BadRequestException(
+      throw BusinessException.payloadTooLarge(
+        ErrorCode.archive.entryTooLarge,
         'Archive entry exceeds the 50 MB preview limit',
+        { limit: '50 MB' },
       );
     }
 
@@ -100,7 +128,10 @@ export class ArchiveService {
     const resolved = await this.filesService.resolveSafePath(archivePath);
     const metadata = await this.filesService.getMetadata(resolved);
     if (metadata.type !== 'file') {
-      throw new BadRequestException('Archive path must be a file');
+      throw BusinessException.badRequest(
+        ErrorCode.archive.pathNotFile,
+        'Archive path must be a file',
+      );
     }
     return resolved;
   }
@@ -110,26 +141,39 @@ export class ArchiveService {
     const adapter = this.adapters.find((candidate) =>
       candidate.supports(archivePath),
     );
-    if (!adapter) throw new BadRequestException('Unsupported archive format');
+    if (!adapter) {
+      throw BusinessException.badRequest(
+        ErrorCode.archive.unsupportedFormat,
+        'Unsupported archive format',
+      );
+    }
     return adapter;
   }
 
   /** Enforces entry count, total uncompressed size, and zip-slip path validation. */
   private validateArchiveEntries(entries: readonly ArchiveEntry[]): void {
     if (entries.length > MAX_ARCHIVE_ENTRIES) {
-      throw new BadRequestException('Archive exceeds the 20,000 entry limit');
+      throw BusinessException.badRequest(
+        ErrorCode.archive.tooManyEntries,
+        'Archive exceeds the 20,000 entry limit',
+      );
     }
 
     let totalSize = 0;
     for (const entry of entries) {
       if (!normalizeArchiveEntryPath(entry.path)) {
-        throw new BadRequestException('Archive contains an unsafe entry path');
+        throw BusinessException.badRequest(
+          ErrorCode.archive.unsafeEntryPath,
+          'Archive contains an unsafe entry path',
+        );
       }
       if (entry.size !== undefined) {
         totalSize += entry.size;
         if (totalSize > MAX_ARCHIVE_TOTAL_BYTES) {
-          throw new BadRequestException(
+          throw BusinessException.payloadTooLarge(
+            ErrorCode.archive.totalSizeTooLarge,
             'Archive exceeds the 1 GB uncompressed preview limit',
+            { limit: '1 GB' },
           );
         }
       }

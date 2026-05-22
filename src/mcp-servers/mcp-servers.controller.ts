@@ -1,6 +1,5 @@
 /** REST controller for MCP server status and reload operations. */
 import {
-  BadRequestException,
   Body,
   Controller,
   Get,
@@ -9,6 +8,8 @@ import {
   Post,
   Query,
 } from '@nestjs/common';
+import { BusinessException } from '../common/business.exception';
+import { ErrorCode } from '../common/error-codes';
 import {
   ApiBadRequestResponse,
   ApiBearerAuth,
@@ -87,8 +88,10 @@ export class McpServersController {
     if (!value) return undefined;
     const limit = Number(value);
     if (!Number.isInteger(limit) || limit < 1 || limit > 100) {
-      throw new BadRequestException(
+      throw BusinessException.badRequest(
+        ErrorCode.validation.fieldInvalid,
         'limit must be an integer between 1 and 100',
+        { field: 'limit' },
       );
     }
     return limit;
@@ -99,7 +102,10 @@ export class McpServersController {
     if (
       !(MCP_SERVER_STATUS_DETAIL_VALUES as readonly string[]).includes(value)
     ) {
-      throw new BadRequestException('Invalid MCP server detail');
+      throw BusinessException.badRequest(
+        ErrorCode.mcp.invalidServerDetail,
+        'Invalid MCP server detail',
+      );
     }
     return value as v2.McpServerStatusDetail;
   }
@@ -107,9 +113,20 @@ export class McpServersController {
   private parseOauthLoginBody(
     body: McpServerOauthLoginRequestDto | undefined,
   ): v2.McpServerOauthLoginParams {
-    if (!body) throw new BadRequestException('Request body is required');
+    if (!body) {
+      throw BusinessException.badRequest(
+        ErrorCode.validation.bodyRequired,
+        'Request body is required',
+      );
+    }
     const name = typeof body.name === 'string' ? body.name.trim() : '';
-    if (!name) throw new BadRequestException('name is required');
+    if (!name) {
+      throw BusinessException.badRequest(
+        ErrorCode.validation.fieldRequired,
+        'name is required',
+        { field: 'name' },
+      );
+    }
 
     return {
       name,
@@ -121,12 +138,18 @@ export class McpServersController {
   private parseScopes(value: unknown): string[] | undefined {
     if (value === undefined || value === null) return undefined;
     if (!Array.isArray(value)) {
-      throw new BadRequestException('scopes must be an array of strings');
+      throw BusinessException.badRequest(
+        ErrorCode.mcp.scopesInvalid,
+        'scopes must be an array of strings',
+      );
     }
 
     const scopes = value.map((scope) => {
       if (typeof scope !== 'string' || !scope.trim()) {
-        throw new BadRequestException('scopes must contain non-empty strings');
+        throw BusinessException.badRequest(
+          ErrorCode.mcp.scopesEmpty,
+          'scopes must contain non-empty strings',
+        );
       }
       return scope.trim();
     });
@@ -136,11 +159,16 @@ export class McpServersController {
   private parseTimeoutSecs(value: unknown): bigint | undefined {
     if (value === undefined || value === null) return undefined;
     if (typeof value !== 'number' || !Number.isInteger(value)) {
-      throw new BadRequestException('timeoutSecs must be an integer');
+      throw BusinessException.badRequest(
+        ErrorCode.mcp.timeoutInvalid,
+        'timeoutSecs must be an integer',
+      );
     }
     if (value < 1 || value > 600) {
-      throw new BadRequestException(
+      throw BusinessException.badRequest(
+        ErrorCode.mcp.timeoutTooLarge,
         'timeoutSecs must be an integer between 1 and 600',
+        { max: 600 },
       );
     }
     return BigInt(value);

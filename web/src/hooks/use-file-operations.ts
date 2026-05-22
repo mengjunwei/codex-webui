@@ -4,6 +4,7 @@
  */
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
+import { getApiErrorMessage } from '@/lib/api-error';
 import {
   filesCreateFileMutation,
   filesCreateDirectoryMutation,
@@ -65,12 +66,9 @@ function handleUnauthorized(status: number): void {
   window.dispatchEvent(new Event('codex-webui:auth-expired'));
 }
 
-/** Extracts the standard NestJS error message shape from direct fetch responses. */
+/** Extracts and translates the API error from direct fetch responses. */
 function readApiError(errorBody: unknown, fallback: string): string {
-  const message = (errorBody as { message?: unknown } | undefined)?.message;
-  if (Array.isArray(message)) return message.join(', ');
-  if (typeof message === 'string' && message.trim()) return message;
-  return fallback;
+  return getApiErrorMessage(errorBody, fallback);
 }
 
 export function useFileOperations() {
@@ -185,7 +183,7 @@ export function useFileOperations() {
       showSnackbar(t('Upload complete'), 'success');
     },
     onError: (err: Error) => {
-      showSnackbar(err.message || t('Upload failed'), 'error');
+      showSnackbar(getApiErrorMessage(err, t('Upload failed')), 'error');
     },
   });
 

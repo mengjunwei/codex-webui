@@ -1,12 +1,7 @@
 /** Persists app-server requests that require user decisions. */
-import {
-  ConflictException,
-  Inject,
-  Injectable,
-  Logger,
-  NotFoundException,
-  OnModuleInit,
-} from '@nestjs/common';
+import { Inject, Injectable, Logger, OnModuleInit } from '@nestjs/common';
+import { BusinessException } from '../common/business.exception';
+import { ErrorCode } from '../common/error-codes';
 import { and, eq, inArray } from 'drizzle-orm';
 import { CodexProcessManager } from '../codex/codex-process-manager.service';
 import { DRIZZLE_DB, type AppDatabase } from '../database/database.constants';
@@ -139,14 +134,26 @@ export class PendingApprovalsService implements OnModuleInit {
       )
       .get();
 
-    if (!row) throw new NotFoundException('Pending request not found');
+    if (!row) {
+      throw BusinessException.notFound(
+        ErrorCode.approvals.notFound,
+        'Pending request not found',
+      );
+    }
     if (row.status !== 'pending') {
-      throw new ConflictException('Pending request has already been resolved');
+      throw BusinessException.conflict(
+        ErrorCode.approvals.alreadyResolved,
+        'Pending request has already been resolved',
+      );
     }
 
     const client = this.codexManager.getClient();
-    if (!client)
-      throw new ConflictException('Codex app-server is not connected');
+    if (!client) {
+      throw BusinessException.conflict(
+        ErrorCode.approvals.serverNotConnected,
+        'Codex app-server is not connected',
+      );
+    }
 
     const now = Date.now();
     return this.db.transaction((tx) => {
@@ -168,7 +175,10 @@ export class PendingApprovalsService implements OnModuleInit {
         .run();
 
       if (updateResult.changes !== 1) {
-        throw new ConflictException('Pending approval was already handled');
+        throw BusinessException.conflict(
+          ErrorCode.approvals.alreadyHandled,
+          'Pending approval was already handled',
+        );
       }
 
       client.respondToServerRequest(this.parseRequestId(row.requestId), result);

@@ -6,8 +6,9 @@ import {
   HttpStatus,
   Post,
   Req,
-  UnauthorizedException,
 } from '@nestjs/common';
+import { BusinessException } from '../common/business.exception';
+import { ErrorCode } from '../common/error-codes';
 import {
   ApiBody,
   ApiNoContentResponse,
@@ -51,7 +52,10 @@ export class AuthController {
         reason: 'invalidApiKey',
         requestId,
       });
-      throw new UnauthorizedException('Invalid API key');
+      throw BusinessException.unauthorized(
+        ErrorCode.auth.invalidApiKey,
+        'Invalid API key',
+      );
     }
 
     this.authService.logAuthEvent('log', {

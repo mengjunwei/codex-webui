@@ -10,6 +10,7 @@ import { Button } from '@/components/ui/button';
 import { Textarea } from '@/components/ui/textarea';
 import { threadsInterruptTurnMutation, threadsStartTurnMutation, threadsSteerTurnMutation } from '@/generated/api/@tanstack/react-query.gen';
 import { cn } from '@/lib/utils';
+import { getApiErrorMessage } from '@/lib/api-error';
 import { useTimelineStore } from '@/stores/timeline-store';
 import { useModelStore } from '@/stores/model-store';
 import { useChatAttachments } from '@/hooks/use-chat-attachments';
@@ -114,15 +115,15 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput(
   // ── Turn mutations ───────────────────────────────────────
   const startTurn = useMutation({
     ...threadsStartTurnMutation(),
-    onError: (err) => addSystemError(String(err.message)),
+    onError: (err) => addSystemError(getApiErrorMessage(err)),
   });
   const steer = useMutation({
     ...threadsSteerTurnMutation(),
-    onError: (err) => addSystemError(String(err.message)),
+    onError: (err) => addSystemError(getApiErrorMessage(err)),
   });
   const interruptTurn = useMutation({
     ...threadsInterruptTurnMutation(),
-    onError: (err) => addSystemError(String(err.message)),
+    onError: (err) => addSystemError(getApiErrorMessage(err)),
   });
 
   const handleSend = useCallback(() => {

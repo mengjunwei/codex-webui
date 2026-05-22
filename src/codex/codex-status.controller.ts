@@ -2,7 +2,6 @@
  * REST controller for aggregated Codex app-server status and config writes.
  */
 import {
-  BadRequestException,
   Body,
   Controller,
   Get,
@@ -10,6 +9,8 @@ import {
   HttpStatus,
   Post,
 } from '@nestjs/common';
+import { BusinessException } from '../common/business.exception';
+import { ErrorCode } from '../common/error-codes';
 import {
   ApiBadRequestResponse,
   ApiBearerAuth,
@@ -89,7 +90,10 @@ export class CodexStatusController {
       !value ||
       !(APPROVAL_POLICY_VALUES as readonly string[]).includes(value)
     ) {
-      throw new BadRequestException('Invalid approval policy');
+      throw BusinessException.badRequest(
+        ErrorCode.threads.invalidApprovalPolicy,
+        'Invalid approval policy',
+      );
     }
     await this.codex.request('config/batchWrite', {
       edits: [
@@ -114,7 +118,10 @@ export class CodexStatusController {
     const value =
       typeof body?.sandboxMode === 'string' ? body.sandboxMode : null;
     if (!value || !(SANDBOX_MODE_VALUES as readonly string[]).includes(value)) {
-      throw new BadRequestException('Invalid sandbox mode');
+      throw BusinessException.badRequest(
+        ErrorCode.threads.invalidSandboxMode,
+        'Invalid sandbox mode',
+      );
     }
     await this.codex.request('config/batchWrite', {
       edits: [

@@ -1,11 +1,7 @@
 /** REST controller for chat-specific attachment helpers. */
-import {
-  BadRequestException,
-  Controller,
-  PayloadTooLargeException,
-  Post,
-  Req,
-} from '@nestjs/common';
+import { Controller, Post, Req } from '@nestjs/common';
+import { BusinessException } from '../common/business.exception';
+import { ErrorCode } from '../common/error-codes';
 import {
   ApiBadRequestResponse,
   ApiBearerAuth,
@@ -80,7 +76,10 @@ export class ChatController {
   ): Promise<MultipartFilePart> {
     const multipartRequest = request as MultipartFileRequest;
     if (typeof multipartRequest.file !== 'function') {
-      throw new BadRequestException('multipart file upload is not available');
+      throw BusinessException.badRequest(
+        ErrorCode.chat.multipartUnavailable,
+        'multipart file upload is not available',
+      );
     }
 
     try {
@@ -91,11 +90,14 @@ export class ChatController {
         },
       });
       if (!file) {
-        throw new BadRequestException('file is required');
+        throw BusinessException.badRequest(
+          ErrorCode.chat.fileRequired,
+          'file is required',
+        );
       }
       return file;
     } catch (error) {
-      if (error instanceof BadRequestException) {
+      if (error instanceof BusinessException) {
         throw error;
       }
       this.rethrowMultipartError(error);
@@ -105,10 +107,15 @@ export class ChatController {
   /** Converts multipart parser failures into stable API errors. */
   private rethrowMultipartError(error: unknown): never {
     if (this.isFileSizeLimitError(error)) {
-      throw new PayloadTooLargeException('Uploaded file exceeds maximum size');
+      throw BusinessException.payloadTooLarge(
+        ErrorCode.files.uploadTooLarge,
+        'Uploaded file exceeds maximum size',
+      );
     }
-    const message = error instanceof Error ? error.message : 'Invalid upload';
-    throw new BadRequestException(message);
+    throw BusinessException.badRequest(
+      ErrorCode.chat.fileInvalid,
+      'Invalid upload',
+    );
   }
 
   /** Checks if Fastify multipart rejected the upload because of size limits. */

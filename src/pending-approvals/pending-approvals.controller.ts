@@ -1,13 +1,7 @@
 /** REST controller for persisted app-server approval requests. */
-import {
-  BadRequestException,
-  Body,
-  Controller,
-  Get,
-  Param,
-  Post,
-  Query,
-} from '@nestjs/common';
+import { Body, Controller, Get, Param, Post, Query } from '@nestjs/common';
+import { BusinessException } from '../common/business.exception';
+import { ErrorCode } from '../common/error-codes';
 import {
   ApiBearerAuth,
   ApiOkResponse,
@@ -50,7 +44,10 @@ export class PendingApprovalsController {
     @Body() body: RespondPendingServerRequestDto,
   ): PendingServerRequestDto {
     if (!body || !Object.prototype.hasOwnProperty.call(body, 'result')) {
-      throw new BadRequestException('result is required');
+      throw BusinessException.badRequest(
+        ErrorCode.approvals.resultRequired,
+        'result is required',
+      );
     }
     return this.approvals.respondToRequest(
       requestId,

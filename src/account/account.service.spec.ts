@@ -1,6 +1,6 @@
 /** Unit tests for AccountService: account read, login flows, logout, rate limits. */
-import { BadRequestException } from '@nestjs/common';
 import { Test, type TestingModule } from '@nestjs/testing';
+import { BusinessException } from '../common/business.exception';
 import { CodexStatusService } from '../codex/codex-status.service';
 import { CodexService } from '../codex/codex.service';
 import { AccountService } from './account.service';
@@ -75,7 +75,7 @@ describe('AccountService', () => {
   it('rejects empty API key', async () => {
     await expect(
       service.login({ type: 'apiKey', apiKey: '   ' }),
-    ).rejects.toBeInstanceOf(BadRequestException);
+    ).rejects.toBeInstanceOf(BusinessException);
     expect(codexService.request).not.toHaveBeenCalled();
   });
 
@@ -116,7 +116,7 @@ describe('AccountService', () => {
         accessToken: '',
         chatgptAccountId: 'acc',
       }),
-    ).rejects.toBeInstanceOf(BadRequestException);
+    ).rejects.toBeInstanceOf(BusinessException);
   });
 
   it('cancels login with trimmed loginId', async () => {
@@ -129,14 +129,14 @@ describe('AccountService', () => {
 
   it('rejects empty loginId cancellation', async () => {
     await expect(service.cancelLogin('   ')).rejects.toBeInstanceOf(
-      BadRequestException,
+      BusinessException,
     );
     expect(codexService.request).not.toHaveBeenCalled();
   });
 
   it('rejects undefined loginId cancellation', async () => {
     await expect(service.cancelLogin(undefined)).rejects.toBeInstanceOf(
-      BadRequestException,
+      BusinessException,
     );
     expect(codexService.request).not.toHaveBeenCalled();
   });

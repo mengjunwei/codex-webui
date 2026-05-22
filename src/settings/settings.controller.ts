@@ -1,6 +1,5 @@
 /** REST API for runtime-configurable application settings. */
 import {
-  BadRequestException,
   Body,
   Controller,
   Delete,
@@ -9,6 +8,8 @@ import {
   Patch,
   Query,
 } from '@nestjs/common';
+import { BusinessException } from '../common/business.exception';
+import { ErrorCode } from '../common/error-codes';
 import {
   ApiBadRequestResponse,
   ApiBearerAuth,
@@ -62,7 +63,10 @@ export class SettingsController {
     @Body() body: BatchUpdateSettingsDto,
   ): SettingsListResponseDto {
     if (!Array.isArray(body?.updates)) {
-      throw new BadRequestException('updates must be an array');
+      throw BusinessException.badRequest(
+        ErrorCode.settings.updatesRequired,
+        'updates must be an array',
+      );
     }
     return { settings: this.settingsService.updateSettings(body.updates) };
   }
@@ -77,7 +81,11 @@ export class SettingsController {
     @Body() body: UpdateSettingDto,
   ): ResolvedSetting {
     if (!Object.prototype.hasOwnProperty.call(body ?? {}, 'value')) {
-      throw new BadRequestException('value is required');
+      throw BusinessException.badRequest(
+        ErrorCode.validation.fieldRequired,
+        'value is required',
+        { field: 'value' },
+      );
     }
     return this.settingsService.updateSetting(key, body.value);
   }

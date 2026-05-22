@@ -16,6 +16,7 @@ import {
 import { codexConfigUpdateConfig } from '@/generated/api/sdk.gen';
 import type { AppInfoDto } from '@/generated/api/types.gen';
 import { showSnackbar } from '@/stores/snackbar-store';
+import { getApiErrorMessage } from '@/lib/api-error';
 
 export function AppsTab() {
   const { t } = useTranslation();
@@ -123,7 +124,7 @@ function AppRow({ app, onToggled }: { app: AppInfoDto; onToggled: () => void }) 
       );
       onToggled();
     } catch (err) {
-      showSnackbar(String((err as Error).message), 'error');
+      showSnackbar(getApiErrorMessage(err), 'error');
     } finally {
       setToggling(false);
     }

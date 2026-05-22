@@ -1,6 +1,7 @@
 /** Unit tests for ApiKeyGuard query-token whitelist and bearer extraction. */
-import { ExecutionContext, UnauthorizedException } from '@nestjs/common';
+import { ExecutionContext } from '@nestjs/common';
 import { Reflector } from '@nestjs/core';
+import { BusinessException } from '../common/business.exception';
 import { ApiKeyGuard } from './api-key.guard';
 import { AuthService } from './auth.service';
 
@@ -73,7 +74,7 @@ describe('ApiKeyGuard', () => {
         { access_token: validJwt },
       );
       await expect(guard.canActivate(mockContext(req))).rejects.toThrow(
-        UnauthorizedException,
+        BusinessException,
       );
     });
 
@@ -85,7 +86,7 @@ describe('ApiKeyGuard', () => {
         { access_token: validJwt },
       );
       await expect(guard.canActivate(mockContext(req))).rejects.toThrow(
-        UnauthorizedException,
+        BusinessException,
       );
     });
 
@@ -98,7 +99,7 @@ describe('ApiKeyGuard', () => {
         { access_token: rawKey },
       );
       await expect(guard.canActivate(mockContext(req))).rejects.toThrow(
-        UnauthorizedException,
+        BusinessException,
       );
     });
   });
@@ -118,7 +119,7 @@ describe('ApiKeyGuard', () => {
     it('rejects missing authorization', async () => {
       const req = mockRequest('/api/threads', 'GET');
       await expect(guard.canActivate(mockContext(req))).rejects.toThrow(
-        UnauthorizedException,
+        BusinessException,
       );
     });
   });

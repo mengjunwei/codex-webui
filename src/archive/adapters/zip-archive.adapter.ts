@@ -1,5 +1,7 @@
 /** ZIP archive adapter using yauzl lazy entry iteration and safe file-name validation. */
-import { BadRequestException, Injectable } from '@nestjs/common';
+import { Injectable } from '@nestjs/common';
+import { BusinessException } from '../../common/business.exception';
+import { ErrorCode } from '../../common/error-codes';
 import * as yauzl from 'yauzl';
 import type { Readable } from 'node:stream';
 import { archiveEntryName, normalizeArchiveEntryPath } from '../archive-path';
@@ -27,13 +29,23 @@ export class ZipArchiveAdapter implements ArchiveAdapter {
       zipfile.on('entry', (raw: yauzl.Entry) => {
         const validationError = yauzl.validateFileName(raw.fileName);
         if (validationError) {
-          fail(new BadRequestException(`Unsafe ZIP entry: ${validationError}`));
+          fail(
+            BusinessException.badRequest(
+              ErrorCode.archive.unsafeEntryPath,
+              `Unsafe ZIP entry: ${validationError}`,
+            ),
+          );
           return;
         }
 
         const normalized = normalizeArchiveEntryPath(raw.fileName);
         if (!normalized) {
-          fail(new BadRequestException('Unsafe ZIP entry path'));
+          fail(
+            BusinessException.badRequest(
+              ErrorCode.archive.unsafeEntryPath,
+              'Unsafe ZIP entry path',
+            ),
+          );
           return;
         }
 
@@ -79,17 +91,33 @@ export class ZipArchiveAdapter implements ArchiveAdapter {
           return;
         }
         if (raw.fileName.endsWith('/')) {
-          fail(new BadRequestException('ZIP entry is a directory'));
+          fail(
+            BusinessException.badRequest(
+              ErrorCode.archive.entryNotFile,
+              'ZIP entry is a directory',
+            ),
+          );
           return;
         }
         if ((raw.generalPurposeBitFlag & 0x1) === 0x1) {
-          fail(new BadRequestException('Encrypted files are not supported'));
+          fail(
+            BusinessException.badRequest(
+              ErrorCode.archive.entryEncrypted,
+              'Encrypted files are not supported',
+            ),
+          );
           return;
         }
 
         zipfile.openReadStream(raw, (error, stream) => {
           if (error || !stream) {
-            fail(error ?? new BadRequestException('Unable to read ZIP entry'));
+            fail(
+              error ??
+                BusinessException.badRequest(
+                  ErrorCode.archive.entryUnsupported,
+                  'Unable to read ZIP entry',
+                ),
+            );
             return;
           }
           settled = true;
@@ -100,7 +128,13 @@ export class ZipArchiveAdapter implements ArchiveAdapter {
       });
       zipfile.once('error', fail);
       zipfile.once('end', () => {
-        if (!settled) fail(new BadRequestException('ZIP entry not found'));
+        if (!settled)
+          fail(
+            BusinessException.notFound(
+              ErrorCode.archive.entryNotFound,
+              'ZIP entry not found',
+            ),
+          );
       });
       zipfile.readEntry();
     });
@@ -115,7 +149,11 @@ export class ZipArchiveAdapter implements ArchiveAdapter {
         (error, zipfile) => {
           if (error || !zipfile)
             reject(
-              error ?? new BadRequestException('Unable to open ZIP archive'),
+              error ??
+                BusinessException.badRequest(
+                  ErrorCode.archive.unsupportedFormat,
+                  'Unable to open ZIP archive',
+                ),
             );
           else resolve(zipfile);
         },

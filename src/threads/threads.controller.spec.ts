@@ -1,5 +1,5 @@
 /** Unit tests for ThreadsController rich user input validation. */
-import { BadRequestException } from '@nestjs/common';
+import { BusinessException } from '../common/business.exception';
 import { ThreadsController } from './threads.controller';
 
 describe('ThreadsController rich input validation', () => {
@@ -52,7 +52,7 @@ describe('ThreadsController rich input validation', () => {
   it('rejects invalid loaded thread limit', async () => {
     await expect(
       controller.listLoadedThreads(undefined, '0'),
-    ).rejects.toBeInstanceOf(BadRequestException);
+    ).rejects.toBeInstanceOf(BusinessException);
   });
 
   it('normalizes missing text_elements to an empty array', async () => {
@@ -111,7 +111,7 @@ describe('ThreadsController rich input validation', () => {
       controller.startTurn('thread1', {
         input: [{ type: 'image', url: 'not a url' }],
       } as never),
-    ).rejects.toBeInstanceOf(BadRequestException);
+    ).rejects.toBeInstanceOf(BusinessException);
   });
 
   it('rejects image URLs with file: scheme', async () => {
@@ -119,7 +119,7 @@ describe('ThreadsController rich input validation', () => {
       controller.startTurn('thread1', {
         input: [{ type: 'image', url: 'file:///tmp/image.png' }],
       } as never),
-    ).rejects.toBeInstanceOf(BadRequestException);
+    ).rejects.toBeInstanceOf(BusinessException);
   });
 
   it('validates inline absolute file mentions in text', async () => {

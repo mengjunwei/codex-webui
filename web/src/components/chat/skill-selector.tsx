@@ -14,6 +14,7 @@ import { skillsListSkillsOptions, skillsListSkillsQueryKey } from '@/generated/a
 import { skillsWriteSkillConfig } from '@/generated/api/sdk.gen';
 import { cn } from '@/lib/utils';
 import { showSnackbar } from '@/stores/snackbar-store';
+import { getApiErrorMessage } from '@/lib/api-error';
 
 export interface SkillSelection {
   name: string;
@@ -182,7 +183,7 @@ function SkillToggleRow({
       });
       onToggled();
     } catch (err) {
-      showSnackbar(String((err as Error).message), 'error');
+      showSnackbar(getApiErrorMessage(err), 'error');
     } finally {
       setToggling(false);
     }

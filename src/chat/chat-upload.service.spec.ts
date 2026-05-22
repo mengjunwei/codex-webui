@@ -1,6 +1,6 @@
 /** Unit tests for chat attachment upload staging and path validation. */
-import { BadRequestException, ForbiddenException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
+import { BusinessException } from '../common/business.exception';
 import * as fs from 'node:fs/promises';
 import * as os from 'node:os';
 import * as path from 'node:path';
@@ -70,7 +70,7 @@ describe('ChatUploadService', () => {
 
     await expect(
       service.resolveStoredUploadPath(outsidePath),
-    ).rejects.toBeInstanceOf(ForbiddenException);
+    ).rejects.toBeInstanceOf(BusinessException);
   });
 
   it('rejects filenames with path traversal separators', async () => {
@@ -79,6 +79,6 @@ describe('ChatUploadService', () => {
         filename: '../evil.png',
         stream: streamFromText('evil'),
       }),
-    ).rejects.toBeInstanceOf(BadRequestException);
+    ).rejects.toBeInstanceOf(BusinessException);
   });
 });

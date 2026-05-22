@@ -3,15 +3,13 @@
  * All paths are resolved to real paths and validated against allowed workspace roots.
  */
 import {
-  BadRequestException,
-  ConflictException,
-  ForbiddenException,
   HttpException,
   Injectable,
   Logger,
-  NotFoundException,
   OnModuleDestroy,
 } from '@nestjs/common';
+import { BusinessException } from '../common/business.exception';
+import { ErrorCode } from '../common/error-codes';
 import {
   DEFAULT_EXCLUDED_DIRS as DEFAULT_EXCLUDED_DIRS_STR,
   FILES_SETTING_KEYS,
@@ -195,12 +193,13 @@ export class FilesService implements OnModuleDestroy {
    * Dynamic roots must fall within an already-configured root.
    *
    * @param root - Absolute path to register
-   * @throws ForbiddenException if root escapes configured workspace roots
+   * @throws BusinessException if root escapes configured workspace roots
    */
   addWorkspaceRoot(root: string): void {
     const resolved = this.resolveExistingDirectorySync(root);
     if (!this.isAllowedPath(resolved)) {
-      throw new ForbiddenException(
+      throw BusinessException.forbidden(
+        ErrorCode.files.pathOutsideWorkspace,
         'Workspace root must be inside configured workspace roots',
       );
     }
@@ -217,23 +216,32 @@ export class FilesService implements OnModuleDestroy {
    *
    * @param inputPath - The user-supplied path to validate
    * @returns The resolved real path
-   * @throws ForbiddenException if path escapes workspace roots
-   * @throws NotFoundException if path does not exist
+   * @throws BusinessException if path escapes workspace roots or does not exist
    */
   async resolveSafePath(inputPath: string): Promise<string> {
     if (!inputPath) {
-      throw new BadRequestException('Path is required');
+      throw BusinessException.badRequest(
+        ErrorCode.files.pathRequired,
+        'Path is required',
+      );
     }
 
     let resolved: string;
     try {
       resolved = await fs.realpath(path.resolve(inputPath));
     } catch {
-      throw new NotFoundException(`Path not found: ${inputPath}`);
+      throw BusinessException.notFound(
+        ErrorCode.files.pathNotFound,
+        'Path not found',
+        { path: inputPath },
+      );
     }
 
     if (!this.isAllowedPath(resolved)) {
-      throw new ForbiddenException('Path outside allowed workspace roots');
+      throw BusinessException.forbidden(
+        ErrorCode.files.pathOutsideWorkspace,
+        'Path outside allowed workspace roots',
+      );
     }
 
     return resolved;
@@ -252,7 +260,10 @@ export class FilesService implements OnModuleDestroy {
     options: ResolveTargetOptions = {},
   ): Promise<string> {
     if (!inputPath) {
-      throw new BadRequestException('Path is required');
+      throw BusinessException.badRequest(
+        ErrorCode.files.pathRequired,
+        'Path is required',
+      );
     }
 
     const absolutePath = path.resolve(inputPath);
@@ -284,13 +295,22 @@ export class FilesService implements OnModuleDestroy {
    */
   validateEntryName(name: string): void {
     if (!name || name.trim().length === 0) {
-      throw new BadRequestException('File or directory name is required');
+      throw BusinessException.badRequest(
+        ErrorCode.files.nameRequired,
+        'File or directory name is required',
+      );
     }
     if (name === '.' || name === '..') {
-      throw new BadRequestException('Path traversal is not allowed');
+      throw BusinessException.badRequest(
+        ErrorCode.files.pathTraversal,
+        'Path traversal is not allowed',
+      );
     }
     if (name.includes('/') || name.includes('\\') || name.includes('\0')) {
-      throw new BadRequestException('File or directory name is invalid');
+      throw BusinessException.badRequest(
+        ErrorCode.files.nameInvalid,
+        'File or directory name is invalid',
+      );
     }
   }
 
@@ -305,7 +325,10 @@ export class FilesService implements OnModuleDestroy {
 
     const stat = await fs.stat(resolved);
     if (!stat.isDirectory()) {
-      throw new BadRequestException('Path is not a directory');
+      throw BusinessException.badRequest(
+        ErrorCode.files.pathIsNotDirectory,
+        'Path is not a directory',
+      );
     }
 
     const entries = await fs.readdir(resolved, { withFileTypes: true });
@@ -352,17 +375,21 @@ export class FilesService implements OnModuleDestroy {
    *
    * @param filePath - File to read
    * @returns The file content as UTF-8 string
-   * @throws BadRequestException if file exceeds MAX_READ_SIZE
+   * @throws BusinessException if file exceeds MAX_READ_SIZE
    */
   async readFile(filePath: string): Promise<{ content: string; size: number }> {
     const resolved = await this.resolveSafePath(filePath);
 
     const stat = await fs.stat(resolved);
     if (stat.isDirectory()) {
-      throw new BadRequestException('Path is a directory, not a file');
+      throw BusinessException.badRequest(
+        ErrorCode.files.pathIsDirectory,
+        'Path is a directory, not a file',
+      );
     }
     if (stat.size > MAX_READ_SIZE) {
-      throw new BadRequestException(
+      throw BusinessException.badRequest(
+        ErrorCode.files.fileTooLarge,
         `File too large (${(stat.size / 1024 / 1024).toFixed(1)} MB). Max: ${MAX_READ_SIZE / 1024 / 1024} MB`,
       );
     }
@@ -388,7 +415,10 @@ export class FilesService implements OnModuleDestroy {
     const targetPath = await this.resolveSafeTargetPath(filePath);
     const existing = await this.assertNoOverwrite(targetPath, overwrite);
     if (existing?.isDirectory()) {
-      throw new BadRequestException('Cannot overwrite a directory with a file');
+      throw BusinessException.badRequest(
+        ErrorCode.files.cannotOverwriteDir,
+        'Cannot overwrite a directory with a file',
+      );
     }
 
     try {
@@ -427,7 +457,10 @@ export class FilesService implements OnModuleDestroy {
       if (existing.isDirectory()) {
         return { path: targetPath };
       }
-      throw new BadRequestException('Path exists and is not a directory');
+      throw BusinessException.badRequest(
+        ErrorCode.files.pathExistsNotDir,
+        'Path exists and is not a directory',
+      );
     }
 
     try {
@@ -462,7 +495,10 @@ export class FilesService implements OnModuleDestroy {
     try {
       targetPath = await this.resolveSafePath(targetPath);
     } catch (err) {
-      if (!(err instanceof NotFoundException)) {
+      if (
+        !(err instanceof BusinessException) ||
+        err.errorCode !== ErrorCode.files.pathNotFound
+      ) {
         throw err;
       }
       // File doesn't exist yet — ok to create in the resolved directory
@@ -472,12 +508,13 @@ export class FilesService implements OnModuleDestroy {
       try {
         const current = await fs.stat(targetPath);
         if (Math.abs(current.mtimeMs - expectedMtime) > 1000) {
-          throw new BadRequestException(
+          throw BusinessException.conflict(
+            ErrorCode.files.modifiedSinceRead,
             'File was modified since last read. Refresh and retry.',
           );
         }
       } catch (err) {
-        if (err instanceof BadRequestException) throw err;
+        if (err instanceof BusinessException) throw err;
         // File doesn't exist yet — ok to create
       }
     }
@@ -643,7 +680,11 @@ export class FilesService implements OnModuleDestroy {
     try {
       stat = await fs.lstat(entryPath);
     } catch {
-      throw new NotFoundException(`Path not found: ${targetPath}`);
+      throw BusinessException.notFound(
+        ErrorCode.files.pathNotFound,
+        'Path not found',
+        { path: targetPath },
+      );
     }
 
     try {
@@ -673,7 +714,10 @@ export class FilesService implements OnModuleDestroy {
     const resolved = await this.resolveSafePath(filePath);
     const stat = await fs.stat(resolved);
     if (!stat.isFile()) {
-      throw new BadRequestException('Path is not a downloadable file');
+      throw BusinessException.badRequest(
+        ErrorCode.files.notDownloadable,
+        'Path is not a downloadable file',
+      );
     }
 
     return {
@@ -700,7 +744,10 @@ export class FilesService implements OnModuleDestroy {
     const destinationRoot = await this.resolveSafePath(destinationPath);
     const rootStat = await fs.stat(destinationRoot);
     if (!rootStat.isDirectory()) {
-      throw new BadRequestException('Upload destination is not a directory');
+      throw BusinessException.badRequest(
+        ErrorCode.files.uploadDirRequired,
+        'Upload destination is not a directory',
+      );
     }
 
     const files: UploadedFileResult[] = [];
@@ -711,7 +758,10 @@ export class FilesService implements OnModuleDestroy {
     }
 
     if (files.length === 0) {
-      throw new BadRequestException('At least one file is required');
+      throw BusinessException.badRequest(
+        ErrorCode.files.uploadFileRequired,
+        'At least one file is required',
+      );
     }
 
     return { files };
@@ -720,12 +770,18 @@ export class FilesService implements OnModuleDestroy {
   /** Resolves a path synchronously, ensuring it exists and is a directory. */
   private resolveExistingDirectorySync(inputPath: string): string {
     if (!inputPath) {
-      throw new BadRequestException('Path is required');
+      throw BusinessException.badRequest(
+        ErrorCode.files.pathRequired,
+        'Path is required',
+      );
     }
     const resolved = fsSync.realpathSync(path.resolve(inputPath));
     const stat = fsSync.statSync(resolved);
     if (!stat.isDirectory()) {
-      throw new BadRequestException('Workspace root is not a directory');
+      throw BusinessException.badRequest(
+        ErrorCode.files.workspaceRootNotDir,
+        'Workspace root is not a directory',
+      );
     }
     return resolved;
   }
@@ -740,7 +796,10 @@ export class FilesService implements OnModuleDestroy {
       try {
         const stat = await fs.stat(current);
         if (!stat.isDirectory()) {
-          throw new BadRequestException('Parent path is not a directory');
+          throw BusinessException.badRequest(
+            ErrorCode.files.parentNotDir,
+            'Parent path is not a directory',
+          );
         }
         const resolved = await this.resolveSafePath(current);
         return { originalPath: current, resolvedPath: resolved };
@@ -750,7 +809,11 @@ export class FilesService implements OnModuleDestroy {
         }
         const parent = path.dirname(current);
         if (parent === current) {
-          throw new NotFoundException(`No existing parent found: ${inputPath}`);
+          throw BusinessException.notFound(
+            ErrorCode.files.noParentFound,
+            'No existing parent found',
+            { path: inputPath },
+          );
         }
         current = parent;
       }
@@ -764,7 +827,11 @@ export class FilesService implements OnModuleDestroy {
   ): Promise<fsSync.Stats | null> {
     const existing = await this.getOptionalLstat(targetPath);
     if (existing && !overwrite) {
-      throw new ConflictException(`Path already exists: ${targetPath}`);
+      throw BusinessException.conflict(
+        ErrorCode.files.overwriteDisabled,
+        'Path already exists',
+        { path: targetPath },
+      );
     }
     return existing;
   }
@@ -779,7 +846,8 @@ export class FilesService implements OnModuleDestroy {
       relative === '' ||
       (!relative.startsWith('..') && !path.isAbsolute(relative))
     ) {
-      throw new BadRequestException(
+      throw BusinessException.badRequest(
+        ErrorCode.files.pathTraversal,
         'Destination cannot be the source or its descendant',
       );
     }
@@ -788,21 +856,30 @@ export class FilesService implements OnModuleDestroy {
   /** Prevents destructive operations against configured workspace roots. */
   private assertNotWorkspaceRoot(targetPath: string): void {
     if (this.workspaceRoots.has(targetPath)) {
-      throw new BadRequestException('Cannot modify a workspace root directly');
+      throw BusinessException.badRequest(
+        ErrorCode.files.cannotModifyRoot,
+        'Cannot modify a workspace root directly',
+      );
     }
   }
 
   /** Ensures an absolute path remains under a specific resolved root. */
   private assertPathInside(targetPath: string, rootPath: string): void {
     if (!this.isPathInside(targetPath, rootPath)) {
-      throw new ForbiddenException('Path outside allowed workspace roots');
+      throw BusinessException.forbidden(
+        ErrorCode.files.pathOutsideWorkspace,
+        'Path outside allowed workspace roots',
+      );
     }
   }
 
   /** Ensures an absolute path is covered by at least one configured workspace root. */
   private assertAllowedPath(targetPath: string): void {
     if (!this.isAllowedPath(targetPath)) {
-      throw new ForbiddenException('Path outside allowed workspace roots');
+      throw BusinessException.forbidden(
+        ErrorCode.files.pathOutsideWorkspace,
+        'Path outside allowed workspace roots',
+      );
     }
   }
 
@@ -833,7 +910,8 @@ export class FilesService implements OnModuleDestroy {
 
     const existing = await this.assertNoOverwrite(targetPath, overwrite);
     if (existing?.isDirectory()) {
-      throw new BadRequestException(
+      throw BusinessException.badRequest(
+        ErrorCode.files.cannotOverwriteDir,
         'Cannot overwrite a directory with an upload',
       );
     }
@@ -851,12 +929,17 @@ export class FilesService implements OnModuleDestroy {
 
       const latestExisting = await this.getOptionalLstat(targetPath);
       if (latestExisting?.isDirectory()) {
-        throw new BadRequestException(
+        throw BusinessException.badRequest(
+          ErrorCode.files.cannotOverwriteDir,
           'Cannot overwrite a directory with an upload',
         );
       }
       if (latestExisting && !overwrite) {
-        throw new ConflictException(`Path already exists: ${targetPath}`);
+        throw BusinessException.conflict(
+          ErrorCode.files.overwriteDisabled,
+          'Path already exists',
+          { path: targetPath },
+        );
       }
 
       if (overwrite) {
@@ -891,20 +974,25 @@ export class FilesService implements OnModuleDestroy {
   /** Validates folder-upload relative paths and returns safe path segments. */
   private normalizeUploadRelativePath(relativePath: string): string[] {
     if (!relativePath || relativePath.includes('\\')) {
-      throw new BadRequestException('Upload relative path is invalid');
+      throw BusinessException.badRequest(
+        ErrorCode.files.uploadPathInvalid,
+        'Upload relative path is invalid',
+      );
     }
     if (
       path.posix.isAbsolute(relativePath) ||
       path.win32.isAbsolute(relativePath)
     ) {
-      throw new BadRequestException(
+      throw BusinessException.badRequest(
+        ErrorCode.files.uploadPathInvalid,
         'Upload relative path must not be absolute',
       );
     }
 
     const segments = relativePath.split('/');
     if (segments.some((segment) => segment.length === 0)) {
-      throw new BadRequestException(
+      throw BusinessException.badRequest(
+        ErrorCode.files.uploadPathInvalid,
         'Upload relative path contains an empty segment',
       );
     }
@@ -923,23 +1011,38 @@ export class FilesService implements OnModuleDestroy {
 
     const code = this.getErrorCode(error);
     if (code === 'EEXIST') {
-      throw new ConflictException(`Path already exists: ${targetPath}`);
+      throw BusinessException.conflict(
+        ErrorCode.files.pathExists,
+        'Path already exists',
+        { path: targetPath },
+      );
     }
     if (code === 'ENOENT') {
-      throw new NotFoundException(`Path not found: ${targetPath}`);
+      throw BusinessException.notFound(
+        ErrorCode.files.pathNotFound,
+        'Path not found',
+        { path: targetPath },
+      );
     }
     if (code === 'ENOTEMPTY') {
-      throw new BadRequestException('Directory is not empty');
+      throw BusinessException.badRequest(
+        ErrorCode.files.dirNotEmpty,
+        'Directory is not empty',
+      );
     }
     if (code === 'EXDEV') {
-      throw new BadRequestException(
+      throw BusinessException.badRequest(
+        ErrorCode.files.operationFailed,
         'Cannot move across devices; copy/delete fallback is not supported',
       );
     }
 
-    const message =
-      error instanceof Error ? error.message : 'File operation failed';
-    throw new BadRequestException(message);
+    const rawMessage = error instanceof Error ? error.message : String(error);
+    this.logger.error(`File operation failed: ${rawMessage}`);
+    throw BusinessException.badRequest(
+      ErrorCode.files.operationFailed,
+      'File operation failed',
+    );
   }
 
   /** Extracts Node-style error codes without weakening type safety. */

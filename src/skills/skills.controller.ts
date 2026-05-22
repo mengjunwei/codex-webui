@@ -1,12 +1,7 @@
 /** REST controller for Codex skills inventory. */
-import {
-  BadRequestException,
-  Body,
-  Controller,
-  Get,
-  Post,
-  Query,
-} from '@nestjs/common';
+import { Body, Controller, Get, Post, Query } from '@nestjs/common';
+import { BusinessException } from '../common/business.exception';
+import { ErrorCode } from '../common/error-codes';
 import {
   ApiBadRequestResponse,
   ApiBearerAuth,
@@ -42,7 +37,10 @@ export class SkillsController {
   listSkills(@Query('cwd') cwd?: string): Promise<v2.SkillsListResponse> {
     const normalizedCwd = cwd?.trim();
     if (!normalizedCwd) {
-      throw new BadRequestException('cwd is required');
+      throw BusinessException.badRequest(
+        ErrorCode.skills.cwdRequired,
+        'cwd is required',
+      );
     }
     return this.skillsService.listSkills({ cwds: [normalizedCwd] });
   }
@@ -61,9 +59,18 @@ export class SkillsController {
   private parseConfigWriteBody(
     body: SkillsConfigWriteRequestDto | undefined,
   ): v2.SkillsConfigWriteParams {
-    if (!body) throw new BadRequestException('Request body is required');
+    if (!body) {
+      throw BusinessException.badRequest(
+        ErrorCode.validation.bodyRequired,
+        'Request body is required',
+      );
+    }
     if (typeof body.enabled !== 'boolean') {
-      throw new BadRequestException('enabled must be a boolean');
+      throw BusinessException.badRequest(
+        ErrorCode.validation.typeMismatch,
+        'enabled must be a boolean',
+        { field: 'enabled', type: 'boolean' },
+      );
     }
 
     const path = typeof body.path === 'string' ? body.path.trim() : '';
@@ -72,6 +79,9 @@ export class SkillsController {
     const name = typeof body.name === 'string' ? body.name.trim() : '';
     if (name) return { name, enabled: body.enabled };
 
-    throw new BadRequestException('path or name is required');
+    throw BusinessException.badRequest(
+      ErrorCode.skills.pathOrNameRequired,
+      'path or name is required',
+    );
   }
 }

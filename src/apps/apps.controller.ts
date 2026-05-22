@@ -1,5 +1,7 @@
 /** REST controller for experimental Codex apps/connectors. */
-import { BadRequestException, Controller, Get, Query } from '@nestjs/common';
+import { Controller, Get, Query } from '@nestjs/common';
+import { BusinessException } from '../common/business.exception';
+import { ErrorCode } from '../common/error-codes';
 import {
   ApiBadRequestResponse,
   ApiBearerAuth,
@@ -48,8 +50,10 @@ export class AppsController {
     if (!value) return undefined;
     const limit = Number(value);
     if (!Number.isInteger(limit) || limit < 1 || limit > 100) {
-      throw new BadRequestException(
+      throw BusinessException.badRequest(
+        ErrorCode.validation.fieldInvalid,
         'limit must be an integer between 1 and 100',
+        { field: 'limit' },
       );
     }
     return limit;
@@ -62,6 +66,10 @@ export class AppsController {
     if (value === undefined) return undefined;
     if (value === 'true') return true;
     if (value === 'false') return false;
-    throw new BadRequestException(`${field} must be a boolean`);
+    throw BusinessException.badRequest(
+      ErrorCode.validation.typeMismatch,
+      `${field} must be a boolean`,
+      { field, type: 'boolean' },
+    );
   }
 }

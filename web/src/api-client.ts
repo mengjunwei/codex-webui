@@ -2,7 +2,7 @@
 import { client } from './generated/api/client.gen';
 import { getApiToken, clearApiToken } from './auth-token';
 import { showSnackbar } from './stores/snackbar-store';
-import i18n from './i18n';
+import { getApiErrorMessage } from './lib/api-error';
 
 /** HMR-safe guard — bound to the client instance, survives module reload. */
 const clientAny = client as Record<string, unknown>;
@@ -47,18 +47,11 @@ export function configureApiClient() {
       return error;
     }
 
-    // Extract error message from API error shape
-    const apiError = error as { message?: string | string[] } | undefined;
-    let message = i18n.t('Request failed');
-    if (apiError?.message) {
-      message = Array.isArray(apiError.message)
-        ? apiError.message.join(', ')
-        : apiError.message;
-    } else if (response?.status) {
-      message = i18n.t('Request failed ({{status}})', { status: response.status });
-    }
-
-    showSnackbar(message, 'error');
+    // Extract and translate the error message via shared utility
+    const fallback = response?.status
+      ? `Request failed (${response.status})`
+      : undefined;
+    showSnackbar(getApiErrorMessage(error, fallback), 'error');
     return error;
   });
 }

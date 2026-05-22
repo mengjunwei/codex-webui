@@ -3,7 +3,6 @@
  * All paths are security-validated against workspace roots.
  */
 import {
-  BadRequestException,
   Body,
   Controller,
   Delete,
@@ -13,6 +12,8 @@ import {
   Req,
   Res,
 } from '@nestjs/common';
+import { BusinessException } from '../common/business.exception';
+import { ErrorCode } from '../common/error-codes';
 import {
   ApiBadRequestResponse,
   ApiBearerAuth,
@@ -105,7 +106,10 @@ export class FilesController {
   @ApiBadRequestResponse({ type: ApiErrorResponseDto })
   async createFile(@Body() body: CreateFileRequestDto) {
     if (!body.path) {
-      throw new BadRequestException('path is required');
+      throw BusinessException.badRequest(
+        ErrorCode.files.pathRequired,
+        'path is required',
+      );
     }
     return {
       ok: true,
@@ -124,7 +128,10 @@ export class FilesController {
   @ApiBadRequestResponse({ type: ApiErrorResponseDto })
   async createDirectory(@Body() body: CreateDirectoryRequestDto) {
     if (!body.path) {
-      throw new BadRequestException('path is required');
+      throw BusinessException.badRequest(
+        ErrorCode.files.pathRequired,
+        'path is required',
+      );
     }
     return {
       ok: true,
@@ -143,7 +150,10 @@ export class FilesController {
   @ApiBadRequestResponse({ type: ApiErrorResponseDto })
   async writeFile(@Body() body: WriteFileRequestDto) {
     if (!body.path || typeof body.content !== 'string') {
-      throw new BadRequestException('path and content are required');
+      throw BusinessException.badRequest(
+        ErrorCode.files.contentRequired,
+        'path and content are required',
+      );
     }
     return this.filesService.writeFile(
       body.path,
@@ -161,7 +171,10 @@ export class FilesController {
   @ApiBadRequestResponse({ type: ApiErrorResponseDto })
   async renamePath(@Body() body: RenamePathRequestDto) {
     if (!body.path || !body.newName) {
-      throw new BadRequestException('path and newName are required');
+      throw BusinessException.badRequest(
+        ErrorCode.files.pathRequired,
+        'path and newName are required',
+      );
     }
     return {
       ok: true,
@@ -180,7 +193,8 @@ export class FilesController {
   @ApiBadRequestResponse({ type: ApiErrorResponseDto })
   async copyPath(@Body() body: CopyPathRequestDto) {
     if (!body.sourcePath || !body.destinationPath) {
-      throw new BadRequestException(
+      throw BusinessException.badRequest(
+        ErrorCode.files.sourceAndDestRequired,
         'sourcePath and destinationPath are required',
       );
     }
@@ -201,7 +215,8 @@ export class FilesController {
   @ApiBadRequestResponse({ type: ApiErrorResponseDto })
   async movePath(@Body() body: MovePathRequestDto) {
     if (!body.sourcePath || !body.destinationPath) {
-      throw new BadRequestException(
+      throw BusinessException.badRequest(
+        ErrorCode.files.sourceAndDestRequired,
         'sourcePath and destinationPath are required',
       );
     }
@@ -300,7 +315,11 @@ export class FilesController {
   @ApiBadRequestResponse({ type: ApiErrorResponseDto })
   addRoot(@Body() body: AddWorkspaceRootRequestDto) {
     if (!body.root) {
-      throw new BadRequestException('root is required');
+      throw BusinessException.badRequest(
+        ErrorCode.validation.fieldRequired,
+        'root is required',
+        { field: 'root' },
+      );
     }
     this.filesService.addWorkspaceRoot(body.root);
     return { ok: true };
@@ -347,11 +366,17 @@ export class FilesController {
     @Req() request: FastifyRequest,
   ) {
     if (!destinationPath) {
-      throw new BadRequestException('destinationPath is required');
+      throw BusinessException.badRequest(
+        ErrorCode.files.destRequired,
+        'destinationPath is required',
+      );
     }
     const multipartRequest = request as MultipartFilesRequest;
     if (typeof multipartRequest.files !== 'function') {
-      throw new BadRequestException('multipart file upload is not available');
+      throw BusinessException.badRequest(
+        ErrorCode.files.multipartUnavailable,
+        'multipart file upload is not available',
+      );
     }
 
     return {

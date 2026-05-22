@@ -1,5 +1,7 @@
 /** 7z adapter: 7zip-min lists entries, host 7za streams selected entry contents. */
-import { BadRequestException, Injectable } from '@nestjs/common';
+import { Injectable } from '@nestjs/common';
+import { BusinessException } from '../../common/business.exception';
+import { ErrorCode } from '../../common/error-codes';
 import { spawn, spawnSync } from 'node:child_process';
 import { PassThrough, type Readable } from 'node:stream';
 import sevenZip from '7zip-min';
@@ -53,8 +55,7 @@ export class SevenZipArchiveAdapter implements ArchiveAdapter {
     const killChild = () => {
       if (!childDone && !child.killed) child.kill();
     };
-    const stderrChunks: Buffer[] = [];
-    child.stderr.on('data', (chunk: Buffer) => stderrChunks.push(chunk));
+    child.stderr.resume();
     child.stdout.once('end', () => {
       childDone = true;
     });
@@ -65,10 +66,10 @@ export class SevenZipArchiveAdapter implements ArchiveAdapter {
       childDone = true;
       output.off('close', killChild);
       if (code !== 0) {
-        const stderr = Buffer.concat(stderrChunks).toString('utf-8').trim();
         output.destroy(
-          new BadRequestException(
-            stderr || '7za failed to stream archive entry',
+          BusinessException.badRequest(
+            ErrorCode.archive.entryUnsupported,
+            'Unable to stream archive entry',
           ),
         );
       }
@@ -97,7 +98,8 @@ export class SevenZipArchiveAdapter implements ArchiveAdapter {
   private assert7zaAvailable(): void {
     if (this.sevenZaChecked) {
       if (!this.sevenZaAvailable) {
-        throw new BadRequestException(
+        throw BusinessException.badRequest(
+          ErrorCode.archive.sevenZipUnavailable,
           '7za binary is not available on the host',
         );
       }
@@ -107,7 +109,10 @@ export class SevenZipArchiveAdapter implements ArchiveAdapter {
     this.sevenZaChecked = true;
     this.sevenZaAvailable = !result.error && result.status === 0;
     if (!this.sevenZaAvailable) {
-      throw new BadRequestException('7za binary is not available on the host');
+      throw BusinessException.badRequest(
+        ErrorCode.archive.sevenZipUnavailable,
+        '7za binary is not available on the host',
+      );
     }
   }
 }

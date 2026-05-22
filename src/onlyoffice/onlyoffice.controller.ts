@@ -3,7 +3,6 @@
  * and save callback endpoint for writing edits back to workspace files.
  */
 import {
-  BadRequestException,
   Body,
   Controller,
   Get,
@@ -12,6 +11,8 @@ import {
   Query,
   Req,
 } from '@nestjs/common';
+import { BusinessException } from '../common/business.exception';
+import { ErrorCode } from '../common/error-codes';
 import {
   ApiBadRequestResponse,
   ApiBearerAuth,
@@ -106,14 +107,18 @@ export class OnlyOfficeController {
 
     // Edit mode requires JWT secret for secure save callback verification
     if (editorMode === 'edit' && !secret) {
-      throw new BadRequestException(
+      throw BusinessException.badRequest(
+        ErrorCode.onlyoffice.jwtRequired,
         'OnlyOffice edit mode requires general.onlyofficeJwtSecret to be configured',
       );
     }
 
     const metadata = await this.filesService.getMetadata(filePath);
     if (metadata.type !== 'file') {
-      throw new BadRequestException('OnlyOffice requires a file path');
+      throw BusinessException.badRequest(
+        ErrorCode.onlyoffice.fileRequired,
+        'OnlyOffice requires a file path',
+      );
     }
 
     const fileType = this.getSupportedFileType(metadata.name);
@@ -310,15 +315,22 @@ export class OnlyOfficeController {
     secret: string,
   ): { path: string; key: string } {
     if (!stateToken) {
-      throw new BadRequestException('Missing OnlyOffice callback state token');
+      throw BusinessException.badRequest(
+        ErrorCode.onlyoffice.missingCallbackState,
+        'Missing OnlyOffice callback state token',
+      );
     }
     const payload = verify(stateToken, secret, { algorithms: ['HS256'] });
     if (!payload || typeof payload !== 'object') {
-      throw new BadRequestException('Invalid OnlyOffice callback state token');
+      throw BusinessException.badRequest(
+        ErrorCode.onlyoffice.invalidCallbackState,
+        'Invalid OnlyOffice callback state token',
+      );
     }
     const record = payload as Record<string, unknown>;
     if (typeof record.path !== 'string' || typeof record.key !== 'string') {
-      throw new BadRequestException(
+      throw BusinessException.badRequest(
+        ErrorCode.onlyoffice.invalidCallbackStatePayload,
         'Invalid OnlyOffice callback state token payload',
       );
     }
@@ -334,11 +346,17 @@ export class OnlyOfficeController {
     const token =
       body.token ?? this.extractBearerToken(request.headers.authorization);
     if (!token) {
-      throw new BadRequestException('Missing OnlyOffice callback JWT');
+      throw BusinessException.badRequest(
+        ErrorCode.onlyoffice.missingCallbackJwt,
+        'Missing OnlyOffice callback JWT',
+      );
     }
     const payload = verify(token, secret, { algorithms: ['HS256'] });
     if (!payload || typeof payload !== 'object') {
-      throw new BadRequestException('Invalid OnlyOffice callback JWT');
+      throw BusinessException.badRequest(
+        ErrorCode.onlyoffice.invalidCallbackJwt,
+        'Invalid OnlyOffice callback JWT',
+      );
     }
   }
 
@@ -348,10 +366,16 @@ export class OnlyOfficeController {
     try {
       downloadUrl = new URL(rawUrl);
     } catch {
-      throw new BadRequestException('Invalid OnlyOffice download URL');
+      throw BusinessException.badRequest(
+        ErrorCode.onlyoffice.invalidDownloadUrl,
+        'Invalid OnlyOffice download URL',
+      );
     }
     if (downloadUrl.protocol !== 'http:' && downloadUrl.protocol !== 'https:') {
-      throw new BadRequestException('OnlyOffice download URL must use HTTP(S)');
+      throw BusinessException.badRequest(
+        ErrorCode.onlyoffice.downloadUrlNotHttps,
+        'OnlyOffice download URL must use HTTP(S)',
+      );
     }
     // Origin must match the configured OnlyOffice server
     const onlyofficeUrl = this.requireOnlyOfficeUrl();
@@ -359,7 +383,8 @@ export class OnlyOfficeController {
       this.normalizeHttpBaseUrl(onlyofficeUrl, 'general.onlyofficeUrl'),
     ).origin;
     if (downloadUrl.origin !== allowedOrigin) {
-      throw new BadRequestException(
+      throw BusinessException.badRequest(
+        ErrorCode.onlyoffice.downloadUrlOriginMismatch,
         'OnlyOffice download URL origin does not match configured server',
       );
     }
@@ -387,12 +412,16 @@ export class OnlyOfficeController {
   ): Promise<void> {
     const contentLength = response.headers.get('content-length');
     if (contentLength && Number(contentLength) > maxBytes) {
-      throw new BadRequestException(
+      throw BusinessException.payloadTooLarge(
+        ErrorCode.onlyoffice.saveTooLarge,
         'OnlyOffice save payload exceeds size limit',
       );
     }
     if (!response.body) {
-      throw new BadRequestException('OnlyOffice save response has no body');
+      throw BusinessException.badRequest(
+        ErrorCode.onlyoffice.saveNoBody,
+        'OnlyOffice save response has no body',
+      );
     }
 
     const tmpPath = join(
@@ -428,7 +457,8 @@ export class OnlyOfficeController {
         totalBytes += chunk.length;
         if (totalBytes > maxBytes) {
           callback(
-            new BadRequestException(
+            BusinessException.payloadTooLarge(
+              ErrorCode.onlyoffice.saveTooLarge,
               'OnlyOffice save payload exceeds size limit',
             ),
           );
@@ -446,7 +476,12 @@ export class OnlyOfficeController {
     const url = this.settingsService.getStringSetting(
       GENERAL_SETTING_KEYS.onlyofficeUrl,
     );
-    if (!url) throw new BadRequestException('OnlyOffice is not configured');
+    if (!url) {
+      throw BusinessException.badRequest(
+        ErrorCode.onlyoffice.notConfigured,
+        'OnlyOffice is not configured',
+      );
+    }
     return url;
   }
 
@@ -454,7 +489,8 @@ export class OnlyOfficeController {
   private getSupportedFileType(filename: string): string {
     const ext = filename.split('.').pop()?.toLowerCase() ?? '';
     if (ext === 'docx' || ext === 'xlsx' || ext === 'pptx') return ext;
-    throw new BadRequestException(
+    throw BusinessException.badRequest(
+      ErrorCode.onlyoffice.unsupportedFormat,
       'OnlyOffice supports DOCX, XLSX, and PPTX files',
     );
   }
@@ -487,7 +523,8 @@ export class OnlyOfficeController {
       return this.normalizeHttpBaseUrl(publicBaseUrl, 'general.publicBaseUrl');
     }
     if (!request) {
-      throw new BadRequestException(
+      throw BusinessException.badRequest(
+        ErrorCode.onlyoffice.publicHostRequired,
         'Cannot determine public host. Configure general.publicBaseUrl in Settings.',
       );
     }
@@ -497,7 +534,8 @@ export class OnlyOfficeController {
       this.firstHeaderValue(request.headers['x-forwarded-host']) ??
       this.firstHeaderValue(request.headers.host);
     if (!host) {
-      throw new BadRequestException(
+      throw BusinessException.badRequest(
+        ErrorCode.onlyoffice.publicHostRequired,
         'Cannot determine public host for OnlyOffice. Configure general.publicBaseUrl in Settings.',
       );
     }
@@ -571,7 +609,11 @@ export class OnlyOfficeController {
       url.hash = '';
       return url.toString().replace(/\/+$/, '');
     } catch {
-      throw new BadRequestException(`${label} must be a valid http(s) URL`);
+      throw BusinessException.badRequest(
+        ErrorCode.onlyoffice.invalidUrl,
+        `${label} must be a valid http(s) URL`,
+        { label },
+      );
     }
   }
 
