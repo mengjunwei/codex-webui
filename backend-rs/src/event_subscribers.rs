@@ -342,11 +342,10 @@ fn spawn_pending_resolved(db: Arc<Db>, codex: Arc<CodexProcessManager>) {
                     let generation = codex.generation() as i64;
                     let now = chrono::Utc::now().timestamp_millis();
                     let req_str = id_to_string(request_id);
-                    if let Err(e) = db.conn.lock() {
-                        tracing::warn!("pending-resolved db lock: {e}");
-                        continue;
-                    }
-                    let conn = db.conn.lock().unwrap();
+                    let conn = match db.conn.lock() {
+                        Ok(c) => c,
+                        Err(e) => { tracing::warn!("pending-resolved db lock: {e}"); continue; }
+                    };
                     let _ = conn.execute(
                         "UPDATE pending_server_requests \
                          SET status='resolved', updated_at=?1, resolved_at=?2 \

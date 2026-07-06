@@ -413,22 +413,24 @@ async fn download_and_write(
         .await
         .map_err(|e| AppError::internal(format!("create tmp: {e}")))?;
 
-    // Collect all bytes (up to max_bytes; typical Office docs are <100MB).
-    // For very large files, a streaming approach with reqwest stream feature
-    // would be more memory-efficient, but the size limit guards this path.
-    let bytes = response
-        .bytes()
-        .await
-        .map_err(|e| AppError::internal(format!("download: {e}")))?;
-    if bytes.len() as u64 > max_bytes {
-        return Err(bad_request(
-            ErrorCode::OnlyOfficeSaveTooLarge,
-            "OnlyOffice save payload exceeds size limit",
-        ));
+    // H1 FIX: stream response body to disk with live byte counter (not bytes()
+    // which buffers entire response in memory — DoS on chunked-encoding).
+    use futures_util::StreamExt;
+    let mut stream = response.bytes_stream();
+    let mut total: u64 = 0;
+    while let Some(chunk) = stream.next().await {
+        let chunk = chunk.map_err(|e| AppError::internal(format!("download stream: {e}")))?;
+        total += chunk.len() as u64;
+        if total > max_bytes {
+            return Err(bad_request(
+                ErrorCode::OnlyOfficeSaveTooLarge,
+                "OnlyOffice save payload exceeds size limit",
+            ));
+        }
+        file.write_all(&chunk)
+            .await
+            .map_err(|e| AppError::internal(format!("write chunk: {e}")))?;
     }
-    file.write_all(&bytes)
-        .await
-        .map_err(|e| AppError::internal(format!("write: {e}")))?;
     file.flush()
         .await
         .map_err(|e| AppError::internal(format!("flush: {e}")))?;

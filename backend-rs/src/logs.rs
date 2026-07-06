@@ -142,7 +142,7 @@ pub async fn export_diagnostics(
             platform: platform_name(),
             arch: arch_name(),
             uptime_seconds: uptime_seconds(),
-            codex_version: codex_version(&state),
+            codex_version: codex_version_async(&state).await,
         },
         // runtimeStatus requires CodexStatusService (Phase 1); stubbed until then.
         runtime_status: Value::Null,
@@ -366,23 +366,29 @@ fn arch_name() -> String {
     }
 }
 
-fn codex_version(state: &AppState) -> String {
-    // Config doesn't carry CODEX_BIN in AppState yet; read env directly.
+async fn codex_version_async(state: &AppState) -> String {
+    // H4 FIX: run in spawn_blocking to avoid blocking the tokio worker thread
+    // (TS uses execFileAsync with 2s timeout).
     let bin = std::env::var("CODEX_BIN").unwrap_or_else(|_| "codex".into());
-    let _ = state; // AppState reserved for future CodexStatusService (Phase 1).
-    std::process::Command::new(bin)
-        .arg("--version")
-        .output()
-        .ok()
-        .and_then(|o| {
-            if o.status.success() {
-                String::from_utf8(o.stdout).ok().map(|s| s.trim().to_string())
-            } else {
-                None
-            }
-        })
-        .filter(|s| !s.is_empty())
-        .unwrap_or_else(|| "unknown".into())
+    let _ = state;
+    let result = tokio::task::spawn_blocking(move || {
+        std::process::Command::new(bin)
+            .arg("--version")
+            .output()
+            .ok()
+            .and_then(|o| {
+                if o.status.success() {
+                    String::from_utf8(o.stdout).ok().map(|s| s.trim().to_string())
+                } else {
+                    None
+                }
+            })
+            .filter(|s| !s.is_empty())
+    })
+    .await
+    .ok()
+    .flatten();
+    result.unwrap_or_else(|| "unknown".into())
 }
 
 #[cfg(test)]
