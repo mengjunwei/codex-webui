@@ -64,6 +64,18 @@ pub enum ErrorCode {
     McpTimeoutTooLarge,
     // ── plugins.* ──────────────────────────────────────────────────────
     PluginsFieldRequired,
+    // ── threads.* ──────────────────────────────────────────────────────
+    ThreadsInvalidLimit,
+    ThreadsInvalidSortKey,
+    ThreadsInvalidModel,
+    ThreadsInvalidEffort,
+    ThreadsInvalidRollbackTurns,
+    ThreadsInvalidName,
+    ThreadsInvalidInput,
+    ThreadsInvalidInputItem,
+    ThreadsInvalidInputUrl,
+    ThreadsInvalidInputField,
+    ThreadsInvalidInputType,
     // Phase 2+: files.*, codex.*, terminal.*, etc. — appended here.
 }
 
@@ -103,6 +115,17 @@ impl ErrorCode {
             Self::McpTimeoutInvalid => "mcp.timeout_invalid",
             Self::McpTimeoutTooLarge => "mcp.timeout_too_large",
             Self::PluginsFieldRequired => "plugins.field_required",
+            Self::ThreadsInvalidLimit => "threads.invalid_limit",
+            Self::ThreadsInvalidSortKey => "threads.invalid_sort_key",
+            Self::ThreadsInvalidModel => "threads.invalid_model",
+            Self::ThreadsInvalidEffort => "threads.invalid_effort",
+            Self::ThreadsInvalidRollbackTurns => "threads.invalid_rollback_turns",
+            Self::ThreadsInvalidName => "threads.invalid_name",
+            Self::ThreadsInvalidInput => "threads.invalid_input",
+            Self::ThreadsInvalidInputItem => "threads.invalid_input_item",
+            Self::ThreadsInvalidInputUrl => "threads.invalid_input_url",
+            Self::ThreadsInvalidInputField => "threads.invalid_input_field",
+            Self::ThreadsInvalidInputType => "threads.invalid_input_type",
         }
     }
 

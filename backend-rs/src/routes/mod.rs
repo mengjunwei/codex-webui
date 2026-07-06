@@ -20,6 +20,7 @@ pub fn build_router(state: AppState) -> Router {
     use crate::proxies as px;
     use crate::settings::handlers as s;
     use crate::sqlite_handlers as sq;
+    use crate::threads as th;
 
     // Protected API sub-router.
     let api = Router::new()
@@ -62,6 +63,20 @@ pub fn build_router(state: AppState) -> Router {
         .route("/plugins/detail", get(px::plugins_detail))
         .route("/plugins/install", post(px::plugins_install))
         .route("/plugins/uninstall", post(px::plugins_uninstall))
+        // ── threads + turns (codex proxy) ──
+        .route("/threads", post(th::create_thread).get(th::list_threads))
+        .route("/threads/loaded", get(th::list_loaded_threads))
+        .route("/threads/:threadId", get(th::read_thread))
+        .route("/threads/:threadId/resume", post(th::resume_thread))
+        .route("/threads/:threadId/turns", post(th::start_turn))
+        .route("/threads/:threadId/turns/:turnId/steer", post(th::steer_turn))
+        .route("/threads/:threadId/turns/:turnId/interrupt", post(th::interrupt_turn))
+        .route("/threads/:threadId/archive", post(th::archive_thread))
+        .route("/threads/:threadId/unarchive", post(th::unarchive_thread))
+        .route("/threads/:threadId/compact", post(th::compact_thread))
+        .route("/threads/:threadId/fork", post(th::fork_thread))
+        .route("/threads/:threadId/rollback", post(th::rollback_thread))
+        .route("/threads/:threadId/name", axum::routing::patch(th::set_thread_name))
         .layer(axum::middleware::from_fn_with_state(
             state.clone(),
             require_auth,
