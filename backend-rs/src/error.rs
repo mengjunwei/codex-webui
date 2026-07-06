@@ -344,3 +344,9 @@ impl From<anyhow::Error> for AppError {
         Self::Internal(e.to_string())
     }
 }
+
+impl From<axum::http::Error> for AppError {
+    fn from(e: axum::http::Error) -> Self {
+        Self::Internal(e.to_string())
+    }
+}

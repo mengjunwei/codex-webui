@@ -98,6 +98,8 @@ pub fn build_router(state: AppState) -> Router {
         .route("/files/create-file", post(fl::create_file))
         .route("/files/create-directory", post(fl::create_directory))
         .route("/files/write", post(fl::write_file))
+        .route("/files/serve", get(fl::serve_file))
+        .route("/files/download", get(fl::download_file))
         // ── onlyoffice (config done; callback deferred) ──
         .route("/onlyoffice/config", get(oo::get_config))
         .route("/onlyoffice/callback", post(oo::handle_callback))

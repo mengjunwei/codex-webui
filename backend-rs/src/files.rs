@@ -15,8 +15,10 @@
 use crate::error::{AppError, ErrorCode};
 use crate::state::AppState;
 use axum::{
+    body::Body,
     extract::{Query, State},
-    http::StatusCode,
+    http::{header, HeaderMap, HeaderValue, StatusCode},
+    response::{IntoResponse, Response},
     Json,
 };
 use serde::Deserialize;
@@ -24,6 +26,7 @@ use serde_json::json;
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use tokio::fs;
+use tokio::io::{AsyncReadExt, AsyncSeekExt, SeekFrom};
 
 const MAX_READ_SIZE: u64 = 5 * 1024 * 1024;
 const DEFAULT_EXCLUDED_DIRS: &[&str] = &[
@@ -541,48 +544,293 @@ pub async fn write_file(
     })))
 }
 
-// ── Deferred handlers (return 501) ──────────────────────────────────────────
+// ── serve (inline + Range) / download (attachment) ──────────────────────────
 
-macro_rules! not_implemented {
-    ($method:literal) => {
-        async fn $method() -> Result<Json<serde_json::Value>, AppError> {
-            Err(AppError::internal(format!(
-                "{} requires multipart/Range/stream support (deferred)",
-                stringify!($method)
-            )))
+/// GET /api/files/serve?path=… — inline preview with byte-range support.
+/// Used by <img>/<video>/<pdf> tags AND by OnlyOffice Document Server to fetch
+/// the file. Supports the RFC 6750 `access_token` query fallback (handled by
+/// the auth middleware for this path). Returns 200/206/416.
+pub async fn serve_file(
+    State(state): State<AppState>,
+    Query(q): Query<ReadQuery>,
+    headers: HeaderMap,
+) -> Result<Response, AppError> {
+    let resolved = resolve(&state, q.path.as_deref().unwrap_or("")).await?;
+    if resolved.kind != ResolvedKind::File {
+        return Err(bad_request(
+            ErrorCode::FilesPathIsDirectory,
+            "path must be a file",
+        ));
+    }
+    serve_with_range(
+        &resolved.resolved,
+        &resolved.original,
+        resolved.size,
+        true, // inline
+        headers,
+    )
+    .await
+}
+
+/// GET /api/files/download?path=… — attachment download (no Range).
+pub async fn download_file(
+    State(state): State<AppState>,
+    Query(q): Query<ReadQuery>,
+) -> Result<Response, AppError> {
+    let resolved = resolve(&state, q.path.as_deref().unwrap_or("")).await?;
+    if resolved.kind != ResolvedKind::File {
+        return Err(bad_request(
+            ErrorCode::FilesPathIsDirectory,
+            "path must be a file",
+        ));
+    }
+    serve_with_range(
+        &resolved.resolved,
+        &resolved.original,
+        resolved.size,
+        false, // attachment
+        HeaderMap::new(),
+    )
+    .await
+}
+
+async fn serve_with_range(
+    path: &Path,
+    original: &str,
+    size: u64,
+    inline: bool,
+    headers: HeaderMap,
+) -> Result<Response, AppError> {
+    let filename = path
+        .file_name()
+        .map(|n| n.to_string_lossy().to_string())
+        .unwrap_or_else(|| "file".into());
+    let mime = guess_mime_type(&filename);
+    let range_header = headers
+        .get(header::RANGE)
+        .and_then(|v| v.to_str().ok())
+        .map(|s| s.to_string());
+
+    let mut resp = Response::builder()
+        .header(header::ACCEPT_RANGES, "bytes")
+        .header(header::CONTENT_TYPE, mime.as_str())
+        .header(
+            header::CONTENT_DISPOSITION,
+            build_content_disposition(&filename, inline).as_str(),
+        )
+        .header("X-Content-Type-Options", "nosniff")
+        .header("Referrer-Policy", "no-referrer")
+        .header(
+            "Content-Security-Policy",
+            "sandbox; default-src 'none'; img-src 'self' data: blob:; media-src 'self' data: blob:; style-src 'unsafe-inline'",
+        )
+        .header("Cache-Control", "private, no-store");
+
+    match parse_range_header(range_header.as_deref(), size) {
+        RangeResult::Invalid => Ok(resp
+            .status(StatusCode::RANGE_NOT_SATISFIABLE)
+            .header(header::CONTENT_RANGE, format!("bytes */{}", size))
+            .body(Body::empty())?),
+        RangeResult::None => {
+            let bytes = tokio::fs::read(path)
+                .await
+                .map_err(|e| AppError::internal(format!("read: {e}")))?;
+            Ok(resp
+                .header(header::CONTENT_LENGTH, size)
+                .body(Body::from(bytes))?)
+        }
+        RangeResult::Range(r) => {
+            let length = r.end - r.start + 1;
+            let mut file = tokio::fs::File::open(path)
+                .await
+                .map_err(|e| AppError::internal(format!("open: {e}")))?;
+            file.seek(SeekFrom::Start(r.start))
+                .await
+                .map_err(|e| AppError::internal(format!("seek: {e}")))?;
+            let mut buf = vec![0u8; length as usize];
+            file.read_exact(&mut buf)
+                .await
+                .map_err(|e| AppError::internal(format!("read range: {e}")))?;
+            Ok(resp
+                .status(StatusCode::PARTIAL_CONTENT)
+                .header(
+                    header::CONTENT_RANGE,
+                    format!("bytes {}-{}/{}", r.start, r.end, size),
+                )
+                .header(header::CONTENT_LENGTH, length)
+                .body(Body::from(buf))?)
+        }
+    }
+}
+
+enum RangeResult {
+    None,
+    Range(ByteRange),
+    Invalid,
+}
+
+struct ByteRange {
+    start: u64,
+    end: u64,
+}
+
+/// Parse a single RFC 9110 `bytes=start-end` header. Parity with TS
+/// `parseRangeHeader`. Returns None (absent), Range, or Invalid.
+fn parse_range_header(range_header: Option<&str>, size: u64) -> RangeResult {
+    let Some(header) = range_header else {
+        return RangeResult::None;
+    };
+    let header = header.trim();
+    let Some(rest) = header.strip_prefix("bytes=") else {
+        return RangeResult::Invalid;
+    };
+    // Match `^bytes=(\d*)-(\d*)$`
+    let (raw_start, raw_end) = match rest.split_once('-') {
+        Some((s, e)) => (s, e),
+        None => return RangeResult::Invalid,
+    };
+    if raw_start.is_empty() && raw_end.is_empty() {
+        return RangeResult::Invalid;
+    }
+    if raw_start.is_empty() {
+        // Suffix range: bytes=-N → last N bytes
+        let suffix: u64 = match raw_end.parse() {
+            Ok(n) if n > 0 => n,
+            _ => return RangeResult::Invalid,
+        };
+        if size == 0 {
+            return RangeResult::Invalid;
+        }
+        let start = size.saturating_sub(suffix);
+        return RangeResult::Range(ByteRange {
+            start,
+            end: size - 1,
+        });
+    }
+    let start: u64 = match raw_start.parse() {
+        Ok(n) => n,
+        Err(_) => return RangeResult::Invalid,
+    };
+    let end: u64 = if raw_end.is_empty() {
+        size.saturating_sub(1)
+    } else {
+        match raw_end.parse() {
+            Ok(n) => n,
+            Err(_) => return RangeResult::Invalid,
         }
     };
+    if start >= size || end < start {
+        return RangeResult::Invalid;
+    }
+    RangeResult::Range(ByteRange {
+        start,
+        end: end.min(size - 1),
+    })
 }
-pub async fn upload_files() -> Result<Json<serde_json::Value>, AppError> {
-    Err(AppError::internal(
-        "upload requires multipart (Phase 3c+ deferred)".into(),
-    ))
+
+/// Map a filename to a MIME type by extension. Parity with TS `guessMimeType`.
+fn guess_mime_type(filename: &str) -> String {
+    let lower = filename.to_ascii_lowercase();
+    if lower.ends_with(".tar.gz") || lower.ends_with(".tgz") {
+        return "application/gzip".into();
+    }
+    if lower.ends_with(".tar.bz2") || lower.ends_with(".tbz2") {
+        return "application/x-bzip2".into();
+    }
+    if lower.ends_with(".tar.xz") || lower.ends_with(".txz") {
+        return "application/x-xz".into();
+    }
+    let ext = lower.rsplit('.').next().unwrap_or("");
+    mime_for_ext(ext).into()
 }
-pub async fn serve_file() -> Result<Json<serde_json::Value>, AppError> {
-    Err(AppError::internal(
-        "serve requires Range + streaming (Phase 3c+ deferred)".into(),
-    ))
+
+fn mime_for_ext(ext: &str) -> &'static str {
+    match ext {
+        // images
+        "png" => "image/png",
+        "jpg" | "jpeg" => "image/jpeg",
+        "gif" => "image/gif",
+        "webp" => "image/webp",
+        "svg" => "image/svg+xml",
+        "ico" => "image/x-icon",
+        "bmp" => "image/bmp",
+        "avif" => "image/avif",
+        // documents
+        "pdf" => "application/pdf",
+        "docx" => "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        "xlsx" => "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        "pptx" => "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+        // text/code
+        "html" => "text/html",
+        "css" => "text/css",
+        "js" | "mjs" | "cjs" => "text/javascript",
+        "ts" => "text/typescript",
+        "tsx" => "text/tsx",
+        "jsx" => "text/jsx",
+        "json" => "application/json",
+        "xml" => "application/xml",
+        "txt" => "text/plain",
+        "md" => "text/markdown",
+        "csv" => "text/csv",
+        "yaml" | "yml" => "text/yaml",
+        // media
+        "mp4" | "m4v" => "video/mp4",
+        "webm" => "video/webm",
+        "mov" => "video/quicktime",
+        "ogv" => "video/ogg",
+        "mp3" => "audio/mpeg",
+        "wav" => "audio/wav",
+        "ogg" | "oga" => "audio/ogg",
+        "flac" => "audio/flac",
+        "m4a" => "audio/mp4",
+        // archives
+        "zip" => "application/zip",
+        "gz" | "tgz" => "application/gzip",
+        "tar" => "application/x-tar",
+        "bz2" => "application/x-bzip2",
+        "xz" => "application/x-xz",
+        "rar" => "application/vnd.rar",
+        "7z" => "application/x-7z-compressed",
+        // fonts
+        "woff" => "font/woff",
+        "woff2" => "font/woff2",
+        "ttf" => "font/ttf",
+        "otf" => "font/otf",
+        _ => "application/octet-stream",
+    }
 }
-pub async fn download_file() -> Result<Json<serde_json::Value>, AppError> {
-    Err(AppError::internal(
-        "download requires streaming (Phase 3c+ deferred)".into(),
-    ))
+
+/// Build a safe Content-Disposition header. Parity with TS
+/// `buildContentDisposition`.
+fn build_content_disposition(filename: &str, inline: bool) -> String {
+    let fallback: String = filename
+        .chars()
+        .map(|c| match c {
+            '\r' | '\n' | '"' | '\\' => '_',
+            other => other,
+        })
+        .collect();
+    let disposition = if inline { "inline" } else { "attachment" };
+    let encoded = url_encode(filename);
+    format!(
+        "{disposition}; filename=\"{fallback}\"; filename*=UTF-8''{encoded}"
+    )
 }
-pub async fn rename_path() -> Result<Json<serde_json::Value>, AppError> {
-    Err(AppError::internal(
-        "rename deferred".into(),
-    ))
+
+fn url_encode(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for b in s.bytes() {
+        match b {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                out.push(b as char)
+            }
+            _ => out.push_str(&format!("%{:02X}", b)),
+        }
+    }
+    out
 }
-pub async fn copy_path() -> Result<Json<serde_json::Value>, AppError> {
-    Err(AppError::internal(
-        "copy deferred".into(),
-    ))
-}
-pub async fn move_path() -> Result<Json<serde_json::Value>, AppError> {
-    Err(AppError::internal(
-        "move deferred".into(),
-    ))
-}
+
+// ── Deferred handlers (return 500 "deferred") ────────────────────────────────
 
 // (helper to avoid unused import)
 #[allow(dead_code)]
