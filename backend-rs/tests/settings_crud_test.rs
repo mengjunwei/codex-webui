@@ -85,7 +85,7 @@ async fn get_one_returns_setting() {
 }
 
 #[tokio::test]
-async fn get_one_unknown_key_400() {
+async fn get_one_unknown_key_404() {
     let app = build_router(state());
     let req = Request::builder()
         .uri("/api/settings/nonexistent.key")
@@ -93,7 +93,7 @@ async fn get_one_unknown_key_400() {
         .body(Body::empty())
         .unwrap();
     let resp = app.oneshot(req).await.unwrap();
-    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    assert_eq!(resp.status(), StatusCode::NOT_FOUND);
 }
 
 #[tokio::test]
