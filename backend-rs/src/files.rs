@@ -894,7 +894,7 @@ pub async fn rename_path(
         .ok_or_else(|| bad_request(ErrorCode::FilesNoParentFound, "parent path not found"))?;
     let dest = parent.join(new_name);
     if dest.exists() && !body.overwrite.unwrap_or(false) {
-        return Err(bad_request(ErrorCode::FilesPathExists, "destination already exists (set overwrite=true)"));
+        return Err(conflict(ErrorCode::FilesPathExists, "destination already exists (set overwrite=true)"));
     }
     tokio::fs::rename(&resolved.resolved, &dest)
         .await
@@ -959,7 +959,7 @@ async fn do_relocate(
     }
     let dest = std::path::PathBuf::from(dst_raw);
     if dest.exists() && !body.overwrite.unwrap_or(false) {
-        return Err(bad_request(ErrorCode::FilesPathExists,
+        return Err(conflict(ErrorCode::FilesPathExists,
             "destination already exists (set overwrite=true)"));
     }
     if is_move {
@@ -1042,7 +1042,7 @@ pub async fn upload_files(
             .map_err(|e| AppError::internal(format!("read multipart field: {e}")))?;
         let file_path = dest_canonical.join(&safe_name);
         if file_path.exists() && !overwrite {
-            return Err(bad_request(ErrorCode::FilesPathExists,
+            return Err(conflict(ErrorCode::FilesPathExists,
                 format!("{safe_name} already exists (set overwrite=true)")));
         }
         tokio::fs::write(&file_path, &data)
@@ -1207,4 +1207,9 @@ fn read_tar_entry<R: std::io::Read>(reader: R, entry_name: &str) -> Result<Vec<u
 #[allow(dead_code)]
 fn _unused_fs() {
     let _ = std::any::type_name::<fs::File>();
+}
+
+// ── Conflict helper (409 CONFLICT, parity with TS assertNoOverwrite) ─────────
+fn conflict(code: ErrorCode, msg: impl Into<String>) -> AppError {
+    AppError::business(code, StatusCode::CONFLICT, msg.into(), None)
 }
