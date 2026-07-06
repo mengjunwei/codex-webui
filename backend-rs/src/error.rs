@@ -84,7 +84,8 @@ impl ErrorCode {
 }
 
 /// Optional interpolation params for frontend i18n.
-pub type Params = BTreeMap<String, serde_json::Number>;
+/// Parity with TS `ErrorParams = Record<string, string | number>`.
+pub type Params = BTreeMap<String, serde_json::Value>;
 
 /// Unified application error type.
 #[derive(Debug)]
@@ -147,10 +148,7 @@ impl IntoResponse for AppError {
                 let mut params = None;
                 if matches!(code, ErrorCode::HttpRequestFailed) {
                     let mut m = Params::new();
-                    m.insert(
-                        "status".into(),
-                        serde_json::Number::from(status.as_u16()),
-                    );
+                    m.insert("status".into(), serde_json::Value::Number(status.as_u16().into()));
                     params = Some(m);
                 }
                 (

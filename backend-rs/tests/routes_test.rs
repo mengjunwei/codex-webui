@@ -10,6 +10,7 @@
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use codex_webui::auth::AuthService;
+use codex_webui::codex::CodexProcessManager;
 use codex_webui::db::Db;
 use codex_webui::routes::build_router;
 use codex_webui::state::AppState;
@@ -24,6 +25,7 @@ fn state(api_key: &str) -> AppState {
             conn: Mutex::new(c),
         }),
         auth: Arc::new(AuthService::new(api_key)),
+        codex: Arc::new(CodexProcessManager::new("codex".into(), None)),
     }
 }
 

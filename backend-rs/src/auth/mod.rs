@@ -116,6 +116,7 @@ impl AuthService {
         let mut validation = Validation::new(Algorithm::HS256);
         validation.sub = Some(SUBJECT.to_string());
         validation.validate_exp = true;
+        validation.leeway = 0; // parity with TS (Node jsonwebtoken defaults to 0)
 
         match decode::<Claims>(
             token,

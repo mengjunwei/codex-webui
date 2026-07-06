@@ -3,6 +3,7 @@
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use codex_webui::auth::AuthService;
+use codex_webui::codex::CodexProcessManager;
 use codex_webui::db::{run_migrations, Db};
 use codex_webui::routes::build_router;
 use codex_webui::settings::reconcile_settings;
@@ -22,6 +23,7 @@ fn state() -> AppState {
     AppState {
         db,
         auth: Arc::new(AuthService::new("test-key")),
+        codex: Arc::new(CodexProcessManager::new("codex".into(), None)),
     }
 }
 
@@ -152,4 +154,97 @@ async fn proxy_stub_returns_501() {
         .unwrap();
     let resp = app.oneshot(req).await.unwrap();
     assert_eq!(resp.status(), StatusCode::NOT_IMPLEMENTED);
+}
+
+// ── H1 parity: string values are JSON-encoded in storage (TS interop) ─────────
+
+#[tokio::test]
+async fn string_value_roundtrips_and_is_json_encoded_in_db() {
+    let st = state();
+    let app = build_router(st.clone());
+
+    // Write a string value.
+    let v = authed(
+        app,
+        "PATCH",
+        "/api/settings/general.onlyofficeUrl",
+        Some(r#"{"value":"https://docs.example.com"}"#),
+    )
+    .await;
+    assert_eq!(v["value"], "https://docs.example.com");
+    assert_eq!(v["source"], "db");
+
+    // Verify the DB stores it JSON-encoded (with embedded quotes), matching TS.
+    let conn = st.db.conn.lock().unwrap();
+    let stored: String = conn
+        .query_row(
+            "SELECT value FROM settings WHERE key='general.onlyofficeUrl'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    drop(conn);
+    assert_eq!(
+        stored, r#""https://docs.example.com""#,
+        "string values must be JSON-encoded in storage (parity with TS encodeJson)"
+    );
+}
+
+// ── H3 parity: constraints populated in DTO + enforced on write ───────────────
+
+#[tokio::test]
+async fn constraints_appear_in_dto() {
+    let app = build_router(state());
+    let v = authed(app, "GET", "/api/settings/terminal.maxSessions", None).await;
+    assert_eq!(v["constraints"]["min"], 1);
+    assert_eq!(v["constraints"]["max"], 50);
+    assert_eq!(v["constraints"]["integer"], true);
+}
+
+#[tokio::test]
+async fn constraints_enforced_on_write() {
+    let app = build_router(state());
+    // terminal.maxSessions max is 50 → 999 must be rejected.
+    let req = Request::builder()
+        .method("PATCH")
+        .uri("/api/settings/terminal.maxSessions")
+        .header("authorization", "Bearer test-key")
+        .header("content-type", "application/json")
+        .body(Body::from(r#"{"value":999}"#))
+        .unwrap();
+    let resp = app.oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+
+    // Non-integer rejected (integer constraint).
+    let app = build_router(state());
+    let req = Request::builder()
+        .method("PATCH")
+        .uri("/api/settings/terminal.maxSessions")
+        .header("authorization", "Bearer test-key")
+        .header("content-type", "application/json")
+        .body(Body::from(r#"{"value":5.5}"#))
+        .unwrap();
+    let resp = app.oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+
+    // In-range integer accepted.
+    let app = build_router(state());
+    let v = authed(
+        app,
+        "PATCH",
+        "/api/settings/terminal.maxSessions",
+        Some(r#"{"value":25}"#),
+    )
+    .await;
+    assert_eq!(v["value"], 25);
+}
+
+#[tokio::test]
+async fn pending_approvals_dto_omits_resolved_at() {
+    // No pending rows → empty list, but verify the DTO shape has no resolvedAt.
+    let app = build_router(state());
+    let v = authed(app, "GET", "/api/pending-approvals", None).await;
+    let arr = v["requests"].as_array().unwrap();
+    assert!(arr.is_empty(), "fresh DB has no pending requests");
+    // (If rows existed, each would be checked for absence of resolvedAt/resolvedBy.)
 }

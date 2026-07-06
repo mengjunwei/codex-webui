@@ -1,8 +1,8 @@
 //! Runtime setting definitions — ported from `src/settings/settings.definitions.ts`.
 //!
 //! 12 settings across 4 categories (terminal, files, security, general).
-//! `default_value` is always a string (matches the DB `value` column type).
-//! Constraints and full SettingType port deferred to Phase 2 (settings CRUD).
+//! `default_value` is a raw string interpreted by type on read.
+//! `constraints` (min/max/integer) are now modeled + persisted + enforced, matching TS.
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum SettingType {
@@ -42,13 +42,67 @@ impl Category {
     }
 }
 
+/// Constraints for a setting (parity with TS `SettingConstraints`).
+#[derive(Clone, Copy, Debug, Default)]
+pub struct SettingConstraints {
+    pub min: Option<f64>,
+    pub max: Option<f64>,
+    /// Marks number settings that must be integral.
+    pub integer: bool,
+}
+
+impl SettingConstraints {
+    /// Encode as a JSON string for DB storage (parity with TS `encodeJson(def.constraints)`).
+    pub fn to_json(self) -> serde_json::Value {
+        let mut m = serde_json::Map::new();
+        if let Some(min) = self.min {
+            m.insert("min".into(), num_value(min));
+        }
+        if let Some(max) = self.max {
+            m.insert("max".into(), num_value(max));
+        }
+        if self.integer {
+            m.insert("integer".into(), serde_json::Value::Bool(true));
+        }
+        serde_json::Value::Object(m)
+    }
+}
+
+/// Build a `serde_json::Number`, preferring i64 for whole numbers.
+fn num_value(n: f64) -> serde_json::Value {
+    if n.fract() == 0.0 && n.is_finite() {
+        serde_json::Value::Number(serde_json::Number::from(n as i64))
+    } else {
+        serde_json::Number::from_f64(n)
+            .map(serde_json::Value::Number)
+            .unwrap_or(serde_json::Value::Null)
+    }
+}
+
+/// const helper for integer-range constraints.
+const fn int_range(min: f64, max: f64) -> SettingConstraints {
+    SettingConstraints {
+        min: Some(min),
+        max: Some(max),
+        integer: true,
+    }
+}
+
+/// No constraints (for settings without min/max/integer).
+const NO_CONSTRAINTS: SettingConstraints = SettingConstraints {
+    min: None,
+    max: None,
+    integer: false,
+};
+
 pub struct SettingDef {
     pub key: &'static str,
     pub ty: SettingType,
     pub category: Category,
     pub description: &'static str,
-    pub default_value: &'static str, // always a string; parsed by SettingsReader
+    pub default_value: &'static str, // raw string, type-interpreted on read
     pub env_key: Option<&'static str>,
+    pub constraints: SettingConstraints,
 }
 
 // ── Authoritative definitions (port of SETTINGS_DEFINITIONS) ──────────────────
@@ -62,6 +116,7 @@ pub const SETTINGS_DEFINITIONS: &[SettingDef] = &[
             "Maximum idle thread socket subscriptions retained in the browser before cleanup.",
         default_value: "30",
         env_key: None,
+        constraints: int_range(5.0, 200.0),
     },
     SettingDef {
         key: "general.onlyofficeUrl",
@@ -71,6 +126,7 @@ pub const SETTINGS_DEFINITIONS: &[SettingDef] = &[
             "OnlyOffice Document Server base URL. Leave empty to use native viewers and disable PPTX preview.",
         default_value: "",
         env_key: None,
+        constraints: NO_CONSTRAINTS,
     },
     SettingDef {
         key: "general.onlyofficeJwtSecret",
@@ -81,6 +137,7 @@ pub const SETTINGS_DEFINITIONS: &[SettingDef] = &[
              Must match the Document Server browser/outbox secret for edit mode.",
         default_value: "",
         env_key: None,
+        constraints: NO_CONSTRAINTS,
     },
     SettingDef {
         key: "general.onlyofficeSaveMaxBytes",
@@ -91,6 +148,7 @@ pub const SETTINGS_DEFINITIONS: &[SettingDef] = &[
              Increase for large Office documents.",
         default_value: "104857600", // 100 MB
         env_key: None,
+        constraints: int_range(1_048_576.0, 1_073_741_824.0),
     },
     SettingDef {
         key: "general.publicBaseUrl",
@@ -102,6 +160,7 @@ pub const SETTINGS_DEFINITIONS: &[SettingDef] = &[
              Auto-detected from request headers when empty.",
         default_value: "",
         env_key: None,
+        constraints: NO_CONSTRAINTS,
     },
     SettingDef {
         key: "terminal.maxSessions",
@@ -110,6 +169,7 @@ pub const SETTINGS_DEFINITIONS: &[SettingDef] = &[
         description: "Maximum concurrent terminal sessions retained by the server.",
         default_value: "10",
         env_key: Some("WEBUI_TERMINAL_MAX_SESSIONS"),
+        constraints: int_range(1.0, 50.0),
     },
     SettingDef {
         key: "terminal.graceMs",
@@ -118,6 +178,7 @@ pub const SETTINGS_DEFINITIONS: &[SettingDef] = &[
         description: "Milliseconds to keep a detached terminal alive before cleanup.",
         default_value: "45000",
         env_key: Some("WEBUI_TERMINAL_GRACE_MS"),
+        constraints: int_range(10_000.0, 300_000.0),
     },
     SettingDef {
         key: "terminal.scrollback",
@@ -126,6 +187,7 @@ pub const SETTINGS_DEFINITIONS: &[SettingDef] = &[
         description: "Scrollback lines retained by new terminal buffers.",
         default_value: "5000",
         env_key: Some("WEBUI_TERMINAL_SCROLLBACK"),
+        constraints: int_range(100.0, 50_000.0),
     },
     SettingDef {
         key: "terminal.defaultCwd",
@@ -137,6 +199,7 @@ pub const SETTINGS_DEFINITIONS: &[SettingDef] = &[
              Empty to use thread cwd or home.",
         default_value: "",
         env_key: Some("DEFAULT_TERMINAL_CWD"),
+        constraints: NO_CONSTRAINTS,
     },
     SettingDef {
         key: "files.uploadMaxBytes",
@@ -145,6 +208,7 @@ pub const SETTINGS_DEFINITIONS: &[SettingDef] = &[
         description: "Maximum file upload size in bytes.",
         default_value: "104857600", // 100 MB
         env_key: Some("WEBUI_UPLOAD_MAX_BYTES"),
+        constraints: int_range(1.0, 10_737_418_240.0),
     },
     SettingDef {
         key: "files.excludedDirs",
@@ -154,6 +218,7 @@ pub const SETTINGS_DEFINITIONS: &[SettingDef] = &[
             "Comma-separated directory/file names excluded from file tree listings.",
         default_value: "node_modules,.git,.next,dist,__pycache__,.DS_Store",
         env_key: None,
+        constraints: NO_CONSTRAINTS,
     },
     SettingDef {
         key: "security.workspaceRoots",
@@ -164,5 +229,6 @@ pub const SETTINGS_DEFINITIONS: &[SettingDef] = &[
              Home directory is always included.",
         default_value: "",
         env_key: Some("WORKSPACE_ROOTS"),
+        constraints: NO_CONSTRAINTS,
     },
 ];

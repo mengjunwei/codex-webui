@@ -10,7 +10,7 @@
 use crate::db::Db;
 use crate::error::{AppError, ErrorCode};
 use crate::settings::{
-    find_def, to_json_value, validate_and_serialize, write_setting, ResolvedSetting,
+    default_as_value, find_def, validate_and_serialize, write_setting, ResolvedSetting,
 };
 use crate::state::AppState;
 use axum::{
@@ -40,11 +40,9 @@ pub struct SettingDto {
 
 impl SettingDto {
     fn from_resolved(r: &ResolvedSetting, constraints: serde_json::Value) -> Self {
-        let val = to_json_value(&r.raw_value, r.def.ty);
-        let default_val = to_json_value(r.def.default_value, r.def.ty);
         Self {
             key: r.key.to_string(),
-            value: val,
+            value: r.value.clone(),
             source: match r.source {
                 crate::settings::ValueSource::Db => "db",
                 crate::settings::ValueSource::Env => "env",
@@ -53,7 +51,7 @@ impl SettingDto {
             ty: r.def.ty.as_str(),
             category: r.def.category.as_str(),
             description: r.def.description,
-            default_value: default_val,
+            default_value: default_as_value(r.def),
             constraints,
             updated_at: r.updated_at,
         }

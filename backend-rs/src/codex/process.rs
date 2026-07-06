@@ -223,13 +223,17 @@ impl CodexProcessManager {
             stale
         };
 
-        let _ = self.lifecycle_tx.send(LifecycleEvent::Unavailable {
-            generation,
-            message: "codex app-server exited".into(),
-        });
-
-        if stale && !self.destroyed.load(Ordering::SeqCst) {
-            self.restart().await;
+        // Parity with TS: only emit Unavailable when this close is for the
+        // active client (not a stale/duplicate close, and not destroy — which
+        // already nulled `current` before the watcher wakes).
+        if stale {
+            let _ = self.lifecycle_tx.send(LifecycleEvent::Unavailable {
+                generation,
+                message: "codex app-server exited".into(),
+            });
+            if !self.destroyed.load(Ordering::SeqCst) {
+                self.restart().await;
+            }
         }
     }
 

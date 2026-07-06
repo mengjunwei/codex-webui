@@ -16,31 +16,36 @@ pub fn reconcile_settings(db: &Db) -> Result<()> {
         .map_err(|e| anyhow::anyhow!("db lock poisoned: {e}"))?;
 
     for def in SETTINGS_DEFINITIONS {
+        let constraints_json = def.constraints.to_json();
+        let constraints_str = serde_json::to_string(&constraints_json)
+            .unwrap_or_else(|_| "{}".to_string());
         // INSERT OR IGNORE: preserves any existing value set by the user.
         conn.execute(
             "INSERT OR IGNORE INTO settings \
              (key, value, type, category, description, default_value, constraints, updated_at) \
-             VALUES (?1, NULL, ?2, ?3, ?4, ?5, '{}', strftime('%s','now'))",
+             VALUES (?1, NULL, ?2, ?3, ?4, ?5, ?6, strftime('%s','now'))",
             rusqlite::params![
                 def.key,
                 def.ty.as_str(),
                 def.category.as_str(),
                 def.description,
                 def.default_value,
+                constraints_str,
             ],
         )?;
 
-        // UPDATE metadata — never touches `value` (user overrides are sacred).
+        // UPDATE metadata + constraints — never touches `value` (user overrides are sacred).
         conn.execute(
             "UPDATE settings \
              SET type = ?1, category = ?2, description = ?3, \
-                 default_value = ?4, updated_at = strftime('%s','now') \
-             WHERE key = ?5",
+                 default_value = ?4, constraints = ?5, updated_at = strftime('%s','now') \
+             WHERE key = ?6",
             rusqlite::params![
                 def.ty.as_str(),
                 def.category.as_str(),
                 def.description,
                 def.default_value,
+                constraints_str,
                 def.key,
             ],
         )?;

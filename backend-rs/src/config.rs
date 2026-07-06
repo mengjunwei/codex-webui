@@ -73,10 +73,27 @@ fn resolve_db_path(explicit: Option<String>, codex_home: Option<&str>) -> String
 }
 
 fn dirs_or_home() -> PathBuf {
-    env::var("HOME")
-        .or_else(|_| env::var("USERPROFILE"))
-        .map(PathBuf::from)
-        .unwrap_or_else(|_| PathBuf::from("."))
+    // Mirror Node's os.homedir(): USERPROFILE first on Windows, HOME elsewhere.
+    // Critical for this Windows dev box where Git Bash exports HOME as a POSIX path.
+    #[cfg(windows)]
+    {
+        if let Some(p) = std::env::var("USERPROFILE").ok().map(|s| s.trim().to_string()).filter(|s| !s.is_empty()) {
+            return PathBuf::from(p);
+        }
+    }
+    if let Some(p) = std::env::var("HOME").ok().map(|s| s.trim().to_string()).filter(|s| !s.is_empty()) {
+        return PathBuf::from(p);
+    }
+    #[cfg(windows)]
+    {
+        // Last-resort Windows fallback: HOMEDRIVE + HOMEPATH.
+        let drive = std::env::var("HOMEDRIVE").unwrap_or_default();
+        let path = std::env::var("HOMEPATH").unwrap_or_default();
+        if !drive.is_empty() && !path.is_empty() {
+            return PathBuf::from(format!("{}{}", drive, path));
+        }
+    }
+    PathBuf::from(".")
 }
 
 #[cfg(test)]

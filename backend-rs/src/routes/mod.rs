@@ -49,6 +49,10 @@ pub fn build_router(state: AppState) -> Router {
         )
         // ── pending-approvals (read; respond needs Phase 1) ──
         .route("/pending-approvals", get(sq::list_pending))
+        .route(
+            "/pending-approvals/:requestId/respond",
+            post(st::pending_approvals_respond),
+        )
         // ── logs ──
         .route("/logs", get(crate::logs::list_logs))
         .route("/logs/export", get(crate::logs::export_diagnostics))

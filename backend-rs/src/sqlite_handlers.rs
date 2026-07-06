@@ -236,8 +236,8 @@ pub struct PendingServerRequestDto {
     pub created_at: i64,
     #[serde(rename = "updatedAt")]
     pub updated_at: i64,
-    #[serde(rename = "resolvedAt")]
-    pub resolved_at: Option<i64>,
+    // NOTE: resolvedAt + resolvedBy intentionally omitted — parity with
+    // pending-approvals.dto.ts / toDto (TS never serializes them).
 }
 
 #[derive(Serialize)]
@@ -313,7 +313,7 @@ pub async fn list_pending(
 fn parse_pending_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<PendingServerRequestDto> {
     let params_json: String = r.get(6)?;
     let params: serde_json::Value =
-        serde_json::from_str(&params_json).unwrap_or(serde_json::Value::String(params_json));
+        serde_json::from_str(&params_json).unwrap_or(serde_json::Value::Object(Default::default()));
     Ok(PendingServerRequestDto {
         generation: r.get(0)?,
         request_id: r.get(1)?,
@@ -325,6 +325,5 @@ fn parse_pending_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<PendingServerReq
         status: r.get(7)?,
         created_at: r.get(8)?,
         updated_at: r.get(9)?,
-        resolved_at: r.get(10)?,
     })
 }
