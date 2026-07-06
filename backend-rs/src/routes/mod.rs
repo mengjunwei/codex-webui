@@ -31,10 +31,12 @@ async fn openapi_json() -> Json<utoipa::openapi::OpenApi> {
 /// Build the application router.
 ///
 /// Layout (parity with NestJS globalPrefix 'api'):
-/// - `GET /`               — public root health
-/// - `POST /api/auth/login` — public (JWT login)
+/// - `POST /api/auth/login`   — public (JWT login)
+/// - `POST /api/onlyoffice/callback` — public (OO save callback)
+/// - `GET  /api/docs-json`    — public (OpenAPI spec)
 /// - Everything else under `/api/*` — protected by require_auth
 pub fn build_router(state: AppState) -> Router {
+    use crate::chat as chat_mod;
     use crate::codex_status_config as csc;
     use crate::files as fl;
     use crate::onlyoffice as oo;
@@ -48,9 +50,13 @@ pub fn build_router(state: AppState) -> Router {
         // ── Phase 0 probe (also serves as GET /api/status parity with AppController) ──
         .route("/_ping", get(health::ping))
         .route("/status", get(health::ping))
+        // ── chat upload (protected; multipart) ──
+        .route("/chat/upload", post(chat_mod::upload_attachment))
         // ── settings CRUD ──
         .route("/settings", get(s::list).patch(s::update_batch))
         .route("/settings/:key", get(s::get_one).patch(s::update_one).delete(s::delete_one))
+        // ── auth logout (protected, parity with TS) ──
+        .route("/auth/logout", post(auth::logout))
         // ── thread-scoped reads ──
         .route("/threads/:threadId/token-usage", get(sq::read_token_usage))
         .route("/threads/:threadId/turn-diffs", get(sq::read_turn_diffs))
@@ -141,7 +147,6 @@ pub fn build_router(state: AppState) -> Router {
 
     Router::new()
         .route("/api/auth/login", post(auth::login))
-        .route("/api/auth/logout", post(auth::logout))
         .route("/api/onlyoffice/callback", post(oo::handle_callback))
         .route("/api/docs-json", get(openapi_json))
         .nest("/api", api)

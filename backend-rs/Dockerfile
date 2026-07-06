@@ -65,6 +65,6 @@ WORKDIR /app
 EXPOSE 8172
 
 HEALTHCHECK --interval=30s --timeout=5s --start-period=15s --retries=3 \
-  CMD curl -sf http://localhost:8172/ || exit 1
+  CMD curl -sf -H "Authorization: Bearer ${WEBUI_API_KEY}" http://localhost:8172/api/status || exit 1
 
 CMD ["codex-webui"]

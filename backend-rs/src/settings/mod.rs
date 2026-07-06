@@ -120,7 +120,8 @@ impl<'a> SettingsReader<'a> {
     }
 
     pub fn get_string(&self, key: &str) -> Option<String> {
-        self.resolve(key)?.value.as_str().map(|s| s.to_string())
+        // Normalize empty string → None (parity with TS getStringSetting: `s.value || null`).
+        self.resolve(key)?.value.as_str().filter(|s| !s.is_empty()).map(|s| s.to_string())
     }
 
     pub fn get_number(&self, key: &str) -> Option<f64> {

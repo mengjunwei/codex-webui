@@ -180,7 +180,7 @@ pub struct AddRootBody {
 }
 
 pub async fn add_root(
-    State(state): State<AppState>,
+    State(mut state): State<AppState>,
     Json(body): Json<AddRootBody>,
 ) -> Result<Json<serde_json::Value>, AppError> {
     let raw = body.root.as_deref().map(|s| s.trim()).unwrap_or("");
@@ -203,6 +203,10 @@ pub async fn add_root(
     let canonical = tokio::fs::canonicalize(&p)
         .await
         .map_err(|e| AppError::internal(format!("canonicalize: {e}")))?;
+    // H3 FIX: dynamic root must be within an already-configured root (TS isAllowedPath).
+    if !within_workspace(&state, &canonical) {
+        return Err(forbidden("root must be within an existing workspace root"));
+    }
     let s = canonical.to_string_lossy().to_string();
     state.dynamic_files_roots.lock().unwrap().insert(s);
     Ok(Json(json!({ "ok": true })))
@@ -540,6 +544,13 @@ pub async fn write_file(
         .map_err(|e| AppError::internal(format!("parent: {e}")))?;
     if !within_workspace(&state, &canonical_parent) {
         return Err(forbidden("parent is outside workspace"));
+    }
+    // H1 FIX: if target exists, canonicalize it and verify within workspace
+    // (prevents symlink escape: a symlink in-workspace → target outside).
+    if let Ok(canonical_target) = tokio::fs::canonicalize(&p).await {
+        if !within_workspace(&state, &canonical_target) {
+            return Err(forbidden("target resolves outside workspace (symlink escape?)"));
+        }
     }
     if let Some(_expected) = body.expected_mtime {
         // Optional optimistic-concurrency check (parity placeholder).
@@ -1148,8 +1159,11 @@ fn list_archive_entries(path: &Path) -> Result<Vec<serde_json::Value>, String> {
         }
         ArchiveFormat::Tar => list_tar(std::fs::File::open(path).map_err(|e| e.to_string())?),
         ArchiveFormat::TarGz => list_tar(flate2::read::GzDecoder::new(std::fs::File::open(path).map_err(|e| e.to_string())?)),
-        ArchiveFormat::TarBz2 => list_tar(std::fs::File::open(path).map_err(|e| e.to_string())?), // bz2 needs bzip2 crate; deferred
-        ArchiveFormat::TarXz => list_tar(std::fs::File::open(path).map_err(|e| e.to_string())?),  // xz needs xz crate; deferred
+        ArchiveFormat::TarBz2 | ArchiveFormat::TarXz => {
+            // H5 FIX: bz2/xz need decompression crate; return explicit error
+            // instead of feeding compressed bytes to tar (which yields garbage 500).
+            Err("bz2/xz archive listing not yet supported".into())
+        }
     }
 }
 

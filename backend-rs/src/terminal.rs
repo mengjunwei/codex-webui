@@ -309,11 +309,18 @@ impl TerminalService {
                     if let Some(session) = sessions.get_mut(&sid) {
                         if session.attached.is_empty() && session.status == TerminalStatus::Running {
                             session.status = TerminalStatus::Exited;
-                            if let Ok(mut child) = session.child.lock() { child.take(); }
+                            // BUG 2 FIX: explicitly kill child (drop alone doesn't terminate).
+                            if let Ok(mut child) = session.child.lock() {
+                                if let Some(ref mut c) = *child { let _ = c.kill(); }
+                                child.take();
+                            }
                             if let Ok(mut writer) = session.writer.lock() { writer.take(); }
+                            session.master.take();
                             let _ = tx.send(TerminalClosedEvent {
-                                terminal_id: sid, context_key: ctx, socket_ids: vec![],
+                                terminal_id: sid.clone(), context_key: ctx, socket_ids: vec![],
                             });
+                            // BUG 1 FIX: remove session from map.
+                            sessions.remove(&sid);
                         }
                     }
                 }).abort_handle();
@@ -370,10 +377,17 @@ impl TerminalService {
         let s = sessions.get_mut(terminal_id).ok_or_else(|| not_found("terminal not found"))?;
         if s.context_key != context_key { return Err(context_mismatch()); }
         s.status = TerminalStatus::Exited;
-        if let Ok(mut child) = s.child.lock() { child.take(); } // drop child → kill
+        // BUG 2 FIX: explicitly kill child (portable-pty requires explicit kill).
+        if let Ok(mut child) = s.child.lock() {
+            if let Some(ref mut c) = *child { let _ = c.kill(); }
+            child.take();
+        }
         if let Ok(mut writer) = s.writer.lock() { writer.take(); }
-        let _meta = Self::meta(s);
-        let socket_ids: Vec<String> = s.attached.iter().cloned().collect();
+        s.master.take();
+        s.attached.clear();
+        let socket_ids: Vec<String> = vec![];
+        // BUG 1 FIX: remove session from map (was never removed → memory leak + maxSessions exhaustion).
+        sessions.remove(terminal_id);
         drop(sessions);
         let _ = self.closed_tx.send(TerminalClosedEvent {
             terminal_id: terminal_id.into(), context_key: context_key.into(), socket_ids,

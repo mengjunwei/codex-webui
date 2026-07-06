@@ -117,8 +117,9 @@ pub async fn get_config(
         .map(|d| d.as_millis() as i64)
         .unwrap_or(0);
     let size = meta.len();
+    // H2 FIX: use resolved (canonical) path for stable document key, not raw input.
     let mut hasher = Sha256::new();
-    hasher.update(format!("{}:{}:{}", raw_path, mtime, size).as_bytes());
+    hasher.update(format!("{}:{}:{}", resolved.to_string_lossy(), mtime, size).as_bytes());
     let key = format!("{:x}", hasher.finalize());
     let key = key[..key.len().min(48)].to_string();
 
@@ -165,7 +166,7 @@ pub async fn get_config(
         let now = chrono::Utc::now().timestamp() as usize;
         Some(encode(
             &Header::new(Algorithm::HS256),
-            &json!({ "path": raw_path, "key": key, "iat": now, "exp": now + 86400 }),
+            &json!({ "path": resolved.to_string_lossy(), "key": key, "iat": now, "exp": now + 86400 }),
             &EncodingKey::from_secret(s.as_bytes()),
         )
         .map_err(|e| AppError::internal(format!("jwt sign: {e}")))?)
