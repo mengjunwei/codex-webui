@@ -1,0 +1,192 @@
+//! Unified error model — ErrorCode, AppError, and IntoResponse.
+//!
+//! Response body: `{ statusCode, errorCode, message, params? }`
+//! **errorCode strings MUST be verbatim copies of `src/common/error-codes.ts`**
+//! because the React frontend uses them as i18n translation keys.
+//!
+//! Status fallback table (parity with `all-exceptions.filter.ts`):
+//! 400→http.bad_request, 401→http.unauthorized, 403→http.forbidden,
+//! 404→http.not_found, 409→http.conflict, 413→http.payload_too_large,
+//! 500→http.internal_error; other ≥500→http.internal_error; other→http.request_failed
+//! (with `params: { status }`).
+
+use axum::{
+    http::StatusCode,
+    response::{IntoResponse, Response},
+    Json,
+};
+use serde_json::{json, Value};
+use std::collections::BTreeMap;
+
+/// Frontend i18n error code enum.
+/// Only codes needed by Phase 0 modules are listed here; additional codes
+/// (files.*, codex.*, terminal.*, etc.) are appended as those modules are ported.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum ErrorCode {
+    // ── http.* ─────────────────────────────────────────────────────────
+    HttpBadRequest,
+    HttpUnauthorized,
+    HttpForbidden,
+    HttpNotFound,
+    HttpConflict,
+    HttpPayloadTooLarge,
+    HttpRequestFailed,
+    HttpInternalError,
+    // ── validation.* ───────────────────────────────────────────────────
+    ValidationFieldRequired,
+    ValidationBodyRequired,
+    ValidationTypeMismatch,
+    ValidationFieldInvalid,
+    // ── auth.* ─────────────────────────────────────────────────────────
+    AuthMissingToken,
+    AuthInvalidToken,
+    AuthMissingHeader,
+    AuthInvalidApiKey,
+    // Phase 2+: files.*, codex.*, terminal.*, etc. — appended here.
+}
+
+impl ErrorCode {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::HttpBadRequest => "http.bad_request",
+            Self::HttpUnauthorized => "http.unauthorized",
+            Self::HttpForbidden => "http.forbidden",
+            Self::HttpNotFound => "http.not_found",
+            Self::HttpConflict => "http.conflict",
+            Self::HttpPayloadTooLarge => "http.payload_too_large",
+            Self::HttpRequestFailed => "http.request_failed",
+            Self::HttpInternalError => "http.internal_error",
+            Self::ValidationFieldRequired => "validation.field_required",
+            Self::ValidationBodyRequired => "validation.body_required",
+            Self::ValidationTypeMismatch => "validation.type_mismatch",
+            Self::ValidationFieldInvalid => "validation.field_invalid",
+            Self::AuthMissingToken => "auth.missing_token",
+            Self::AuthInvalidToken => "auth.invalid_token",
+            Self::AuthMissingHeader => "auth.missing_header",
+            Self::AuthInvalidApiKey => "auth.invalid_api_key",
+        }
+    }
+
+    /// Lookup the fallback ErrorCode for a given HTTP status code.
+    pub fn fallback_for(status: u16) -> Self {
+        match status {
+            400 => Self::HttpBadRequest,
+            401 => Self::HttpUnauthorized,
+            403 => Self::HttpForbidden,
+            404 => Self::HttpNotFound,
+            409 => Self::HttpConflict,
+            413 => Self::HttpPayloadTooLarge,
+            500 => Self::HttpInternalError,
+            s if s >= 500 => Self::HttpInternalError,
+            _ => Self::HttpRequestFailed,
+        }
+    }
+}
+
+/// Optional interpolation params for frontend i18n.
+pub type Params = BTreeMap<String, serde_json::Number>;
+
+/// Unified application error type.
+#[derive(Debug)]
+pub enum AppError {
+    /// Structured business error with explicit code + status + message.
+    Business {
+        code: ErrorCode,
+        status: StatusCode,
+        message: Value,
+        params: Option<Params>,
+    },
+    /// HTTP status-only error; code and message are derived from the status.
+    Status { status: StatusCode },
+    /// Unhandled internal error; always renders as 500 + http.internal_error.
+    Internal(String),
+}
+
+impl AppError {
+    pub fn business(
+        code: ErrorCode,
+        status: StatusCode,
+        message: String,
+        params: Option<Params>,
+    ) -> Self {
+        Self::Business {
+            code,
+            status,
+            message: Value::String(message),
+            params,
+        }
+    }
+
+    pub fn status(code: u16) -> Self {
+        Self::Status {
+            status: StatusCode::from_u16(code).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR),
+        }
+    }
+
+    pub fn internal(msg: String) -> Self {
+        Self::Internal(msg)
+    }
+
+    pub fn unauthorized(code: ErrorCode, msg: &str) -> Self {
+        Self::business(code, StatusCode::UNAUTHORIZED, msg.into(), None)
+    }
+}
+
+impl IntoResponse for AppError {
+    fn into_response(self) -> Response {
+        let (status, code, message, params) = match self {
+            Self::Business {
+                code,
+                status,
+                message,
+                params,
+            } => (status, code, message, params),
+
+            Self::Status { status } => {
+                let code = ErrorCode::fallback_for(status.as_u16());
+                let mut params = None;
+                if matches!(code, ErrorCode::HttpRequestFailed) {
+                    let mut m = Params::new();
+                    m.insert(
+                        "status".into(),
+                        serde_json::Number::from(status.as_u16()),
+                    );
+                    params = Some(m);
+                }
+                (
+                    status,
+                    code,
+                    Value::String(format!("Request failed ({})", status.as_u16())),
+                    params,
+                )
+            }
+
+            Self::Internal(ref msg) => {
+                tracing::error!(error = %msg, "unhandled exception");
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    ErrorCode::HttpInternalError,
+                    Value::String("Internal server error".into()),
+                    None,
+                )
+            }
+        };
+
+        let mut body = json!({
+            "statusCode": status.as_u16(),
+            "errorCode": code.as_str(),
+            "message": message,
+        });
+        if let Some(p) = params {
+            body["params"] = json!(p);
+        }
+
+        (status, Json(body)).into_response()
+    }
+}
+
+impl From<anyhow::Error> for AppError {
+    fn from(e: anyhow::Error) -> Self {
+        Self::Internal(e.to_string())
+    }
+}
