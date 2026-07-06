@@ -11,6 +11,7 @@
 
 use crate::auth::AuthService;
 use crate::codex::{CodexProcessManager, LifecycleEvent};
+use crate::terminal::TerminalService;
 use serde_json::{json, Value};
 use socketioxide::extract::{AckSender, Data as SocketData, SocketRef, State};
 use socketioxide::SocketIo;
@@ -22,6 +23,7 @@ use tokio::sync::broadcast::error::RecvError;
 pub struct RealtimeState {
     pub auth: Arc<AuthService>,
     pub codex: Arc<CodexProcessManager>,
+    pub terminal: Arc<TerminalService>,
 }
 
 /// Build the Socket.IO layer + handle, wiring the `/ws` namespace.

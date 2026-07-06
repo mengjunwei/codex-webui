@@ -14,6 +14,7 @@ use codex_webui::codex::CodexProcessManager;
 use codex_webui::db::Db;
 use codex_webui::routes::build_router;
 use codex_webui::state::AppState;
+use codex_webui::terminal::{TerminalConfig, TerminalService};
 use rusqlite::Connection;
 use std::sync::{Arc, Mutex};
 use tower::ServiceExt;
@@ -21,12 +22,16 @@ use tower::ServiceExt;
 fn state(api_key: &str) -> AppState {
     use std::collections::HashSet;
     let c = Connection::open_in_memory().unwrap();
+    let db = Arc::new(Db { conn: Mutex::new(c) });
+    let term_cfg = {
+        let r = codex_webui::settings::SettingsReader::new(&db);
+        TerminalConfig::from_settings(&r)
+    };
     AppState {
-        db: Arc::new(Db {
-            conn: Mutex::new(c),
-        }),
+        db,
         auth: Arc::new(AuthService::new(api_key)),
         codex: Arc::new(CodexProcessManager::new("codex".into(), None)),
+        terminal: TerminalService::new(term_cfg),
         dynamic_files_roots: Arc::new(Mutex::new(HashSet::new())),
     }
 }

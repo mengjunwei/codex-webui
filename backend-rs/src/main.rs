@@ -8,7 +8,8 @@
 
 use codex_webui::{
     auth::AuthService, codex::CodexProcessManager, config::Config, db::Db, logging,
-    routes::build_router, settings::reconcile_settings, state::AppState,
+    routes::build_router, settings::{self, reconcile_settings},
+    state::AppState, terminal::{TerminalConfig, TerminalService},
 };
 use std::collections::HashSet;
 use std::sync::{Arc, Mutex};
@@ -53,10 +54,15 @@ async fn main() -> anyhow::Result<()> {
     // broadcasts; also expires stale pending requests on boot.
     codex_webui::event_subscribers::spawn_all(db.clone(), codex.clone());
 
+    // Terminal service (shared PTY sessions).
+    let reader = settings::SettingsReader::new(&db);
+    let terminal = TerminalService::new(TerminalConfig::from_settings(&reader));
+
     // Realtime Socket.IO gateway (`/ws` namespace) + emit-forwarding tasks.
     let rt_state = codex_webui::realtime::RealtimeState {
         auth: auth.clone(),
         codex: codex.clone(),
+        terminal: terminal.clone(),
     };
     let (ws_layer, io) = codex_webui::realtime::build(rt_state);
     codex_webui::realtime::spawn_emit_tasks(io, codex.clone());
@@ -66,6 +72,7 @@ async fn main() -> anyhow::Result<()> {
         db,
         auth,
         codex,
+        terminal,
         dynamic_files_roots: Arc::new(Mutex::new(HashSet::new())),
     };
 

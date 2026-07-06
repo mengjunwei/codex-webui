@@ -21,4 +21,5 @@ pub mod routes;
 pub mod settings;
 pub mod sqlite_handlers;
 pub mod state;
+pub mod terminal;
 pub mod threads;

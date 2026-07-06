@@ -125,7 +125,19 @@ pub enum ErrorCode {
     OnlyOfficeSaveNoBody,
     OnlyOfficeInvalidUrl,
     OnlyOfficePublicHostRequired,
-    // Phase 2+: terminal.*, etc. — appended here.
+    // ── terminal.* ─────────────────────────────────────────────────────
+    TerminalMaxSessionsReached,
+    TerminalExited,
+    TerminalInputTooLarge,
+    TerminalInvalidContext,
+    TerminalInvalidCwd,
+    TerminalCwdRequired,
+    TerminalCwdNotDirectory,
+    TerminalClosed,
+    TerminalNotFound,
+    TerminalContextMismatch,
+    TerminalSocketNotAttached,
+    // future modules appended here.
 }
 
 impl ErrorCode {
@@ -220,6 +232,17 @@ impl ErrorCode {
             Self::OnlyOfficeSaveNoBody => "onlyoffice.save_no_body",
             Self::OnlyOfficeInvalidUrl => "onlyoffice.invalid_url",
             Self::OnlyOfficePublicHostRequired => "onlyoffice.public_host_required",
+            Self::TerminalMaxSessionsReached => "terminal.max_sessions_reached",
+            Self::TerminalExited => "terminal.exited",
+            Self::TerminalInputTooLarge => "terminal.input_too_large",
+            Self::TerminalInvalidContext => "terminal.invalid_context",
+            Self::TerminalInvalidCwd => "terminal.invalid_cwd",
+            Self::TerminalCwdRequired => "terminal.cwd_required",
+            Self::TerminalCwdNotDirectory => "terminal.cwd_not_directory",
+            Self::TerminalClosed => "terminal.closed",
+            Self::TerminalNotFound => "terminal.not_found",
+            Self::TerminalContextMismatch => "terminal.context_mismatch",
+            Self::TerminalSocketNotAttached => "terminal.socket_not_attached",
         }
     }
 
