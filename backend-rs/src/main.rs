@@ -65,7 +65,7 @@ async fn main() -> anyhow::Result<()> {
         terminal: terminal.clone(),
     };
     let (ws_layer, io) = codex_webui::realtime::build(rt_state);
-    codex_webui::realtime::spawn_emit_tasks(io, codex.clone());
+    codex_webui::realtime::spawn_emit_tasks(io, codex.clone(), terminal.clone());
 
     // Shared state.
     let state = AppState {
