@@ -9,6 +9,7 @@ use axum::{
     routing::{get, post},
     Router,
 };
+use tower_http::services::{ServeDir, ServeFile};
 
 /// Build the application router.
 ///
@@ -107,11 +108,19 @@ pub fn build_router(state: AppState) -> Router {
             require_auth,
         ));
 
+    // Static file serving for the React frontend (SPA).
+    // Serves `public/` directory; falls back to `public/index.html` for
+    // client-side routing. In development (no public/ dir), the fallback
+    // returns 404 which is fine (frontend runs on :5173 with a proxy).
+    let static_files = ServeDir::new("public")
+        .fallback(ServeFile::new("public/index.html"));
+
     Router::new()
         .route("/", get(health::root))
         .route("/api/auth/login", post(auth::login))
         // OnlyOffice callback: public (no auth; Document Server calls directly).
         .route("/api/onlyoffice/callback", post(oo::handle_callback))
         .nest("/api", api)
+        .fallback_service(static_files)
         .with_state(state)
 }

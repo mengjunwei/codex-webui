@@ -181,3 +181,11 @@
 {"timestamp":"2026-07-06T09:39:12.717268Z","level":"INFO","fields":{"message":"codex app-server initialized","codex_home":"Some(\"C:\\\\Users\\\\mengjunwei1\\\\.codex\")","platform":"Some(\"windows\")","generation":1},"target":"codex_webui::codex::process"}
 {"timestamp":"2026-07-06T09:39:16.159873Z","level":"WARN","fields":{"message":"OnlyOffice callback missing file path"},"target":"codex_webui::onlyoffice"}
 {"timestamp":"2026-07-06T09:39:16.294574Z","level":"WARN","fields":{"message":"restarting codex app-server","generation":1,"delay_ms":3000},"target":"codex_webui::codex::process"}
+{"timestamp":"2026-07-06T09:42:08.146848Z","level":"INFO","fields":{"message":"starting codex-webui (backend-rs)","port":8172,"db":"C:\\Users\\mengjunwei1\\.codex\\codex-webui.sqlite"},"target":"codex_webui"}
+{"timestamp":"2026-07-06T09:42:08.152550Z","level":"INFO","fields":{"message":"SQLite database ready at C:\\Users\\mengjunwei1\\.codex\\codex-webui.sqlite"},"target":"codex_webui::db"}
+{"timestamp":"2026-07-06T09:42:08.193493Z","level":"INFO","fields":{"message":"reconciled 12 settings definitions"},"target":"codex_webui::settings::reconcile"}
+{"timestamp":"2026-07-06T09:42:08.194347Z","level":"INFO","fields":{"message":"spawning C:\\Users\\mengjunwei1\\AppData\\Roaming\\npm\\codex.cmd app-server (stdio)"},"target":"codex_webui::codex::process"}
+{"timestamp":"2026-07-06T09:42:08.194626Z","level":"INFO","fields":{"message":"resolved npm shim C:\\Users\\mengjunwei1\\AppData\\Roaming\\npm\\codex.cmd -> node C:\\Users\\mengjunwei1\\AppData\\Roaming\\npm\\node_modules\\@openai\\codex\\bin\\codex.js"},"target":"codex_webui::codex::process"}
+{"timestamp":"2026-07-06T09:42:08.198745Z","level":"INFO","fields":{"message":"listening on 0.0.0.0:8172"},"target":"codex_webui"}
+{"timestamp":"2026-07-06T09:42:08.587288Z","level":"INFO","fields":{"message":"codex app-server initialized","codex_home":"Some(\"C:\\\\Users\\\\mengjunwei1\\\\.codex\")","platform":"Some(\"windows\")","generation":1},"target":"codex_webui::codex::process"}
+{"timestamp":"2026-07-06T09:42:12.990942Z","level":"WARN","fields":{"message":"restarting codex app-server","generation":1,"delay_ms":3000},"target":"codex_webui::codex::process"}
