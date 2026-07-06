@@ -101,6 +101,12 @@ pub fn build_router(state: AppState) -> Router {
         .route("/files/write", post(fl::write_file))
         .route("/files/serve", get(fl::serve_file))
         .route("/files/download", get(fl::download_file))
+        .route("/files/rename", post(fl::rename_path))
+        .route("/files/copy", post(fl::copy_path))
+        .route("/files/move", post(fl::move_path))
+        .route("/files/upload", post(fl::upload_files))
+        .route("/files/archive/list", get(fl::archive_list))
+        .route("/files/archive/entry", get(fl::archive_entry))
         // ── onlyoffice config (protected) ──
         .route("/onlyoffice/config", get(oo::get_config))
         .layer(axum::middleware::from_fn_with_state(

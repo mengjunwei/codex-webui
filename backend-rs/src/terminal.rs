@@ -268,12 +268,42 @@ impl TerminalService {
         Ok((meta, buf))
     }
 
-    /// Detach a socket from one or all terminals.
+    /// Detach a socket from one or all terminals. Starts a grace timer when a
+    /// session reaches 0 attached sockets — after `grace_ms` with no re-attach,
+    /// the terminal is killed (parity with TS detach grace timer).
     pub fn detach(&self, socket_id: &str, terminal_id: Option<&str>) {
-        let mut sessions = self.sessions.lock().unwrap();
+        let grace_ms = self.config.lock().unwrap().grace_ms;
+        let sessions_arc = self.sessions.clone();
+        let closed_tx = self.closed_tx.clone();
+
+        let mut sessions = sessions_arc.lock().unwrap();
         for s in sessions.values_mut() {
             if terminal_id.map_or(false, |id| id != s.id) { continue; }
             s.attached.remove(socket_id);
+
+            // Session became empty + still running → start grace timer.
+            if s.attached.is_empty() && s.status == TerminalStatus::Running {
+                if let Some(h) = s.grace_handle.take() { h.abort(); }
+                let sid = s.id.clone();
+                let ctx = s.context_key.clone();
+                let sessions_c = sessions_arc.clone();
+                let tx = closed_tx.clone();
+                let handle = tokio::spawn(async move {
+                    tokio::time::sleep(std::time::Duration::from_millis(grace_ms)).await;
+                    let mut sessions = sessions_c.lock().unwrap();
+                    if let Some(session) = sessions.get_mut(&sid) {
+                        if session.attached.is_empty() && session.status == TerminalStatus::Running {
+                            session.status = TerminalStatus::Exited;
+                            if let Ok(mut child) = session.child.lock() { child.take(); }
+                            if let Ok(mut writer) = session.writer.lock() { writer.take(); }
+                            let _ = tx.send(TerminalClosedEvent {
+                                terminal_id: sid, context_key: ctx, socket_ids: vec![],
+                            });
+                        }
+                    }
+                }).abort_handle();
+                s.grace_handle = Some(handle);
+            }
         }
     }
 

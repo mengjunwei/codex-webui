@@ -830,14 +830,212 @@ fn url_encode(s: &str) -> String {
     out
 }
 
-// ── Deferred handlers (return 500 "deferred") ────────────────────────────────
+// ── rename / copy / move ─────────────────────────────────────────────────────
 
-// (helper to avoid unused import)
-#[allow(dead_code)]
-fn _check_default_excluded() -> HashSet<&'static str> {
-    DEFAULT_EXCLUDED_DIRS.iter().copied().collect()
+#[derive(Deserialize)]
+pub struct RenameBody {
+    pub path: Option<String>,
+    #[serde(rename = "newName")]
+    pub new_name: Option<String>,
+    pub overwrite: Option<bool>,
 }
-// silence dead_code
+
+pub async fn rename_path(
+    State(state): State<AppState>,
+    Json(body): Json<RenameBody>,
+) -> Result<Json<serde_json::Value>, AppError> {
+    let raw = body.path.as_deref().map(|s| s.trim()).unwrap_or("");
+    if raw.is_empty() {
+        return Err(bad_request(ErrorCode::FilesPathRequired, "path is required"));
+    }
+    let new_name = body.new_name.as_deref().map(|s| s.trim()).unwrap_or("");
+    if new_name.is_empty() {
+        return Err(bad_request(ErrorCode::FilesNameRequired, "newName is required"));
+    }
+    if new_name.contains('/') || new_name.contains('\\') {
+        return Err(bad_request(ErrorCode::FilesNameInvalid, "newName must not contain path separators"));
+    }
+    let resolved = resolve(&state, raw).await?;
+    let parent = resolved.resolved.parent()
+        .ok_or_else(|| bad_request(ErrorCode::FilesNoParentFound, "parent path not found"))?;
+    let dest = parent.join(new_name);
+    if dest.exists() && !body.overwrite.unwrap_or(false) {
+        return Err(bad_request(ErrorCode::FilesPathExists, "destination already exists (set overwrite=true)"));
+    }
+    tokio::fs::rename(&resolved.resolved, &dest)
+        .await
+        .map_err(|e| AppError::internal(format!("rename: {e}")))?;
+    let canonical = tokio::fs::canonicalize(&dest).await
+        .map_err(|e| AppError::internal(format!("canonicalize: {e}")))?;
+    Ok(Json(json!({
+        "ok": true,
+        "oldPath": resolved.resolved.to_string_lossy(),
+        "newPath": canonical.to_string_lossy(),
+    })))
+}
+
+#[derive(Deserialize)]
+pub struct CopyMoveBody {
+    #[serde(rename = "sourcePath")]
+    pub source_path: Option<String>,
+    #[serde(rename = "destinationPath")]
+    pub destination_path: Option<String>,
+    pub overwrite: Option<bool>,
+}
+
+pub async fn copy_path(
+    State(state): State<AppState>,
+    Json(body): Json<CopyMoveBody>,
+) -> Result<Json<serde_json::Value>, AppError> {
+    do_relocate(&state, &body, false).await
+}
+
+pub async fn move_path(
+    State(state): State<AppState>,
+    Json(body): Json<CopyMoveBody>,
+) -> Result<Json<serde_json::Value>, AppError> {
+    do_relocate(&state, &body, true).await
+}
+
+async fn do_relocate(
+    state: &AppState,
+    body: &CopyMoveBody,
+    is_move: bool,
+) -> Result<Json<serde_json::Value>, AppError> {
+    let src_raw = body.source_path.as_deref().map(|s| s.trim()).unwrap_or("");
+    let dst_raw = body.destination_path.as_deref().map(|s| s.trim()).unwrap_or("");
+    if src_raw.is_empty() || dst_raw.is_empty() {
+        return Err(bad_request(ErrorCode::FilesSourceAndDestRequired,
+            "sourcePath and destinationPath are required"));
+    }
+    let src = resolve(state, src_raw).await?;
+    // Validate dest: canonicalize dest (or its parent if dest doesn't exist yet).
+    let dst_canonical = match tokio::fs::canonicalize(dst_raw).await {
+        Ok(c) => c,
+        Err(_) => {
+            let parent = std::path::Path::new(dst_raw)
+                .parent()
+                .unwrap_or(std::path::Path::new(dst_raw));
+            tokio::fs::canonicalize(parent).await
+                .map_err(|_| not_found("destination parent path not found"))?
+        }
+    };
+    if !within_workspace(state, &dst_canonical) {
+        return Err(forbidden("destination is outside workspace"));
+    }
+    let dest = std::path::PathBuf::from(dst_raw);
+    if dest.exists() && !body.overwrite.unwrap_or(false) {
+        return Err(bad_request(ErrorCode::FilesPathExists,
+            "destination already exists (set overwrite=true)"));
+    }
+    if is_move {
+        tokio::fs::rename(&src.resolved, &dest)
+            .await
+            .map_err(|e| AppError::internal(format!("move: {e}")))?;
+    } else if src.kind == ResolvedKind::Directory {
+        copy_dir_recursive(&src.resolved, &dest).await
+            .map_err(|e| AppError::internal(format!("copy dir: {e}")))?;
+    } else {
+        tokio::fs::copy(&src.resolved, &dest)
+            .await
+            .map_err(|e| AppError::internal(format!("copy file: {e}")))?;
+    }
+    Ok(Json(json!({
+        "ok": true,
+        "sourcePath": src.resolved.to_string_lossy(),
+        "destinationPath": dest.to_string_lossy(),
+    })))
+}
+
+async fn copy_dir_recursive(src: &Path, dst: &Path) -> std::io::Result<()> {
+    tokio::fs::create_dir_all(dst).await?;
+    let mut entries = tokio::fs::read_dir(src).await?;
+    while let Some(entry) = entries.next_entry().await? {
+        let from = entry.path();
+        let to = dst.join(entry.file_name());
+        let meta = entry.file_type().await?;
+        if meta.is_dir() {
+            Box::pin(copy_dir_recursive(&from, &to)).await?;
+        } else {
+            tokio::fs::copy(&from, &to).await?;
+        }
+    }
+    Ok(())
+}
+
+// ── multipart upload ─────────────────────────────────────────────────────────
+
+#[derive(Deserialize)]
+pub struct UploadQuery {
+    #[serde(rename = "destinationPath")]
+    pub destination_path: Option<String>,
+    pub overwrite: Option<String>,
+}
+
+pub async fn upload_files(
+    State(state): State<AppState>,
+    Query(q): Query<UploadQuery>,
+    mut multipart: axum::extract::Multipart,
+) -> Result<Json<serde_json::Value>, AppError> {
+    let dest_raw = q.destination_path.as_deref().map(|s| s.trim()).unwrap_or("");
+    if dest_raw.is_empty() {
+        return Err(bad_request(ErrorCode::FilesDestRequired, "destinationPath is required"));
+    }
+    let overwrite = matches!(q.overwrite.as_deref(), Some("true") | Some("1"));
+    // Validate destination dir is within workspace.
+    let dest_canonical = tokio::fs::canonicalize(dest_raw)
+        .await
+        .map_err(|_| not_found("destination directory not found"))?;
+    if !within_workspace(&state, &dest_canonical) {
+        return Err(forbidden("destination is outside workspace"));
+    }
+    if !dest_canonical.is_dir() {
+        return Err(bad_request(ErrorCode::FilesPathIsNotDirectory,
+            "destinationPath must be a directory"));
+    }
+
+    let mut files = Vec::new();
+    while let Ok(Some(field)) = multipart.next_field().await {
+        let filename = field.file_name().unwrap_or("upload").to_string();
+        let data = field.bytes().await
+            .map_err(|e| AppError::internal(format!("read multipart field: {e}")))?;
+        let file_path = dest_canonical.join(&filename);
+        if file_path.exists() && !overwrite {
+            return Err(bad_request(ErrorCode::FilesPathExists,
+                format!("{filename} already exists (set overwrite=true)")));
+        }
+        tokio::fs::write(&file_path, &data)
+            .await
+            .map_err(|e| AppError::internal(format!("write {filename}: {e}")))?;
+        let size = data.len();
+        files.push(json!({ "path": file_path.to_string_lossy(), "size": size }));
+    }
+    Ok(Json(json!({ "ok": true, "files": files })))
+}
+
+// ── archive list (stub — returns 501 until 4-format adapters are added) ──────
+
+pub async fn archive_list(
+    State(state): State<AppState>,
+    Query(q): Query<ReadQuery>,
+) -> Result<Json<serde_json::Value>, AppError> {
+    // Validate the archive path exists and is within workspace.
+    let _resolved = resolve(&state, q.path.as_deref().unwrap_or("")).await?;
+    Err(AppError::internal(
+        "archive preview requires zip/tar/rar/7z adapters (deferred)".into(),
+    ))
+}
+
+pub async fn archive_entry(
+    State(state): State<AppState>,
+    Query(q): Query<ReadQuery>,
+) -> Result<Response, AppError> {
+    let _resolved = resolve(&state, q.path.as_deref().unwrap_or("")).await?;
+    Err(AppError::internal(
+        "archive entry streaming requires format adapters (deferred)".into(),
+    ))
+}
+
 #[allow(dead_code)]
 fn _unused_fs() {
     let _ = std::any::type_name::<fs::File>();
