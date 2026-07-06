@@ -108,6 +108,23 @@ pub enum ErrorCode {
     FilesNotDownloadable,
     FilesFileTooLarge,
     FilesModifiedSinceRead,
+    // ── onlyoffice.* ───────────────────────────────────────────────────
+    OnlyOfficeNotConfigured,
+    OnlyOfficeJwtRequired,
+    OnlyOfficeFileRequired,
+    OnlyOfficeUnsupportedFormat,
+    OnlyOfficeMissingCallbackState,
+    OnlyOfficeInvalidCallbackState,
+    OnlyOfficeInvalidCallbackStatePayload,
+    OnlyOfficeMissingCallbackJwt,
+    OnlyOfficeInvalidCallbackJwt,
+    OnlyOfficeInvalidDownloadUrl,
+    OnlyOfficeDownloadUrlNotHttps,
+    OnlyOfficeDownloadUrlOriginMismatch,
+    OnlyOfficeSaveTooLarge,
+    OnlyOfficeSaveNoBody,
+    OnlyOfficeInvalidUrl,
+    OnlyOfficePublicHostRequired,
     // Phase 2+: terminal.*, etc. — appended here.
 }
 
@@ -187,6 +204,22 @@ impl ErrorCode {
             Self::FilesNotDownloadable => "files.not_downloadable",
             Self::FilesFileTooLarge => "files.file_too_large",
             Self::FilesModifiedSinceRead => "files.modified_since_read",
+            Self::OnlyOfficeNotConfigured => "onlyoffice.not_configured",
+            Self::OnlyOfficeJwtRequired => "onlyoffice.jwt_required",
+            Self::OnlyOfficeFileRequired => "onlyoffice.file_required",
+            Self::OnlyOfficeUnsupportedFormat => "onlyoffice.unsupported_format",
+            Self::OnlyOfficeMissingCallbackState => "onlyoffice.missing_callback_state",
+            Self::OnlyOfficeInvalidCallbackState => "onlyoffice.invalid_callback_state",
+            Self::OnlyOfficeInvalidCallbackStatePayload => "onlyoffice.invalid_callback_state_payload",
+            Self::OnlyOfficeMissingCallbackJwt => "onlyoffice.missing_callback_jwt",
+            Self::OnlyOfficeInvalidCallbackJwt => "onlyoffice.invalid_callback_jwt",
+            Self::OnlyOfficeInvalidDownloadUrl => "onlyoffice.invalid_download_url",
+            Self::OnlyOfficeDownloadUrlNotHttps => "onlyoffice.download_url_not_https",
+            Self::OnlyOfficeDownloadUrlOriginMismatch => "onlyoffice.download_url_origin_mismatch",
+            Self::OnlyOfficeSaveTooLarge => "onlyoffice.save_too_large",
+            Self::OnlyOfficeSaveNoBody => "onlyoffice.save_no_body",
+            Self::OnlyOfficeInvalidUrl => "onlyoffice.invalid_url",
+            Self::OnlyOfficePublicHostRequired => "onlyoffice.public_host_required",
         }
     }
 

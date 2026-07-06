@@ -19,6 +19,7 @@ use axum::{
 pub fn build_router(state: AppState) -> Router {
     use crate::codex_status_config as csc;
     use crate::files as fl;
+    use crate::onlyoffice as oo;
     use crate::proxies as px;
     use crate::settings::handlers as s;
     use crate::sqlite_handlers as sq;
@@ -97,6 +98,9 @@ pub fn build_router(state: AppState) -> Router {
         .route("/files/create-file", post(fl::create_file))
         .route("/files/create-directory", post(fl::create_directory))
         .route("/files/write", post(fl::write_file))
+        // ── onlyoffice (config done; callback deferred) ──
+        .route("/onlyoffice/config", get(oo::get_config))
+        .route("/onlyoffice/callback", post(oo::handle_callback))
         .layer(axum::middleware::from_fn_with_state(
             state.clone(),
             require_auth,

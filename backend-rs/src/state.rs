@@ -22,4 +22,9 @@ impl AppState {
             .or_else(|_| std::env::var("HOME"))
             .unwrap_or_default()
     }
+
+    /// Convenience: a `SettingsReader` borrowing this state's DB.
+    pub fn settings_reader(&self) -> crate::settings::SettingsReader<'_> {
+        crate::settings::SettingsReader::new(&self.db)
+    }
 }
