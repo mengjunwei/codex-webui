@@ -47,6 +47,23 @@ pub enum ErrorCode {
     ApprovalsAlreadyResolved,
     ApprovalsServerNotConnected,
     ApprovalsAlreadyHandled,
+    // ── account.* ──────────────────────────────────────────────────────
+    AccountLoginIdRequired,
+    AccountApiKeyRequired,
+    AccountAccessTokenRequired,
+    AccountChatgptAccountIdRequired,
+    AccountInvalidLoginType,
+    // ── skills.* ───────────────────────────────────────────────────────
+    SkillsCwdRequired,
+    SkillsPathOrNameRequired,
+    // ── mcp.* ──────────────────────────────────────────────────────────
+    McpInvalidServerDetail,
+    McpScopesInvalid,
+    McpScopesEmpty,
+    McpTimeoutInvalid,
+    McpTimeoutTooLarge,
+    // ── plugins.* ──────────────────────────────────────────────────────
+    PluginsFieldRequired,
     // Phase 2+: files.*, codex.*, terminal.*, etc. — appended here.
 }
 
@@ -73,6 +90,19 @@ impl ErrorCode {
             Self::ApprovalsAlreadyResolved => "approvals.already_resolved",
             Self::ApprovalsServerNotConnected => "approvals.server_not_connected",
             Self::ApprovalsAlreadyHandled => "approvals.already_handled",
+            Self::AccountLoginIdRequired => "account.login_id_required",
+            Self::AccountApiKeyRequired => "account.api_key_required",
+            Self::AccountAccessTokenRequired => "account.access_token_required",
+            Self::AccountChatgptAccountIdRequired => "account.chatgpt_account_id_required",
+            Self::AccountInvalidLoginType => "account.invalid_login_type",
+            Self::SkillsCwdRequired => "skills.cwd_required",
+            Self::SkillsPathOrNameRequired => "skills.path_or_name_required",
+            Self::McpInvalidServerDetail => "mcp.invalid_server_detail",
+            Self::McpScopesInvalid => "mcp.scopes_invalid",
+            Self::McpScopesEmpty => "mcp.scopes_empty",
+            Self::McpTimeoutInvalid => "mcp.timeout_invalid",
+            Self::McpTimeoutTooLarge => "mcp.timeout_too_large",
+            Self::PluginsFieldRequired => "plugins.field_required",
         }
     }
 

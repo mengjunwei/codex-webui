@@ -145,7 +145,9 @@ async fn update_batch_changes_multiple() {
 }
 
 #[tokio::test]
-async fn proxy_stub_returns_501() {
+async fn proxy_returns_500_when_codex_not_started() {
+    // All 6 proxy modules now forward via the codex manager. With the manager
+    // not started (tests), the forward returns RpcError::Closed → 500.
     let app = build_router(state());
     let req = Request::builder()
         .uri("/api/apps")
@@ -153,7 +155,7 @@ async fn proxy_stub_returns_501() {
         .body(Body::empty())
         .unwrap();
     let resp = app.oneshot(req).await.unwrap();
-    assert_eq!(resp.status(), StatusCode::NOT_IMPLEMENTED);
+    assert_eq!(resp.status(), StatusCode::INTERNAL_SERVER_ERROR);
 }
 
 // ── H1 parity: string values are JSON-encoded in storage (TS interop) ─────────
