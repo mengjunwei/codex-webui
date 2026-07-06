@@ -76,7 +76,18 @@ pub enum ErrorCode {
     ThreadsInvalidInputUrl,
     ThreadsInvalidInputField,
     ThreadsInvalidInputType,
-    // Phase 2+: files.*, codex.*, terminal.*, etc. — appended here.
+    // ── threads.* (config hot-reload validation) ──
+    ThreadsInvalidApprovalPolicy,
+    ThreadsInvalidSandboxMode,
+    // ── codex.* (config editing) ──
+    CodexRawContentInvalid,
+    CodexEditsNotArray,
+    CodexEditInvalid,
+    CodexKeyUnsupported,
+    CodexValueInvalid,
+    CodexValueInvalidJson,
+    CodexWriteFailed,
+    // Phase 2+: files.*, terminal.*, etc. — appended here.
 }
 
 impl ErrorCode {
@@ -126,6 +137,15 @@ impl ErrorCode {
             Self::ThreadsInvalidInputUrl => "threads.invalid_input_url",
             Self::ThreadsInvalidInputField => "threads.invalid_input_field",
             Self::ThreadsInvalidInputType => "threads.invalid_input_type",
+            Self::ThreadsInvalidApprovalPolicy => "threads.invalid_approval_policy",
+            Self::ThreadsInvalidSandboxMode => "threads.invalid_sandbox_mode",
+            Self::CodexRawContentInvalid => "codex.raw_content_invalid",
+            Self::CodexEditsNotArray => "codex.edits_not_array",
+            Self::CodexEditInvalid => "codex.edit_invalid",
+            Self::CodexKeyUnsupported => "codex.key_unsupported",
+            Self::CodexValueInvalid => "codex.value_invalid",
+            Self::CodexValueInvalidJson => "codex.value_invalid_json",
+            Self::CodexWriteFailed => "codex.write_failed",
         }
     }
 

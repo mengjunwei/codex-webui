@@ -6,6 +6,7 @@
 
 pub mod auth;
 pub mod codex;
+pub mod codex_status_config;
 pub mod config;
 pub mod db;
 pub mod error;

@@ -17,6 +17,7 @@ use axum::{
 /// - `POST /api/auth/login` — public (JWT login)
 /// - Everything else under `/api/*` — protected by require_auth
 pub fn build_router(state: AppState) -> Router {
+    use crate::codex_status_config as csc;
     use crate::proxies as px;
     use crate::settings::handlers as s;
     use crate::sqlite_handlers as sq;
@@ -77,6 +78,15 @@ pub fn build_router(state: AppState) -> Router {
         .route("/threads/:threadId/fork", post(th::fork_thread))
         .route("/threads/:threadId/rollback", post(th::rollback_thread))
         .route("/threads/:threadId/name", axum::routing::patch(th::set_thread_name))
+        // ── codex status + config ──
+        .route("/codex/status", get(csc::status))
+        .route("/codex/approval-policy", post(csc::update_approval_policy))
+        .route("/codex/sandbox-mode", post(csc::update_sandbox_mode))
+        .route(
+            "/codex/config",
+            get(csc::read_config).patch(csc::update_config),
+        )
+        .route("/codex/config/raw", get(csc::read_raw_config).put(csc::update_raw_config))
         .layer(axum::middleware::from_fn_with_state(
             state.clone(),
             require_auth,

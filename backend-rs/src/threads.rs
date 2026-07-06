@@ -407,7 +407,7 @@ pub async fn set_thread_name(
 // ── input validation (structural; path resolution deferred) ──────────────────
 
 const USER_INPUT_TYPES: &[&str] = &["text", "image", "localImage", "skill", "mention"];
-const REASONING_EFFORT_VALUES: &[&str] = &["minimal", "low", "medium", "high"];
+const REASONING_EFFORT_VALUES: &[&str] = &["none", "minimal", "low", "medium", "high", "xhigh"];
 
 /// Validate the discriminated UserInput array. Returns the validated array.
 /// NOTE: `mention`/`localImage` paths are passed through WITHOUT workspace-root
