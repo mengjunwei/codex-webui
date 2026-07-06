@@ -73,6 +73,8 @@ struct Session {
     ring_buffer: VecDeque<String>,
     /// Interior-mutable writer for PTY stdin.
     writer: Mutex<Option<Box<dyn std::io::Write + Send>>>,
+    /// PTY master for resize (SIGWINCH).
+    master: Option<Box<dyn portable_pty::MasterPty + Send>>,
     child: Mutex<Option<Box<dyn portable_pty::Child + Send>>>,
     _reader_task: Option<tokio::task::JoinHandle<()>>,
     grace_handle: Option<tokio::task::AbortHandle>,
@@ -162,6 +164,16 @@ impl TerminalService {
         let rows = rows.unwrap_or(24).clamp(5, 120);
         let shell = resolve_shell();
         let cwd = cwd.map(String::from).or(default_cwd).unwrap_or_else(home_dir);
+
+        // H2 FIX: validate cwd exists and is a directory before spawning.
+        let cwd_canonical = std::fs::canonicalize(&cwd).map_err(|_| {
+            bad_request(ErrorCode::TerminalCwdNotDirectory, format!("cwd does not exist: {cwd}"))
+        })?;
+        if !cwd_canonical.is_dir() {
+            return Err(bad_request(ErrorCode::TerminalCwdNotDirectory, "cwd is not a directory".to_string()));
+        }
+        let cwd = cwd_canonical.to_string_lossy().to_string();
+
         let display_title = title.filter(|s| !s.trim().is_empty())
             .map(String::from)
             .unwrap_or_else(|| std::path::Path::new(&shell)
@@ -182,6 +194,8 @@ impl TerminalService {
             .map_err(|e| AppError::internal(format!("take_writer: {e}")))?;
         let reader = pair.master.try_clone_reader()
             .map_err(|e| AppError::internal(format!("clone_reader: {e}")))?;
+        // H1 FIX: keep the master for resize() (SIGWINCH).
+        let master = pair.master;
 
         // PTY output → broadcast + ring buffer (runs in blocking thread).
         let session_id = id.clone();
@@ -239,6 +253,7 @@ impl TerminalService {
             cols, rows, created_at: created_at.clone(),
             ring_buffer: VecDeque::with_capacity(scrollback),
             writer: Mutex::new(Some(writer)),
+            master: Some(master),
             child: Mutex::new(Some(child)),
             _reader_task: Some(reader_task),
             grace_handle: None,
@@ -325,21 +340,25 @@ impl TerminalService {
         Ok(())
     }
 
-    /// Resize a terminal.
-    pub fn resize(&self, socket_id: &str, context_key: &str, terminal_id: &str, _cols: u16, _rows: u16)
+    /// Resize a terminal (updates stored dims + sends SIGWINCH to child).
+    pub fn resize(&self, socket_id: &str, context_key: &str, terminal_id: &str, cols: u16, rows: u16)
         -> Result<TerminalMetadata, AppError>
     {
-        let sessions = self.sessions.lock().unwrap();
-        let s = sessions.get(terminal_id).filter(|s| s.status != TerminalStatus::Exited)
+        let mut sessions = self.sessions.lock().unwrap();
+        let s = sessions.get_mut(terminal_id).filter(|s| s.status != TerminalStatus::Exited)
             .ok_or_else(|| not_found("terminal not found"))?;
         if s.context_key != context_key { return Err(context_mismatch()); }
         if !s.attached.contains(socket_id) { return Err(not_attached()); }
-        // Note: we can't resize via the portable-pty handle held in the session (it's
-        // behind Arc). The PTY master does not need explicit resize for basic I/O.
-        // True resize (SIGWINCH) requires the child's pty handle which we hold.
-        // For now, update stored dimensions; real resize deferred to the pty handle
-        // being accessible (requires Arc<Mutex<...>> of the master).
-        // This matches the TS "last resize wins" semantics at the metadata level.
+        let next_cols = cols.clamp(20, 300);
+        let next_rows = rows.clamp(5, 120);
+        if next_cols != s.cols || next_rows != s.rows {
+            s.cols = next_cols;
+            s.rows = next_rows;
+            // H1 FIX: resize the PTY (sends SIGWINCH to child process).
+            if let Some(ref mut master) = s.master {
+                let _ = master.resize(PtySize { rows: next_rows, cols: next_cols, pixel_width: 0, pixel_height: 0 });
+            }
+        }
         Ok(Self::meta(s))
     }
 

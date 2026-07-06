@@ -340,7 +340,31 @@ pub async fn delete_path(
     State(state): State<AppState>,
     Query(q): Query<DeleteQuery>,
 ) -> Result<Json<serde_json::Value>, AppError> {
-    let resolved = resolve(&state, q.path.as_deref().unwrap_or("")).await?;
+    let raw = q.path.as_deref().map(|s| s.trim()).unwrap_or("");
+    if raw.is_empty() {
+        return Err(bad_request(ErrorCode::FilesPathRequired, "path is required"));
+    }
+
+    // H4 FIX: check for symlinks BEFORE canonicalize (which follows links).
+    // A symlink must be removed via remove_file (deletes the link, not target).
+    let sym_meta = tokio::fs::symlink_metadata(raw).await
+        .map_err(|_| not_found(&format!("path not found: {raw}")))?;
+    if sym_meta.is_symlink() {
+        // Validate the symlink's parent is within workspace.
+        let parent = std::path::Path::new(raw).parent()
+            .ok_or_else(|| bad_request(ErrorCode::FilesNoParentFound, "parent path not found"))?;
+        let parent_canon = tokio::fs::canonicalize(parent).await
+            .map_err(|_| not_found("parent path not found"))?;
+        if !within_workspace(&state, &parent_canon) {
+            return Err(forbidden("path is outside configured workspace roots"));
+        }
+        tokio::fs::remove_file(raw).await
+            .map_err(|e| AppError::internal(format!("remove symlink: {e}")))?;
+        return Ok(Json(json!({ "ok": true })));
+    }
+
+    // Normal path: resolve (canonicalize) then delete by type.
+    let resolved = resolve(&state, raw).await?;
     let recursive = matches!(q.recursive.as_deref(), Some("true") | Some("1"));
     match resolved.kind {
         ResolvedKind::Directory => {

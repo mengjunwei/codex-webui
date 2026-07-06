@@ -102,17 +102,31 @@ impl CodexProcessManager {
         if self.destroyed.load(Ordering::SeqCst) {
             return;
         }
-        match self.spawn_and_initialize().await {
-            Ok((client, init)) => {
-                let new_generation = self.generation.fetch_add(1, Ordering::SeqCst) + 1;
+
+        // Phase 1: spawn child process + create client (no init yet).
+        let client = match self.spawn_child().await {
+            Ok(c) => c,
+            Err(e) => {
+                tracing::error!("failed to spawn codex app-server: {}", e);
+                if !self.destroyed.load(Ordering::SeqCst) {
+                    self.clone().restart().await;
+                }
+                return;
+            }
+        };
+
+        // Phase 2: attach forwarders + close watcher BEFORE init (M1 FIX:
+        // close-watcher race — if the child exits during init, the watcher
+        // must already be subscribed to catch it).
+        let new_generation = self.generation.load(Ordering::SeqCst) + 1;
+        self.attach_forwarders(&client);
+        self.spawn_close_watcher(&client, new_generation);
+
+        // Phase 3: initialize handshake.
+        match self.initialize_client(&client).await {
+            Ok(init) => {
+                self.generation.fetch_add(1, Ordering::SeqCst);
                 let restarted = new_generation > 1;
-
-                // Attach forwarders (re-broadcast client events into manager channels).
-                self.attach_forwarders(&client);
-
-                // Close watcher: on stdout EOF / destroy, clear + schedule restart.
-                self.spawn_close_watcher(&client, new_generation);
-
                 *self.current.lock().await = Some((new_generation, client));
 
                 tracing::info!(
@@ -128,6 +142,8 @@ impl CodexProcessManager {
             }
             Err(e) => {
                 tracing::error!("failed to initialize codex app-server: {}", e);
+                // Clean up the half-initialized client.
+                client.destroy().await;
                 if !self.destroyed.load(Ordering::SeqCst) {
                     self.clone().restart().await;
                 }
@@ -135,7 +151,8 @@ impl CodexProcessManager {
         }
     }
 
-    async fn spawn_and_initialize(&self) -> Result<(Arc<CodexJsonRpcClient>, InitializeResponse), RpcError> {
+    /// Spawn the child process and create the JSON-RPC client (no handshake).
+    async fn spawn_child(&self) -> Result<Arc<CodexJsonRpcClient>, RpcError> {
         tracing::info!("spawning {} app-server (stdio)", self.codex_bin);
 
         let mut cmd = build_codex_command(&self.codex_bin);
@@ -162,15 +179,16 @@ impl CodexProcessManager {
         }
 
         let client = CodexJsonRpcClient::new(child, None)?;
-        let client = Arc::new(client);
+        Ok(Arc::new(client))
+    }
 
-        // initialize handshake: request then notify('initialized').
+    /// Perform the initialize handshake on an already-spawned client.
+    async fn initialize_client(&self, client: &Arc<CodexJsonRpcClient>) -> Result<InitializeResponse, RpcError> {
         let params = serde_json::to_value(default_initialize_params())?;
         let init_value = client.request("initialize", Some(params)).await?;
         let init: InitializeResponse = serde_json::from_value(init_value)?;
         client.notify("initialized", Some(Value::Object(Default::default())))?;
-
-        Ok((client, init))
+        Ok(init)
     }
 
     /// Re-broadcast a fresh client's events into the manager-level channels.
