@@ -7,9 +7,26 @@ use crate::auth::middleware::require_auth;
 use crate::state::AppState;
 use axum::{
     routing::{get, post},
-    Router,
+    Json, Router,
 };
 use tower_http::services::{ServeDir, ServeFile};
+use utoipa::OpenApi;
+
+/// OpenAPI document (basic spec; per-endpoint annotations can be added later).
+#[derive(OpenApi)]
+#[openapi(
+    info(
+        title = "Codex WebUI",
+        version = "0.1.0",
+        description = "Codex WebUI API — Rust backend (migrated from NestJS)",
+    ),
+)]
+struct ApiDoc;
+
+/// Serve the OpenAPI JSON spec at /api/docs-json (public; for SDK generation).
+async fn openapi_json() -> Json<utoipa::openapi::OpenApi> {
+    Json(ApiDoc::openapi())
+}
 
 /// Build the application router.
 ///
@@ -124,8 +141,8 @@ pub fn build_router(state: AppState) -> Router {
     Router::new()
         .route("/", get(health::root))
         .route("/api/auth/login", post(auth::login))
-        // OnlyOffice callback: public (no auth; Document Server calls directly).
         .route("/api/onlyoffice/callback", post(oo::handle_callback))
+        .route("/api/docs-json", get(openapi_json))
         .nest("/api", api)
         .fallback_service(static_files)
         .with_state(state)

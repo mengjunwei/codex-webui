@@ -48,3 +48,7 @@
 {"dir":"in","msg":{"id":1,"result":{"codexHome":"C:\\Users\\mengjunwei1\\.codex","platformFamily":"windows","platformOs":"windows","userAgent":"codex_webui/0.142.5 (Windows 10.0.19044; x86_64) xterm-256color (codex_webui; 0.1.0)"}},"ts":"2026-07-06T09:42:08.586Z"}
 {"dir":"in","msg":{"method":"remoteControl/status/changed","params":{"environmentId":null,"installationId":"1851b3e3-1210-4d29-b3a1-5327c77f1547","serverName":"XA-30-7980165C","status":"disabled"}},"ts":"2026-07-06T09:42:08.587Z"}
 {"dir":"out","msg":{"method":"initialized","params":{}},"ts":"2026-07-06T09:42:08.587Z"}
+{"dir":"out","msg":{"id":1,"method":"initialize","params":{"capabilities":{"experimentalApi":true},"clientInfo":{"name":"codex_webui","title":"Codex WebUI","version":"0.1.0"}}},"ts":"2026-07-06T10:49:02.726Z"}
+{"dir":"in","msg":{"id":1,"result":{"codexHome":"C:\\Users\\mengjunwei1\\.codex","platformFamily":"windows","platformOs":"windows","userAgent":"codex_webui/0.142.5 (Windows 10.0.19044; x86_64) xterm-256color (codex_webui; 0.1.0)"}},"ts":"2026-07-06T10:49:03.708Z"}
+{"dir":"out","msg":{"method":"initialized","params":{}},"ts":"2026-07-06T10:49:03.709Z"}
+{"dir":"in","msg":{"method":"remoteControl/status/changed","params":{"environmentId":null,"installationId":"1851b3e3-1210-4d29-b3a1-5327c77f1547","serverName":"XA-30-7980165C","status":"disabled"}},"ts":"2026-07-06T10:49:03.709Z"}
