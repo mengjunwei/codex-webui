@@ -37,6 +37,7 @@ pub struct ConfigQuery {
 pub async fn get_config(
     State(state): State<AppState>,
     Query(q): Query<ConfigQuery>,
+    headers: HeaderMap,
 ) -> Result<Json<Value>, AppError> {
     let reader = state.settings_reader();
 
@@ -138,11 +139,28 @@ pub async fn get_config(
             "general.publicBaseUrl must be a valid http(s) URL",
         ))?;
 
-    let document_url = format!(
-        "{}/api/files/serve?path={}",
-        base_url.trim_end_matches('/'),
-        url_encode(raw_path)
-    );
+    // Extract caller's bearer JWT for the document URL (OnlyOffice Document Server
+    // fetches without credentials — needs access_token query per RFC 6750 §2.3).
+    let caller_token = headers
+        .get(axum::http::header::AUTHORIZATION)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|h| h.strip_prefix("Bearer ").map(|t| t.trim()))
+        .filter(|t| !t.is_empty());
+
+    let document_url = if let Some(ref t) = caller_token {
+        format!(
+            "{}/api/files/serve?path={}&access_token={}",
+            base_url.trim_end_matches('/'),
+            url_encode(raw_path),
+            url_encode(t)
+        )
+    } else {
+        format!(
+            "{}/api/files/serve?path={}",
+            base_url.trim_end_matches('/'),
+            url_encode(raw_path)
+        )
+    };
     let callback_state_token = if let Some(ref s) = secret {
         let now = chrono::Utc::now().timestamp() as usize;
         Some(encode(
