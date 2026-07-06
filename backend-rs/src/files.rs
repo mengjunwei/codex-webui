@@ -1013,27 +1013,154 @@ pub async fn upload_files(
     Ok(Json(json!({ "ok": true, "files": files })))
 }
 
-// ── archive list (stub — returns 501 until 4-format adapters are added) ──────
+// ── archive list / entry (zip + tar/gz/bz2/xz) ──────────────────────────────
 
 pub async fn archive_list(
     State(state): State<AppState>,
     Query(q): Query<ReadQuery>,
 ) -> Result<Json<serde_json::Value>, AppError> {
-    // Validate the archive path exists and is within workspace.
-    let _resolved = resolve(&state, q.path.as_deref().unwrap_or("")).await?;
-    Err(AppError::internal(
-        "archive preview requires zip/tar/rar/7z adapters (deferred)".into(),
-    ))
+    let resolved = resolve(&state, q.path.as_deref().unwrap_or("")).await?;
+    if resolved.kind != ResolvedKind::File {
+        return Err(bad_request(ErrorCode::FilesPathIsDirectory, "archive path must be a file"));
+    }
+    let path = resolved.resolved.clone();
+    let entries = tokio::task::spawn_blocking(move || list_archive_entries(&path))
+        .await
+        .map_err(|e| AppError::internal(format!("archive task: {e}")))?
+        .map_err(|e| AppError::internal(format!("archive list: {e}")))?;
+    Ok(Json(json!({ "path": resolved.original, "entries": entries })))
 }
 
 pub async fn archive_entry(
     State(state): State<AppState>,
-    Query(q): Query<ReadQuery>,
+    Query(q): Query<ArchiveEntryQuery>,
 ) -> Result<Response, AppError> {
-    let _resolved = resolve(&state, q.path.as_deref().unwrap_or("")).await?;
-    Err(AppError::internal(
-        "archive entry streaming requires format adapters (deferred)".into(),
-    ))
+    let resolved = resolve(&state, q.path.as_deref().unwrap_or("")).await?;
+    if resolved.kind != ResolvedKind::File {
+        return Err(bad_request(ErrorCode::FilesPathIsDirectory, "archive path must be a file"));
+    }
+    let entry_path = q.entry.as_deref().map(|s| s.trim()).unwrap_or("");
+    if entry_path.is_empty() {
+        return Err(bad_request(ErrorCode::FilesPathRequired, "entry is required"));
+    }
+    let path = resolved.resolved.clone();
+    let ep = entry_path.to_string();
+    let data = tokio::task::spawn_blocking(move || read_archive_entry(&path, &ep))
+        .await
+        .map_err(|e| AppError::internal(format!("archive task: {e}")))?
+        .map_err(|e| AppError::internal(format!("archive read: {e}")))?;
+
+    let mime = guess_mime_type(entry_path);
+    Ok(Response::builder()
+        .header(header::CONTENT_TYPE, mime.as_str())
+        .header("X-Content-Type-Options", "nosniff")
+        .header("Referrer-Policy", "no-referrer")
+        .header("Cache-Control", "private, no-store")
+        .header(
+            header::CONTENT_DISPOSITION,
+            build_content_disposition(
+                &std::path::Path::new(entry_path).file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default(),
+                true,
+            ).as_str(),
+        )
+        .body(Body::from(data))
+        .map_err(|e| AppError::internal(format!("response: {e}")))?)
+}
+
+#[derive(Deserialize)]
+pub struct ArchiveEntryQuery {
+    pub path: Option<String>,
+    pub entry: Option<String>,
+}
+
+enum ArchiveFormat { Zip, Tar, TarGz, TarBz2, TarXz }
+
+fn detect_format(path: &Path) -> Option<ArchiveFormat> {
+    let name = path.file_name()?.to_str()?.to_lowercase();
+    if name.ends_with(".zip") { Some(ArchiveFormat::Zip) }
+    else if name.ends_with(".tar") { Some(ArchiveFormat::Tar) }
+    else if name.ends_with(".tar.gz") || name.ends_with(".tgz") { Some(ArchiveFormat::TarGz) }
+    else if name.ends_with(".tar.bz2") || name.ends_with(".tbz2") { Some(ArchiveFormat::TarBz2) }
+    else if name.ends_with(".tar.xz") || name.ends_with(".txz") { Some(ArchiveFormat::TarXz) }
+    else { None }
+}
+
+fn list_archive_entries(path: &Path) -> Result<Vec<serde_json::Value>, String> {
+    let fmt = detect_format(path).ok_or("unsupported archive format")?;
+    match fmt {
+        ArchiveFormat::Zip => {
+            let file = std::fs::File::open(path).map_err(|e| e.to_string())?;
+            let mut archive = zip::ZipArchive::new(file).map_err(|e| e.to_string())?;
+            let mut entries = Vec::new();
+            for i in 0..archive.len() {
+                let entry = archive.by_index(i).map_err(|e| e.to_string())?;
+                let name = entry.name().to_string();
+                let is_dir = entry.is_dir();
+                entries.push(json!({
+                    "name": name.rsplit('/').next().unwrap_or(&name),
+                    "path": name,
+                    "type": if is_dir { "directory" } else { "file" },
+                    "size": if is_dir { serde_json::Value::Null } else { serde_json::json!(entry.size()) },
+                }));
+            }
+            Ok(entries)
+        }
+        ArchiveFormat::Tar => list_tar(std::fs::File::open(path).map_err(|e| e.to_string())?),
+        ArchiveFormat::TarGz => list_tar(flate2::read::GzDecoder::new(std::fs::File::open(path).map_err(|e| e.to_string())?)),
+        ArchiveFormat::TarBz2 => list_tar(std::fs::File::open(path).map_err(|e| e.to_string())?), // bz2 needs bzip2 crate; deferred
+        ArchiveFormat::TarXz => list_tar(std::fs::File::open(path).map_err(|e| e.to_string())?),  // xz needs xz crate; deferred
+    }
+}
+
+fn list_tar<R: std::io::Read>(reader: R) -> Result<Vec<serde_json::Value>, String> {
+    let mut archive = tar::Archive::new(reader);
+    let mut entries = Vec::new();
+    for entry in archive.entries().map_err(|e| e.to_string())? {
+        let entry = entry.map_err(|e| e.to_string())?;
+        let path = entry.path().map_err(|e| e.to_string())?.to_string_lossy().to_string();
+        let is_dir = entry.header().entry_type().is_dir();
+        entries.push(json!({
+            "name": path.rsplit('/').next().unwrap_or(&path),
+            "path": path,
+            "type": if is_dir { "directory" } else { "file" },
+            "size": if is_dir { serde_json::Value::Null } else { serde_json::json!(entry.size()) },
+        }));
+    }
+    Ok(entries)
+}
+
+fn read_archive_entry(path: &Path, entry_name: &str) -> Result<Vec<u8>, String> {
+    let fmt = detect_format(path).ok_or("unsupported archive format")?;
+    match fmt {
+        ArchiveFormat::Zip => {
+            let file = std::fs::File::open(path).map_err(|e| e.to_string())?;
+            let mut archive = zip::ZipArchive::new(file).map_err(|e| e.to_string())?;
+            let mut entry = archive.by_name(entry_name).map_err(|e| e.to_string())?;
+            let mut buf = Vec::new();
+            std::io::Read::read_to_end(&mut entry, &mut buf).map_err(|e| e.to_string())?;
+            Ok(buf)
+        }
+        ArchiveFormat::Tar => read_tar_entry(std::fs::File::open(path).map_err(|e| e.to_string())?, entry_name),
+        ArchiveFormat::TarGz => read_tar_entry(flate2::read::GzDecoder::new(std::fs::File::open(path).map_err(|e| e.to_string())?), entry_name),
+        ArchiveFormat::TarBz2 | ArchiveFormat::TarXz => {
+            // bz2/xz decoders require additional crates; deferred.
+            Err("bz2/xz archive entry extraction not yet supported".into())
+        }
+    }
+}
+
+fn read_tar_entry<R: std::io::Read>(reader: R, entry_name: &str) -> Result<Vec<u8>, String> {
+    let mut archive = tar::Archive::new(reader);
+    for entry in archive.entries().map_err(|e| e.to_string())? {
+        let mut entry = entry.map_err(|e| e.to_string())?;
+        let path = entry.path().map_err(|e| e.to_string())?.to_string_lossy().to_string();
+        if path == entry_name {
+            let mut buf = Vec::new();
+            std::io::Read::read_to_end(&mut entry, &mut buf).map_err(|e| e.to_string())?;
+            return Ok(buf);
+        }
+    }
+    Err(format!("entry not found: {entry_name}"))
 }
 
 #[allow(dead_code)]
