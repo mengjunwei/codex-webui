@@ -1,14 +1,20 @@
 //! Tracing initialization (daily rolling file + stdout) and URL redaction.
 //!
+//! Two layers:
+//! - **stdout**: human-readable fmt (good for dev console / `docker logs`)
+//! - **file** (`logs/app.YYYY-MM-DD`): **JSON** fmt, so the `logs` module can
+//!   parse entries into structured `LogEntry` records.
+//!
 //! Parity note: pino-roll does size-based rotation (10MB × 5 files);
 //! tracing-appender only supports time-based (daily). Phase 0 uses daily;
 //! size-based rotation deferred (logrotate or custom appender). See spec §6.7.
 
 use tracing_appender::non_blocking::WorkerGuard;
 use tracing_appender::rolling;
+use tracing_subscriber::fmt::format::{self, JsonFields};
 use tracing_subscriber::{filter::EnvFilter, fmt, prelude::*};
 
-/// Initialize tracing: stdout + rolling file (logs/app, daily).
+/// Initialize tracing: stdout (human-readable) + rolling file (JSON).
 /// Returns `WorkerGuard` — **must be held** until process exit, or the
 /// non-blocking writer's background thread drops and pending log lines are lost.
 pub fn init(level: &str) -> WorkerGuard {
@@ -19,8 +25,15 @@ pub fn init(level: &str) -> WorkerGuard {
 
     tracing_subscriber::registry()
         .with(filter)
+        // stdout: human-readable, ANSI colors
         .with(fmt::layer().with_writer(std::io::stdout))
-        .with(fmt::layer().with_writer(non_blocking))
+        // file: JSON for structured parsing by the logs module
+        .with(
+            fmt::layer()
+                .with_writer(non_blocking)
+                .fmt_fields(JsonFields::default())
+                .event_format(format::Format::default().json()),
+        )
         .init();
 
     guard
@@ -29,7 +42,6 @@ pub fn init(level: &str) -> WorkerGuard {
 /// Strip `access_token=...` query parameters from a URL.
 /// Parity with `app.module.ts:sanitizeUrl` (PINO_REDACT strips `req.query.access_token`).
 pub fn sanitize_url(url: &str) -> String {
-    // Strip token from both ?access_token=X and &access_token=X positions.
     let mut out = String::with_capacity(url.len());
     let mut first_param = true;
 
