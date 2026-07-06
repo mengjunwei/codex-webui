@@ -5,6 +5,7 @@
 //! import via `use codex_webui::<module>::*`.
 
 pub mod auth;
+pub mod codex;
 pub mod config;
 pub mod db;
 pub mod error;

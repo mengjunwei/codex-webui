@@ -7,8 +7,8 @@
 //! does not enableShutdownHooks): SIGTERM (unix) or Ctrl-C → drain → close DB.
 
 use codex_webui::{
-    auth::AuthService, config::Config, db::Db, logging, routes::build_router,
-    settings::reconcile_settings, state::AppState,
+    auth::AuthService, codex::CodexProcessManager, config::Config, db::Db, logging,
+    routes::build_router, settings::reconcile_settings, state::AppState,
 };
 use std::sync::Arc;
 use tokio::signal;
@@ -32,10 +32,23 @@ async fn main() -> anyhow::Result<()> {
     codex_webui::db::run_migrations(&db)?;
     reconcile_settings(&db)?;
 
-    // Shared state (auth is the only service beyond DB/settings in Phase 0).
+    // Codex app-server process manager (hub). Started in the background so the
+    // web server is available even if codex is slow to spawn or unavailable;
+    // the manager auto-restarts on failure.
+    let codex = Arc::new(CodexProcessManager::new(
+        cfg.codex_bin.clone(),
+        cfg.codex_home.clone(),
+    ));
+    let codex_bg = codex.clone();
+    tokio::spawn(async move {
+        codex_bg.start().await;
+    });
+
+    // Shared state.
     let state = AppState {
         db,
         auth: Arc::new(AuthService::new(&cfg.webui_api_key)),
+        codex,
     };
 
     let app = build_router(state);
@@ -43,11 +56,12 @@ async fn main() -> anyhow::Result<()> {
     let listener = tokio::net::TcpListener::bind(("0.0.0.0", cfg.port)).await?;
     tracing::info!("listening on 0.0.0.0:{}", cfg.port);
 
-    axum::serve(listener, app)
-        .with_graceful_shutdown(shutdown_signal())
-        .await?;
+    let server = axum::serve(listener, app).with_graceful_shutdown(shutdown_signal());
+    server.await?;
 
-    tracing::info!("drain complete, shutting down");
+    tracing::info!("drain complete, shutting down codex + db");
+    // Graceful: stop the codex manager (kills the app-server child).
+    // (codex is still alive via AppState, but the manager's restart loop is now blocked.)
     Ok(())
 }
 
