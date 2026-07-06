@@ -23,7 +23,7 @@ pub fn reconcile_settings(db: &Db) -> Result<()> {
         conn.execute(
             "INSERT OR IGNORE INTO settings \
              (key, value, type, category, description, default_value, constraints, updated_at) \
-             VALUES (?1, NULL, ?2, ?3, ?4, ?5, ?6, strftime('%s','now'))",
+             VALUES (?1, NULL, ?2, ?3, ?4, ?5, ?6, (strftime('%s','now')*1000))",
             rusqlite::params![
                 def.key,
                 def.ty.as_str(),
@@ -38,7 +38,7 @@ pub fn reconcile_settings(db: &Db) -> Result<()> {
         conn.execute(
             "UPDATE settings \
              SET type = ?1, category = ?2, description = ?3, \
-                 default_value = ?4, constraints = ?5, updated_at = strftime('%s','now') \
+                 default_value = ?4, constraints = ?5, updated_at = (strftime('%s','now')*1000) \
              WHERE key = ?6",
             rusqlite::params![
                 def.ty.as_str(),

@@ -133,17 +133,27 @@ fn is_within(child: &Path, parent: &Path) -> bool {
 
 fn workspace_roots(state: &AppState) -> Vec<String> {
     let mut out: HashSet<String> = HashSet::new();
+    // Home dir — canonicalize to match the verbatim prefix (\\?\) of
+    // canonicalized file paths on Windows (fixes C1 from review).
     if let Ok(home) = std::env::var("USERPROFILE").or_else(|_| std::env::var("HOME")) {
         if !home.is_empty() {
-            out.insert(home);
+            match std::fs::canonicalize(&home) {
+                Ok(c) => { out.insert(c.to_string_lossy().to_string()); }
+                Err(_) => { out.insert(home); }
+            }
         }
     }
-    for r in state
-        .dynamic_files_roots
-        .lock()
-        .map(|g| g.iter().cloned().collect::<Vec<_>>())
-        .unwrap_or_default()
-    {
+    // Configured WORKSPACE_ROOTS from settings (fixes H1 from review).
+    let reader = crate::settings::SettingsReader::new(&state.db);
+    if let Some(roots_str) = reader.get_string("security.workspaceRoots") {
+        for root in roots_str.split(',').map(|s| s.trim()).filter(|s| !s.is_empty()) {
+            if let Ok(c) = std::fs::canonicalize(root) {
+                out.insert(c.to_string_lossy().to_string());
+            }
+        }
+    }
+    // Dynamic roots (already canonicalized at add_root time).
+    for r in state.dynamic_files_roots.lock().map(|g| g.iter().cloned().collect::<Vec<_>>()).unwrap_or_default() {
         out.insert(r);
     }
     out.into_iter().collect()
@@ -996,17 +1006,24 @@ pub async fn upload_files(
 
     let mut files = Vec::new();
     while let Ok(Some(field)) = multipart.next_field().await {
-        let filename = field.file_name().unwrap_or("upload").to_string();
+        let raw_filename = field.file_name().unwrap_or("upload").to_string();
+        // CRITICAL FIX (C2): sanitize filename — strip path components to prevent
+        // path traversal (e.g. "..\\evil.dll" → "evil.dll").
+        let safe_name = std::path::Path::new(&raw_filename)
+            .file_name()
+            .map(|n| n.to_string_lossy().to_string())
+            .filter(|s| !s.is_empty() && s != "." && s != "..")
+            .unwrap_or_else(|| "upload".to_string());
         let data = field.bytes().await
             .map_err(|e| AppError::internal(format!("read multipart field: {e}")))?;
-        let file_path = dest_canonical.join(&filename);
+        let file_path = dest_canonical.join(&safe_name);
         if file_path.exists() && !overwrite {
             return Err(bad_request(ErrorCode::FilesPathExists,
-                format!("{filename} already exists (set overwrite=true)")));
+                format!("{safe_name} already exists (set overwrite=true)")));
         }
         tokio::fs::write(&file_path, &data)
             .await
-            .map_err(|e| AppError::internal(format!("write {filename}: {e}")))?;
+            .map_err(|e| AppError::internal(format!("write {safe_name}: {e}")))?;
         let size = data.len();
         files.push(json!({ "path": file_path.to_string_lossy(), "size": size }));
     }

@@ -144,9 +144,10 @@ pub async fn get_config(
         url_encode(raw_path)
     );
     let callback_state_token = if let Some(ref s) = secret {
+        let now = chrono::Utc::now().timestamp() as usize;
         Some(encode(
             &Header::new(Algorithm::HS256),
-            &json!({ "path": raw_path, "key": key }),
+            &json!({ "path": raw_path, "key": key, "iat": now, "exp": now + 86400 }),
             &EncodingKey::from_secret(s.as_bytes()),
         )
         .map_err(|e| AppError::internal(format!("jwt sign: {e}")))?)
@@ -428,6 +429,8 @@ fn verify_callback_state(
     let mut v = Validation::new(Algorithm::HS256);
     v.validate_exp = true;
     v.leeway = 0;
+    // OnlyOffice callback JWT may not carry exp (TS verify doesn't require it).
+    v.required_spec_claims.clear();
     let data = decode::<CallbackStatePayload>(
         token,
         &DecodingKey::from_secret(secret.as_bytes()),
@@ -467,6 +470,7 @@ fn verify_onlyoffice_token(token: Option<&str>, secret: &str) -> Result<(), AppE
     let mut v = Validation::new(Algorithm::HS256);
     v.validate_exp = true;
     v.leeway = 0;
+    v.required_spec_claims.clear();
     decode::<CallbackJwtPayload>(
         token,
         &DecodingKey::from_secret(secret.as_bytes()),

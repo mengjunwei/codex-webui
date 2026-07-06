@@ -45,8 +45,9 @@ pub fn build_router(state: AppState) -> Router {
 
     // Protected API sub-router.
     let api = Router::new()
-        // ── Phase 0 probe ──
+        // ── Phase 0 probe (also serves as GET /api/status parity with AppController) ──
         .route("/_ping", get(health::ping))
+        .route("/status", get(health::ping))
         // ── settings CRUD ──
         .route("/settings", get(s::list).patch(s::update_batch))
         .route("/settings/:key", get(s::get_one).patch(s::update_one).delete(s::delete_one))
@@ -139,8 +140,8 @@ pub fn build_router(state: AppState) -> Router {
         .fallback(ServeFile::new("public/index.html"));
 
     Router::new()
-        .route("/", get(health::root))
         .route("/api/auth/login", post(auth::login))
+        .route("/api/auth/logout", post(auth::logout))
         .route("/api/onlyoffice/callback", post(oo::handle_callback))
         .route("/api/docs-json", get(openapi_json))
         .nest("/api", api)

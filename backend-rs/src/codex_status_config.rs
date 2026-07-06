@@ -230,7 +230,7 @@ fn is_json_value(v: &Value) -> bool {
     match v {
         Value::Null => true,
         Value::Bool(_) | Value::String(_) => true,
-        Value::Number(n) => n.is_f64() && n.as_f64().map(|f| f.is_finite()).unwrap_or(false),
+        Value::Number(_) => true, // serde_json never stores non-finite values
         Value::Array(a) => a.iter().all(is_json_value),
         Value::Object(m) => m
             .keys()

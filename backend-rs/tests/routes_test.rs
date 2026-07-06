@@ -37,13 +37,13 @@ fn state(api_key: &str) -> AppState {
 }
 
 #[tokio::test]
-async fn root_is_public() {
+async fn status_requires_auth() {
     let app = build_router(state("s"));
     let resp = app
-        .oneshot(Request::builder().uri("/").body(Body::empty()).unwrap())
+        .oneshot(Request::builder().uri("/api/status").body(Body::empty()).unwrap())
         .await
         .unwrap();
-    assert_eq!(resp.status(), StatusCode::OK);
+    assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
 }
 
 #[tokio::test]

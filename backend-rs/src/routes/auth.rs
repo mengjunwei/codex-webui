@@ -24,3 +24,8 @@ pub async fn login(
     tracing::info!(auth_type = "apiKeyLogin", reason = "loginSuccess", "auth");
     Ok(Json(state.auth.sign_jwt()?))
 }
+
+/// Stateless logout — browser clears the stored JWT. Returns 204 No Content.
+pub async fn logout() -> StatusCode {
+    StatusCode::NO_CONTENT
+}

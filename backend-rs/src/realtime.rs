@@ -57,6 +57,11 @@ fn on_connect(
     }
     tracing::debug!(socket = %s.id, "client connected");
 
+    // CRITICAL FIX: socketioxide 0.15 does NOT auto-join sockets to a self-SID
+    // room (unlike JS socket.io). Without this, per-socket emits (terminal output/
+    // exit/closed) target an empty room and are silently dropped.
+    let _ = s.join(s.id.to_string());
+
     s.on("thread.subscribe", on_thread_subscribe);
     s.on("thread.unsubscribe", on_thread_unsubscribe);
     s.on("fs.subscribe", on_ack);

@@ -163,7 +163,7 @@ pub async fn update_batch(
             .map_err(|e| AppError::internal(format!("tx begin: {e}")))?;
         for (key, value) in &prepared {
             tx.execute(
-                "UPDATE settings SET value = ?1, updated_at = strftime('%s','now') WHERE key = ?2",
+                "UPDATE settings SET value = ?1, updated_at = (strftime('%s','now')*1000) WHERE key = ?2",
                 rusqlite::params![value.as_deref(), key],
             )
             .map_err(|e| AppError::internal(format!("update {key}: {e}")))?;

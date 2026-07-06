@@ -149,7 +149,7 @@ pub fn write_setting(db: &Db, key: &str, value: Option<&str>) -> Result<()> {
         .lock()
         .map_err(|e| anyhow::anyhow!("db lock poisoned: {e}"))?;
     conn.execute(
-        "UPDATE settings SET value = ?1, updated_at = strftime('%s','now') WHERE key = ?2",
+        "UPDATE settings SET value = ?1, updated_at = (strftime('%s','now')*1000) WHERE key = ?2",
         rusqlite::params![value, key],
     )?;
     Ok(())
