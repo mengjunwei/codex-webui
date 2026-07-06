@@ -1,8 +1,10 @@
 node_modules
 web/node_modules
+backend-rs/target
 dist
 public
 /logs
+backend-rs/logs
 coverage
 .git
 .env
