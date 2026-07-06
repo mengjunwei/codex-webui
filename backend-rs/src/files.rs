@@ -17,8 +17,8 @@ use crate::state::AppState;
 use axum::{
     body::Body,
     extract::{Query, State},
-    http::{header, HeaderMap, HeaderValue, StatusCode},
-    response::{IntoResponse, Response},
+    http::{header, HeaderMap, StatusCode},
+    response::Response,
     Json,
 };
 use serde::Deserialize;
@@ -170,7 +170,7 @@ pub struct AddRootBody {
 }
 
 pub async fn add_root(
-    State(mut state): State<AppState>,
+    State(state): State<AppState>,
     Json(body): Json<AddRootBody>,
 ) -> Result<Json<serde_json::Value>, AppError> {
     let raw = body.root.as_deref().map(|s| s.trim()).unwrap_or("");
@@ -596,7 +596,7 @@ pub async fn download_file(
 
 async fn serve_with_range(
     path: &Path,
-    original: &str,
+    _original: &str,
     size: u64,
     inline: bool,
     headers: HeaderMap,
@@ -611,7 +611,7 @@ async fn serve_with_range(
         .and_then(|v| v.to_str().ok())
         .map(|s| s.to_string());
 
-    let mut resp = Response::builder()
+    let resp = Response::builder()
         .header(header::ACCEPT_RANGES, "bytes")
         .header(header::CONTENT_TYPE, mime.as_str())
         .header(

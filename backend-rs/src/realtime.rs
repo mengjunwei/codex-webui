@@ -125,11 +125,11 @@ fn on_server_response(s: SocketRef, SocketData(data): SocketData<Value>) {
 
 // ── Terminal handlers ────────────────────────────────────────────────────────
 
-fn on_term_config(s: SocketRef, State(state): State<RealtimeState>, ack: AckSender) {
+fn on_term_config(_s: SocketRef, State(state): State<RealtimeState>, ack: AckSender) {
     let _ = ack.send(&json!({ "ok": true, "config": state.terminal.get_config_json() }));
 }
 
-fn on_term_list(s: SocketRef, State(state): State<RealtimeState>, SocketData(data): SocketData<Value>, ack: AckSender) {
+fn on_term_list(_s: SocketRef, State(state): State<RealtimeState>, SocketData(data): SocketData<Value>, ack: AckSender) {
     let ctx = data.get("contextKey").and_then(Value::as_str).unwrap_or("global");
     let terminals = state.terminal.list(ctx);
     let _ = ack.send(&json!({ "ok": true, "terminals": terminals, "config": state.terminal.get_config_json() }));
@@ -301,7 +301,7 @@ fn spawn_terminal_output_emit(io: SocketIo, terminal: Arc<TerminalService>) {
         loop {
             match rx.recv().await {
                 Ok(event) => {
-                    let Some(ns) = io.of("/ws") else { continue };
+                    let Some(_ns) = io.of("/ws") else { continue };
                     let payload = json!({ "terminalId": event.terminal_id, "data": event.data });
                     for sid in &event.socket_ids {
                         if let Some(ns) = io.of("/ws") { let _ = ns.within(sid.clone()).emit("terminal.output", &payload); }
@@ -320,7 +320,7 @@ fn spawn_terminal_exit_emit(io: SocketIo, terminal: Arc<TerminalService>) {
         loop {
             match rx.recv().await {
                 Ok(event) => {
-                    let Some(ns) = io.of("/ws") else { continue };
+                    let Some(_ns) = io.of("/ws") else { continue };
                     let payload = json!({ "terminal": event.terminal, "closed": false });
                     for sid in &event.socket_ids {
                         if let Some(ns) = io.of("/ws") { let _ = ns.within(sid.clone()).emit("terminal.exit", &payload); }
@@ -339,7 +339,7 @@ fn spawn_terminal_closed_emit(io: SocketIo, terminal: Arc<TerminalService>) {
         loop {
             match rx.recv().await {
                 Ok(event) => {
-                    let Some(ns) = io.of("/ws") else { continue };
+                    let Some(_ns) = io.of("/ws") else { continue };
                     let payload = json!({
                         "terminalId": event.terminal_id,
                         "contextKey": event.context_key,

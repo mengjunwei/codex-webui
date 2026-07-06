@@ -305,7 +305,7 @@ async fn callback_inner(
         .ok_or_else(|| bad_request(ErrorCode::OnlyOfficeJwtRequired, "JWT secret not configured"))?;
 
     // 2. Verify callback state token (signed path + key in query ?state=).
-    let state_payload = verify_callback_state(q.state.as_deref(), &secret, file_path, body.key.as_deref())?;
+    let _state_payload = verify_callback_state(q.state.as_deref(), &secret, file_path, body.key.as_deref())?;
 
     // 3. Verify OnlyOffice callback JWT (body.token or Authorization header).
     let oo_token = body

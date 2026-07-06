@@ -185,8 +185,8 @@ impl TerminalService {
 
         // PTY output → broadcast + ring buffer (runs in blocking thread).
         let session_id = id.clone();
-        let output_tx = self.output_tx.clone();
-        let exit_tx = self.exit_tx.clone();
+        let _output_tx = self.output_tx.clone();
+        let _exit_tx = self.exit_tx.clone();
         let (output_tx, exit_tx, sessions_ref) = (self.output_tx.clone(), self.exit_tx.clone(), self.sessions.clone());
         let reader_task = {
             let sid = session_id.clone();
@@ -296,7 +296,7 @@ impl TerminalService {
     }
 
     /// Resize a terminal.
-    pub fn resize(&self, socket_id: &str, context_key: &str, terminal_id: &str, cols: u16, rows: u16)
+    pub fn resize(&self, socket_id: &str, context_key: &str, terminal_id: &str, _cols: u16, _rows: u16)
         -> Result<TerminalMetadata, AppError>
     {
         let sessions = self.sessions.lock().unwrap();
@@ -314,7 +314,7 @@ impl TerminalService {
     }
 
     /// Close a terminal explicitly.
-    pub fn close(&self, socket_id: &str, context_key: &str, terminal_id: &str)
+    pub fn close(&self, _socket_id: &str, context_key: &str, terminal_id: &str)
         -> Result<(), AppError>
     {
         let mut sessions = self.sessions.lock().unwrap();
@@ -323,7 +323,7 @@ impl TerminalService {
         s.status = TerminalStatus::Exited;
         if let Ok(mut child) = s.child.lock() { child.take(); } // drop child → kill
         if let Ok(mut writer) = s.writer.lock() { writer.take(); }
-        let meta = Self::meta(s);
+        let _meta = Self::meta(s);
         let socket_ids: Vec<String> = s.attached.iter().cloned().collect();
         drop(sessions);
         let _ = self.closed_tx.send(TerminalClosedEvent {
