@@ -72,12 +72,6 @@ pub async fn skills_config_write() -> Result<Json<Value>, AppError> {
     not_implemented_handler().await
 }
 
-// ── pending-approvals (respond — needs Phase 1 client to forward to app-server) ──
-
-pub async fn pending_approvals_respond() -> Result<Json<Value>, AppError> {
-    not_implemented_handler().await
-}
-
 // ── plugins ──────────────────────────────────────────────────────────────────
 
 pub async fn plugins_list() -> Result<Json<Value>, AppError> {

@@ -202,16 +202,18 @@ impl CodexJsonRpcClient {
     }
 
     /// Respond to a server-initiated request (e.g. approval decision).
+    /// `id` is forwarded verbatim to preserve number-vs-string type (codex
+    /// correlates responses by id value AND type).
     pub fn respond_to_server_request(
         &self,
-        id: RequestId,
+        id: Value,
         result: Value,
     ) -> Result<(), RpcError> {
         if self.is_closed() {
             return Err(RpcError::Closed);
         }
         let mut msg = serde_json::Map::new();
-        msg.insert("id".into(), Value::Number(id.into()));
+        msg.insert("id".into(), id);
         msg.insert("result".into(), result);
         let line = serde_json::to_string(&Value::Object(msg))?;
         self.write_tx.send(line).map_err(|_| RpcError::Closed)

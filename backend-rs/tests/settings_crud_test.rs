@@ -248,3 +248,24 @@ async fn pending_approvals_dto_omits_resolved_at() {
     assert!(arr.is_empty(), "fresh DB has no pending requests");
     // (If rows existed, each would be checked for absence of resolvedAt/resolvedBy.)
 }
+
+#[tokio::test]
+async fn pending_approvals_respond_not_found_is_404() {
+    // Manager not started (generation 0), no pending rows → not found.
+    let app = build_router(state());
+    let req = Request::builder()
+        .method("POST")
+        .uri("/api/pending-approvals/999/respond")
+        .header("authorization", "Bearer test-key")
+        .header("content-type", "application/json")
+        .body(Body::from(r#"{"result":{"approved":true}}"#))
+        .unwrap();
+    let resp = app.oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+
+    let body = axum::body::to_bytes(resp.into_body(), 1024)
+        .await
+        .unwrap();
+    let v: Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(v["errorCode"], "approvals.not_found");
+}

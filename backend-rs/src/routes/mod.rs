@@ -47,11 +47,11 @@ pub fn build_router(state: AppState) -> Router {
             "/threads/:threadId/turn-errors",
             get(sq::read_turn_errors),
         )
-        // ── pending-approvals (read; respond needs Phase 1) ──
+        // ── pending-approvals (read + respond) ──
         .route("/pending-approvals", get(sq::list_pending))
         .route(
             "/pending-approvals/:requestId/respond",
-            post(st::pending_approvals_respond),
+            post(sq::respond_to_request),
         )
         // ── logs ──
         .route("/logs", get(crate::logs::list_logs))

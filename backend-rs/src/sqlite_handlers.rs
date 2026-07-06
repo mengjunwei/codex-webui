@@ -5,12 +5,14 @@
 //! Write paths for these modules are event-driven (subscribed to codex
 //! notifications) and will be added in Phase 1.
 
-use crate::error::AppError;
+use crate::error::{AppError, ErrorCode};
 use crate::state::AppState;
 use axum::{
     extract::{Path, Query, State},
+    http::StatusCode,
     Json,
 };
+use rusqlite::OptionalExtension;
 use serde::{Deserialize, Serialize};
 
 // ── token-usage ──────────────────────────────────────────────────────────────
@@ -326,4 +328,142 @@ fn parse_pending_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<PendingServerReq
         created_at: r.get(8)?,
         updated_at: r.get(9)?,
     })
+}
+
+// ── POST /pending-approvals/:requestId/respond ───────────────────────────────
+
+#[derive(Deserialize)]
+pub struct RespondPayload {
+    pub result: serde_json::Value,
+    #[serde(rename = "clientId")]
+    pub client_id: Option<String>,
+}
+
+pub async fn respond_to_request(
+    State(state): State<AppState>,
+    Path(request_id): Path<String>,
+    Json(payload): Json<RespondPayload>,
+) -> Result<Json<PendingServerRequestDto>, AppError> {
+    let generation = state.codex.generation() as i64;
+    let now = chrono::Utc::now().timestamp_millis();
+
+    // 1. Lookup (must release the DB lock before awaiting the client below —
+    //    holding a MutexGuard across `.await` makes the future !Send).
+    let existing_status = {
+        let conn = state
+            .db
+            .conn
+            .lock()
+            .map_err(|e| AppError::internal(format!("db lock: {e}")))?;
+        let existing: Option<String> = conn
+            .query_row(
+                "SELECT status FROM pending_server_requests \
+                 WHERE generation=?1 AND request_id=?2",
+                rusqlite::params![generation, &request_id],
+                |r| r.get::<_, String>(0),
+            )
+            .optional()
+            .map_err(|e| AppError::internal(format!("query: {e}")))?;
+        existing
+    };
+
+    let existing_status = existing_status.ok_or_else(|| {
+        AppError::business(
+            ErrorCode::ApprovalsNotFound,
+            StatusCode::NOT_FOUND,
+            "Pending request not found".into(),
+            None,
+        )
+    })?;
+    if existing_status != "pending" {
+        return Err(AppError::business(
+            ErrorCode::ApprovalsAlreadyResolved,
+            StatusCode::CONFLICT,
+            "Pending request has already been resolved".into(),
+            None,
+        ));
+    }
+
+    // 2. Get client (await with no DB lock held).
+    let client = state.codex.client().await.ok_or_else(|| {
+        AppError::business(
+            ErrorCode::ApprovalsServerNotConnected,
+            StatusCode::CONFLICT,
+            "Codex app-server is not connected".into(),
+            None,
+        )
+    })?;
+
+    // 3. CAS update + forward inside a transaction (forward failure rolls back).
+    {
+        let conn = state
+            .db
+            .conn
+            .lock()
+            .map_err(|e| AppError::internal(format!("db lock: {e}")))?;
+        let tx = conn
+            .unchecked_transaction()
+            .map_err(|e| AppError::internal(format!("tx begin: {e}")))?;
+        let changes = tx
+            .execute(
+                "UPDATE pending_server_requests \
+                 SET status='resolved', resolved_by=?1, resolved_at=?2, updated_at=?3 \
+                 WHERE generation=?4 AND request_id=?5 AND status='pending'",
+                rusqlite::params![
+                    payload.client_id.as_deref(),
+                    now,
+                    now,
+                    generation,
+                    &request_id,
+                ],
+            )
+            .map_err(|e| AppError::internal(format!("cas update: {e}")))?;
+
+        if changes != 1 {
+            // Drop tx (rollback) by not committing.
+            return Err(AppError::business(
+                ErrorCode::ApprovalsAlreadyHandled,
+                StatusCode::CONFLICT,
+                "Pending approval was already handled".into(),
+                None,
+            ));
+        }
+
+        // Forward to app-server INSIDE the transaction (tx rolls back on forward failure).
+        let id_value = parse_request_id_value(&request_id);
+        if let Err(e) = client.respond_to_server_request(id_value, payload.result) {
+            // Drop tx without commit → rollback. Status stays pending.
+            return Err(AppError::internal(format!("respond forward: {e}")));
+        }
+
+        tx.commit()
+            .map_err(|e| AppError::internal(format!("tx commit: {e}")))?;
+    };
+
+    // 4. Re-query to build the DTO (lock released, tx consumed).
+    let conn = state
+        .db
+        .conn
+        .lock()
+        .map_err(|e| AppError::internal(format!("db lock: {e}")))?;
+    let dto: PendingServerRequestDto = conn
+        .query_row(
+            "SELECT generation, request_id, thread_id, turn_id, item_id, method, params_json, \
+                    status, created_at, updated_at \
+             FROM pending_server_requests WHERE generation=?1 AND request_id=?2",
+            rusqlite::params![generation, &request_id],
+            parse_pending_row,
+        )
+        .map_err(|e| AppError::internal(format!("requery: {e}")))?;
+    Ok(Json(dto))
+}
+
+/// Convert a stored requestId (string) back to a JSON Value that preserves
+/// the original number-vs-string type for the JSON-RPC response correlation.
+fn parse_request_id_value(s: &str) -> serde_json::Value {
+    if let Ok(n) = s.parse::<u64>() {
+        serde_json::Value::Number(n.into())
+    } else {
+        serde_json::Value::String(s.into())
+    }
 }

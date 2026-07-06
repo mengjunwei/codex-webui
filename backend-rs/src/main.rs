@@ -44,6 +44,11 @@ async fn main() -> anyhow::Result<()> {
         codex_bg.start().await;
     });
 
+    // Wire event-driven DB write paths (token-usage, turn-diff, turn-errors,
+    // pending-approvals record/resolved/expire). Subscribes to the manager's
+    // broadcasts; also expires stale pending requests on boot.
+    codex_webui::event_subscribers::spawn_all(db.clone(), codex.clone());
+
     // Shared state.
     let state = AppState {
         db,

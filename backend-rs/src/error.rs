@@ -42,6 +42,11 @@ pub enum ErrorCode {
     AuthInvalidToken,
     AuthMissingHeader,
     AuthInvalidApiKey,
+    // ── approvals.* ────────────────────────────────────────────────────
+    ApprovalsNotFound,
+    ApprovalsAlreadyResolved,
+    ApprovalsServerNotConnected,
+    ApprovalsAlreadyHandled,
     // Phase 2+: files.*, codex.*, terminal.*, etc. — appended here.
 }
 
@@ -64,6 +69,10 @@ impl ErrorCode {
             Self::AuthInvalidToken => "auth.invalid_token",
             Self::AuthMissingHeader => "auth.missing_header",
             Self::AuthInvalidApiKey => "auth.invalid_api_key",
+            Self::ApprovalsNotFound => "approvals.not_found",
+            Self::ApprovalsAlreadyResolved => "approvals.already_resolved",
+            Self::ApprovalsServerNotConnected => "approvals.server_not_connected",
+            Self::ApprovalsAlreadyHandled => "approvals.already_handled",
         }
     }
 
