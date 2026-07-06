@@ -89,10 +89,8 @@ fn extract_token(req: &Request<Body>) -> (Option<String>, bool) {
 
 /// Only allow `?access_token=` on GET inline file preview paths.
 /// Parity with `api-key.guard.ts:allowsQueryAccessToken`.
+/// NOTE: `req.uri().path()` never contains `?`, so we only match exact paths;
+/// query-param handling happens in the caller after `req.uri().query()`.
 fn allows_query_token(path: &str) -> bool {
-    matches!(
-        path,
-        "/api/files/serve" | "/api/files/archive/entry"
-    ) || path.starts_with("/api/files/serve?")
-        || path.starts_with("/api/files/archive/entry?")
+    matches!(path, "/api/files/serve" | "/api/files/archive/entry")
 }
