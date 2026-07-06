@@ -350,3 +350,13 @@ impl From<axum::http::Error> for AppError {
         Self::Internal(e.to_string())
     }
 }
+
+impl std::fmt::Display for AppError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Business { message, code, .. } => write!(f, "{}: {}", code.as_str(), message),
+            Self::Status { status } => write!(f, "HTTP {}", status),
+            Self::Internal(msg) => write!(f, "internal: {msg}"),
+        }
+    }
+}

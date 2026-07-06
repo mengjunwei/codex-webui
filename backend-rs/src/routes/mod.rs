@@ -100,9 +100,8 @@ pub fn build_router(state: AppState) -> Router {
         .route("/files/write", post(fl::write_file))
         .route("/files/serve", get(fl::serve_file))
         .route("/files/download", get(fl::download_file))
-        // ── onlyoffice (config done; callback deferred) ──
+        // ── onlyoffice config (protected) ──
         .route("/onlyoffice/config", get(oo::get_config))
-        .route("/onlyoffice/callback", post(oo::handle_callback))
         .layer(axum::middleware::from_fn_with_state(
             state.clone(),
             require_auth,
@@ -111,6 +110,8 @@ pub fn build_router(state: AppState) -> Router {
     Router::new()
         .route("/", get(health::root))
         .route("/api/auth/login", post(auth::login))
+        // OnlyOffice callback: public (no auth; Document Server calls directly).
+        .route("/api/onlyoffice/callback", post(oo::handle_callback))
         .nest("/api", api)
         .with_state(state)
 }

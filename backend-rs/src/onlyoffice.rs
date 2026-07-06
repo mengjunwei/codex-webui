@@ -7,16 +7,20 @@
 //! deferred until files service gains multipart/streaming support.
 
 use crate::error::{AppError, ErrorCode};
+use crate::files;
 use crate::state::AppState;
 use axum::{
     extract::{Query, State},
-    http::StatusCode,
+    http::{HeaderMap, StatusCode},
     Json,
 };
-use jsonwebtoken::{encode, Algorithm, EncodingKey, Header};
+use jsonwebtoken::{decode, encode, Algorithm, DecodingKey, EncodingKey, Header, Validation};
 use serde::Deserialize;
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
+use std::path::Path;
+use tokio::io::AsyncWriteExt;
+use url::Url;
 
 fn bad_request(code: ErrorCode, msg: impl Into<String>) -> AppError {
     AppError::business(code, StatusCode::BAD_REQUEST, msg.into(), None)
@@ -208,16 +212,300 @@ pub async fn get_config(
 
 // ── POST /onlyoffice/callback ────────────────────────────────────────────────
 //
-// Stub for now: returns 500 "deferred". The full implementation needs
-// fetch + atomic write + JWT state/callback verification + origin check
-// (parity with TS onlyoffice.controller.ts:handleCallback). The signature
-// here matches the route registration so the frontend gets a 500 (not 404).
+// OnlyOffice save callback — parity with TS handleCallback. Public endpoint
+// (no JWT from frontend; OnlyOffice Document Server calls it directly).
+//
+// Security model:
+// 1. onlyofficeJwtSecret must be configured (edit mode enforces this).
+// 2. State token (signed path+key) verified.
+// 3. OnlyOffice callback JWT (body.token or Authorization header) verified.
+// 4. Download URL origin must match configured onlyofficeUrl (anti-SSRF).
+// 5. File path validated against workspace roots.
+// 6. Atomic write (temp file + rename, size limit, timeout).
+
+const SAVE_TIMEOUT_SECS: u64 = 60;
+const DEFAULT_MAX_SAVE_BYTES: u64 = 104_857_600; // 100 MB
+
+#[derive(Deserialize, Default)]
+pub struct CallbackBody {
+    pub status: Option<i64>,
+    pub url: Option<String>,
+    pub key: Option<String>,
+    pub token: Option<String>,
+}
+
+#[derive(Deserialize)]
+pub struct CallbackQuery {
+    pub path: Option<String>,
+    pub state: Option<String>, // signed JWT state token
+}
+
+#[derive(serde::Deserialize)]
+struct CallbackStatePayload {
+    path: Option<String>,
+    key: Option<String>,
+}
+
+#[derive(serde::Deserialize)]
+struct CallbackJwtPayload {
+    #[serde(flatten)]
+    _extra: std::collections::HashMap<String, Value>,
+}
+
 pub async fn handle_callback(
-    State(_state): State<AppState>,
+    State(state): State<AppState>,
+    Query(q): Query<CallbackQuery>,
+    headers: HeaderMap,
+    Json(body): Json<CallbackBody>,
 ) -> Result<Json<Value>, AppError> {
-    Err(AppError::internal(
-        "OnlyOffice callback requires fetch + atomic write (deferred)".into(),
-    ))
+    // Acknowledge non-save statuses immediately.
+    let status = body.status.unwrap_or(0);
+    if status != 2 && status != 6 {
+        return Ok(Json(json!({ "error": 0 })));
+    }
+
+    let file_path = q.path.as_deref().map(|s| s.trim()).unwrap_or("");
+    if file_path.is_empty() {
+        tracing::warn!("OnlyOffice callback missing file path");
+        return Ok(Json(json!({ "error": 1 })));
+    }
+    let download_url = body.url.as_deref().unwrap_or("");
+    if download_url.is_empty() {
+        tracing::warn!(key = ?body.key, "OnlyOffice save callback missing download URL");
+        return Ok(Json(json!({ "error": 1 })));
+    }
+
+    // Wrap the real work in an async block; any error → {error: 1}.
+    let save_status = body.status.unwrap_or(0);
+    match callback_inner(&state, &q, &body, &headers).await {
+        Ok(()) => {
+            tracing::info!(path = q.path.as_deref().unwrap_or(""), status = save_status, "OnlyOffice document saved");
+            Ok(Json(json!({ "error": 0 })))
+        }
+        Err(e) => {
+            tracing::error!(path = q.path.as_deref().unwrap_or(""), error = %e, "OnlyOffice callback failed");
+            Ok(Json(json!({ "error": 1 })))
+        }
+    }
+}
+
+async fn callback_inner(
+    state: &AppState,
+    q: &CallbackQuery,
+    body: &CallbackBody,
+    headers: &HeaderMap,
+) -> Result<(), AppError> {
+    let reader = state.settings_reader();
+    let file_path = q.path.as_deref().unwrap_or("").trim();
+
+    // 1. JWT secret must be configured.
+    let secret = reader
+        .get_string("general.onlyofficeJwtSecret")
+        .filter(|s| !s.is_empty())
+        .ok_or_else(|| bad_request(ErrorCode::OnlyOfficeJwtRequired, "JWT secret not configured"))?;
+
+    // 2. Verify callback state token (signed path + key in query ?state=).
+    let state_payload = verify_callback_state(q.state.as_deref(), &secret, file_path, body.key.as_deref())?;
+
+    // 3. Verify OnlyOffice callback JWT (body.token or Authorization header).
+    let oo_token = body
+        .token
+        .as_deref()
+        .or_else(|| {
+            headers
+                .get(axum::http::header::AUTHORIZATION)
+                .and_then(|v| v.to_str().ok())
+                .and_then(|h| h.strip_prefix("Bearer ").or(Some(h)))
+        });
+    verify_onlyoffice_token(oo_token, &secret)?;
+
+    // 4. Validate download URL origin against configured OnlyOffice server.
+    let onlyoffice_url = reader
+        .get_string("general.onlyofficeUrl")
+        .filter(|s| !s.is_empty())
+        .ok_or_else(|| bad_request(ErrorCode::OnlyOfficeNotConfigured, "OnlyOffice URL not configured"))?;
+    let download_url = body.url.as_deref().unwrap_or("");
+    validate_download_url(download_url, &onlyoffice_url)?;
+
+    // 5. Validate file path against workspace roots.
+    let resolved = files::resolve_safe_path(state, file_path).await?;
+
+    // 6. Fetch with timeout + size limit, write atomically.
+    let max_bytes = reader
+        .get_number("general.onlyofficeSaveMaxBytes")
+        .map(|n| n as u64)
+        .unwrap_or(DEFAULT_MAX_SAVE_BYTES);
+
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(SAVE_TIMEOUT_SECS))
+        .build()
+        .map_err(|e| AppError::internal(format!("http client: {e}")))?;
+
+    let response = client
+        .get(download_url)
+        .send()
+        .await
+        .map_err(|e| AppError::internal(format!("download failed: {e}")))?;
+
+    if !response.status().is_success() {
+        return Err(AppError::internal(format!(
+            "OnlyOffice download HTTP {}",
+            response.status()
+        )));
+    }
+
+    // Check Content-Length header against limit.
+    if let Some(len) = response.content_length() {
+        if len > max_bytes {
+            return Err(bad_request(
+                ErrorCode::OnlyOfficeSaveTooLarge,
+                "OnlyOffice save payload exceeds size limit",
+            ));
+        }
+    }
+
+    // Stream body to temp file with byte counter.
+    let parent = resolved.parent().unwrap_or(Path::new("."));
+    let tmp_path = parent.join(format!(
+        ".onlyoffice-{}.tmp",
+        uuid::Uuid::new_v4()
+    ));
+    match download_and_write(&tmp_path, response, max_bytes).await {
+        Ok(()) => {
+            tokio::fs::rename(&tmp_path, &resolved)
+                .await
+                .map_err(|e| AppError::internal(format!("rename: {e}")))?;
+            Ok(())
+        }
+        Err(e) => {
+            let _ = tokio::fs::remove_file(&tmp_path).await;
+            Err(e)
+        }
+    }
+}
+
+async fn download_and_write(
+    tmp_path: &Path,
+    response: reqwest::Response,
+    max_bytes: u64,
+) -> Result<(), AppError> {
+    let mut file = tokio::fs::File::create(tmp_path)
+        .await
+        .map_err(|e| AppError::internal(format!("create tmp: {e}")))?;
+
+    // Collect all bytes (up to max_bytes; typical Office docs are <100MB).
+    // For very large files, a streaming approach with reqwest stream feature
+    // would be more memory-efficient, but the size limit guards this path.
+    let bytes = response
+        .bytes()
+        .await
+        .map_err(|e| AppError::internal(format!("download: {e}")))?;
+    if bytes.len() as u64 > max_bytes {
+        return Err(bad_request(
+            ErrorCode::OnlyOfficeSaveTooLarge,
+            "OnlyOffice save payload exceeds size limit",
+        ));
+    }
+    file.write_all(&bytes)
+        .await
+        .map_err(|e| AppError::internal(format!("write: {e}")))?;
+    file.flush()
+        .await
+        .map_err(|e| AppError::internal(format!("flush: {e}")))?;
+    Ok(())
+}
+
+/// Verify the signed callback state token (JWT with {path, key}).
+fn verify_callback_state(
+    state_token: Option<&str>,
+    secret: &str,
+    expected_path: &str,
+    expected_key: Option<&str>,
+) -> Result<CallbackStatePayload, AppError> {
+    let token = state_token.ok_or_else(|| {
+        bad_request(ErrorCode::OnlyOfficeMissingCallbackState, "Missing state token")
+    })?;
+    let mut v = Validation::new(Algorithm::HS256);
+    v.validate_exp = true;
+    v.leeway = 0;
+    let data = decode::<CallbackStatePayload>(
+        token,
+        &DecodingKey::from_secret(secret.as_bytes()),
+        &v,
+    )
+    .map_err(|_| {
+        bad_request(
+            ErrorCode::OnlyOfficeInvalidCallbackState,
+            "Invalid callback state token",
+        )
+    })?;
+    if data.claims.path.as_deref() != Some(expected_path) {
+        return Err(bad_request(
+            ErrorCode::OnlyOfficeInvalidCallbackStatePayload,
+            "Callback state path mismatch",
+        ));
+    }
+    if let (Some(ek), Some(pk)) = (expected_key, data.claims.key.as_deref()) {
+        if ek != pk {
+            return Err(bad_request(
+                ErrorCode::OnlyOfficeInvalidCallbackStatePayload,
+                "Callback state key mismatch",
+            ));
+        }
+    }
+    Ok(data.claims)
+}
+
+/// Verify the OnlyOffice callback JWT (body.token or Authorization header).
+fn verify_onlyoffice_token(token: Option<&str>, secret: &str) -> Result<(), AppError> {
+    let token = token.ok_or_else(|| {
+        bad_request(
+            ErrorCode::OnlyOfficeMissingCallbackJwt,
+            "Missing OnlyOffice callback JWT",
+        )
+    })?;
+    let mut v = Validation::new(Algorithm::HS256);
+    v.validate_exp = true;
+    v.leeway = 0;
+    decode::<CallbackJwtPayload>(
+        token,
+        &DecodingKey::from_secret(secret.as_bytes()),
+        &v,
+    )
+    .map_err(|_| {
+        bad_request(
+            ErrorCode::OnlyOfficeInvalidCallbackJwt,
+            "Invalid OnlyOffice callback JWT",
+        )
+    })?;
+    Ok(())
+}
+
+/// Validate download URL origin matches the configured OnlyOffice server (anti-SSRF).
+fn validate_download_url(raw_url: &str, allowed_origin_url: &str) -> Result<(), AppError> {
+    let download = Url::parse(raw_url).map_err(|_| {
+        bad_request(
+            ErrorCode::OnlyOfficeInvalidDownloadUrl,
+            "Invalid download URL",
+        )
+    })?;
+    if download.scheme() != "http" && download.scheme() != "https" {
+        return Err(bad_request(
+            ErrorCode::OnlyOfficeDownloadUrlNotHttps,
+            "Download URL must use HTTP(S)",
+        ));
+    }
+    let allowed = Url::parse(allowed_origin_url).map_err(|e| {
+        AppError::internal(format!("allowed origin parse: {e}"))
+    })?;
+    // Compare origin (scheme + host + port).
+    if download.origin() != allowed.origin() {
+        return Err(bad_request(
+            ErrorCode::OnlyOfficeDownloadUrlOriginMismatch,
+            "Download URL origin does not match configured OnlyOffice server",
+        ));
+    }
+    Ok(())
 }
 
 // ── helpers ────────────────────────────────────────────────────────────────
