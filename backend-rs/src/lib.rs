@@ -13,6 +13,7 @@ pub mod event_subscribers;
 pub mod logs;
 pub mod logging;
 pub mod proxies;
+pub mod realtime;
 pub mod routes;
 pub mod settings;
 pub mod sqlite_handlers;

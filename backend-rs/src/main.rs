@@ -32,6 +32,9 @@ async fn main() -> anyhow::Result<()> {
     codex_webui::db::run_migrations(&db)?;
     reconcile_settings(&db)?;
 
+    // Auth service (created before AppState so realtime can share it).
+    let auth = Arc::new(AuthService::new(&cfg.webui_api_key));
+
     // Codex app-server process manager (hub). Started in the background so the
     // web server is available even if codex is slow to spawn or unavailable;
     // the manager auto-restarts on failure.
@@ -49,14 +52,22 @@ async fn main() -> anyhow::Result<()> {
     // broadcasts; also expires stale pending requests on boot.
     codex_webui::event_subscribers::spawn_all(db.clone(), codex.clone());
 
+    // Realtime Socket.IO gateway (`/ws` namespace) + emit-forwarding tasks.
+    let rt_state = codex_webui::realtime::RealtimeState {
+        auth: auth.clone(),
+        codex: codex.clone(),
+    };
+    let (ws_layer, io) = codex_webui::realtime::build(rt_state);
+    codex_webui::realtime::spawn_emit_tasks(io, codex.clone());
+
     // Shared state.
     let state = AppState {
         db,
-        auth: Arc::new(AuthService::new(&cfg.webui_api_key)),
+        auth,
         codex,
     };
 
-    let app = build_router(state);
+    let app = build_router(state).layer(ws_layer);
 
     let listener = tokio::net::TcpListener::bind(("0.0.0.0", cfg.port)).await?;
     tracing::info!("listening on 0.0.0.0:{}", cfg.port);
