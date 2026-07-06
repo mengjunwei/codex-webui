@@ -87,7 +87,28 @@ pub enum ErrorCode {
     CodexValueInvalid,
     CodexValueInvalidJson,
     CodexWriteFailed,
-    // Phase 2+: files.*, terminal.*, etc. — appended here.
+    // ── files.* ────────────────────────────────────────────────────────
+    FilesPathRequired,
+    FilesPathNotFound,
+    FilesPathOutsideWorkspace,
+    FilesPathTraversal,
+    FilesPathIsDirectory,
+    FilesPathIsNotDirectory,
+    FilesPathExists,
+    FilesNameRequired,
+    FilesNameInvalid,
+    FilesContentRequired,
+    FilesSourceAndDestRequired,
+    FilesDestRequired,
+    FilesWorkspaceRootNotDir,
+    FilesParentNotDir,
+    FilesNoParentFound,
+    FilesDirNotEmpty,
+    FilesNotWritable,
+    FilesNotDownloadable,
+    FilesFileTooLarge,
+    FilesModifiedSinceRead,
+    // Phase 2+: terminal.*, etc. — appended here.
 }
 
 impl ErrorCode {
@@ -146,6 +167,26 @@ impl ErrorCode {
             Self::CodexValueInvalid => "codex.value_invalid",
             Self::CodexValueInvalidJson => "codex.value_invalid_json",
             Self::CodexWriteFailed => "codex.write_failed",
+            Self::FilesPathRequired => "files.path_required",
+            Self::FilesPathNotFound => "files.path_not_found",
+            Self::FilesPathOutsideWorkspace => "files.path_outside_workspace",
+            Self::FilesPathTraversal => "files.path_traversal",
+            Self::FilesPathIsDirectory => "files.path_is_directory",
+            Self::FilesPathIsNotDirectory => "files.path_is_not_directory",
+            Self::FilesPathExists => "files.path_exists",
+            Self::FilesNameRequired => "files.name_required",
+            Self::FilesNameInvalid => "files.name_invalid",
+            Self::FilesContentRequired => "files.content_required",
+            Self::FilesSourceAndDestRequired => "files.source_and_dest_required",
+            Self::FilesDestRequired => "files.dest_required",
+            Self::FilesWorkspaceRootNotDir => "files.workspace_root_not_dir",
+            Self::FilesParentNotDir => "files.parent_not_dir",
+            Self::FilesNoParentFound => "files.no_parent_found",
+            Self::FilesDirNotEmpty => "files.dir_not_empty",
+            Self::FilesNotWritable => "files.not_writable",
+            Self::FilesNotDownloadable => "files.not_downloadable",
+            Self::FilesFileTooLarge => "files.file_too_large",
+            Self::FilesModifiedSinceRead => "files.modified_since_read",
         }
     }
 

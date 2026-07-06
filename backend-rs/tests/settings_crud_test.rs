@@ -14,6 +14,7 @@ use std::sync::{Arc, Mutex};
 use tower::ServiceExt;
 
 fn state() -> AppState {
+    use std::collections::HashSet;
     let c = Connection::open_in_memory().unwrap();
     let db = Arc::new(Db {
         conn: Mutex::new(c),
@@ -24,6 +25,7 @@ fn state() -> AppState {
         db,
         auth: Arc::new(AuthService::new("test-key")),
         codex: Arc::new(CodexProcessManager::new("codex".into(), None)),
+        dynamic_files_roots: Arc::new(Mutex::new(HashSet::new())),
     }
 }
 

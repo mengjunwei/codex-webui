@@ -18,6 +18,7 @@ use axum::{
 /// - Everything else under `/api/*` — protected by require_auth
 pub fn build_router(state: AppState) -> Router {
     use crate::codex_status_config as csc;
+    use crate::files as fl;
     use crate::proxies as px;
     use crate::settings::handlers as s;
     use crate::sqlite_handlers as sq;
@@ -87,6 +88,15 @@ pub fn build_router(state: AppState) -> Router {
             get(csc::read_config).patch(csc::update_config),
         )
         .route("/codex/config/raw", get(csc::read_raw_config).put(csc::update_raw_config))
+        // ── files (core ops; upload/serve/rename/copy/move deferred) ──
+        .route("/files/roots", get(fl::get_roots).post(fl::add_root))
+        .route("/files/tree", get(fl::read_tree))
+        .route("/files/read", get(fl::read_file))
+        .route("/files/metadata", get(fl::get_metadata))
+        .route("/files/delete", axum::routing::delete(fl::delete_path))
+        .route("/files/create-file", post(fl::create_file))
+        .route("/files/create-directory", post(fl::create_directory))
+        .route("/files/write", post(fl::write_file))
         .layer(axum::middleware::from_fn_with_state(
             state.clone(),
             require_auth,

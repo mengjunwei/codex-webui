@@ -11,6 +11,7 @@ pub mod config;
 pub mod db;
 pub mod error;
 pub mod event_subscribers;
+pub mod files;
 pub mod logs;
 pub mod logging;
 pub mod proxies;

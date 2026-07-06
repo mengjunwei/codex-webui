@@ -10,7 +10,8 @@ use codex_webui::{
     auth::AuthService, codex::CodexProcessManager, config::Config, db::Db, logging,
     routes::build_router, settings::reconcile_settings, state::AppState,
 };
-use std::sync::Arc;
+use std::collections::HashSet;
+use std::sync::{Arc, Mutex};
 use tokio::signal;
 
 #[tokio::main]
@@ -65,6 +66,7 @@ async fn main() -> anyhow::Result<()> {
         db,
         auth,
         codex,
+        dynamic_files_roots: Arc::new(Mutex::new(HashSet::new())),
     };
 
     let app = build_router(state).layer(ws_layer);
