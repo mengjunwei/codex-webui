@@ -110,6 +110,59 @@ pub async fn read_token_usage(
     }))
 }
 
+/// H10 修复：新增仅读取最新一条 token usage 的端点（对齐 TS
+/// `TokenUsageService.readLatestThreadUsage`），比全量查询更高效。
+pub async fn read_latest_token_usage(
+    State(state): State<AppState>,
+    Path(thread_id): Path<String>,
+) -> Result<Json<Option<TurnTokenUsageDto>>, AppError> {
+    let conn = state
+        .db
+        .conn
+        .lock()
+        .map_err(|e| AppError::internal(format!("db lock: {e}")))?;
+
+    let result = conn
+        .query_row(
+            "SELECT turn_id, total_tokens, input_tokens, cached_input_tokens, \
+             output_tokens, reasoning_output_tokens, \
+             last_total_tokens, last_input_tokens, last_cached_input_tokens, \
+             last_output_tokens, last_reasoning_output_tokens, \
+             model_context_window, updated_at \
+             FROM token_usage_snapshots \
+             WHERE thread_id = ?1 \
+             ORDER BY updated_at DESC LIMIT 1",
+            [&thread_id],
+            |r| {
+                Ok(TurnTokenUsageDto {
+                    turn_id: r.get(0)?,
+                    usage: TurnUsageDto {
+                        model_context_window: r.get(11)?,
+                        total: BreakdownDto {
+                            total_tokens: r.get(1)?,
+                            input_tokens: r.get(2)?,
+                            cached_input_tokens: r.get(3)?,
+                            output_tokens: r.get(4)?,
+                            reasoning_output_tokens: r.get(5)?,
+                        },
+                        last: BreakdownDto {
+                            total_tokens: r.get(6)?,
+                            input_tokens: r.get(7)?,
+                            cached_input_tokens: r.get(8)?,
+                            output_tokens: r.get(9)?,
+                            reasoning_output_tokens: r.get(10)?,
+                        },
+                    },
+                    updated_at: r.get(12)?,
+                })
+            },
+        )
+        .optional()
+        .map_err(|e| AppError::internal(format!("query: {e}")))?;
+
+    Ok(Json(result))
+}
+
 // ── turn 差异 ────────────────────────────────────────────────────────────────
 
 #[derive(Serialize)]

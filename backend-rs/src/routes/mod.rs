@@ -58,6 +58,7 @@ pub fn build_router(state: AppState) -> Router {
         // ── auth 登出(受保护,与 TS 对齐)──
         .route("/auth/logout", post(auth::logout))
         // ── 线程维度读取 ──
+        .route("/threads/:threadId/token-usage/latest", get(sq::read_latest_token_usage))
         .route("/threads/:threadId/token-usage", get(sq::read_token_usage))
         .route("/threads/:threadId/turn-diffs", get(sq::read_turn_diffs))
         .route("/threads/:threadId/turn-errors", get(sq::read_turn_errors))

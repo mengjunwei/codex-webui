@@ -165,6 +165,15 @@ fn spawn_turn_diff(db: Arc<Db>, codex: Arc<CodexProcessManager>) {
                 Err(RecvError::Closed) => break,
             }
         }
+        // H9 修复：优雅退出时刷写所有仍在内存中的 diff。
+        // 当 codex 管理器关闭时 broadcast 通道关闭，循环 break，
+        // 转储全部已缓冲的 diff 到数据库（对齐 TS onModuleDestroy flushAll）。
+        for (tid, uid, diff) in buffer.values() {
+            if let Err(e) = persist_turn_diff(&db, tid, uid, diff) {
+                tracing::warn!("turn-diff graceful flush failed: {e}");
+            }
+        }
+        tracing::info!("turn-diff subscriber exiting (flushed {} buffered diffs)", buffer.len());
     });
 }
 
