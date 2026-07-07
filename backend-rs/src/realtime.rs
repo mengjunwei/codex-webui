@@ -73,7 +73,10 @@ fn on_connect(
     s.on("terminal.reconnect", on_term_reconnect);
     s.on("terminal.input", on_term_input);
     s.on("terminal.resize", on_term_resize);
+    s.on("terminal.rename", on_term_rename);
     s.on("terminal.detach", on_term_detach);
+    s.on("terminal.download", on_term_download);
+    s.on("terminal.close", on_term_close);
     // 断开连接时从所有终端分离。
     let term = state.terminal.clone();
     let sid = s.id.clone();
@@ -188,6 +191,34 @@ fn on_term_detach(s: SocketRef, State(state): State<RealtimeState>, SocketData(d
     let tid = data.get("terminalId").and_then(Value::as_str).map(|s| s.to_string());
     state.terminal.detach(s.id.as_str(), tid.as_deref());
     let _ = ack.send(&json!({ "ok": true }));
+}
+
+fn on_term_rename(s: SocketRef, State(state): State<RealtimeState>, SocketData(data): SocketData<Value>, ack: AckSender) {
+    let ctx = data.get("contextKey").and_then(Value::as_str).unwrap_or("").to_string();
+    let tid = data.get("terminalId").and_then(Value::as_str).unwrap_or("").to_string();
+    let title = data.get("title").and_then(Value::as_str).unwrap_or("");
+    match state.terminal.rename(s.id.as_str(), &ctx, &tid, title) {
+        Ok(meta) => { let _ = ack.send(&json!({ "ok": true, "terminal": meta })); }
+        Err(e) => { let _ = ack.send(&json!({ "ok": false, "error": e.to_string() })); }
+    }
+}
+
+fn on_term_download(s: SocketRef, State(state): State<RealtimeState>, SocketData(data): SocketData<Value>, ack: AckSender) {
+    let ctx = data.get("contextKey").and_then(Value::as_str).unwrap_or("").to_string();
+    let tid = data.get("terminalId").and_then(Value::as_str).unwrap_or("").to_string();
+    match state.terminal.download(s.id.as_str(), &ctx, &tid) {
+        Ok((filename, content)) => { let _ = ack.send(&json!({ "ok": true, "filename": filename, "content": content })); }
+        Err(e) => { let _ = ack.send(&json!({ "ok": false, "error": e.to_string() })); }
+    }
+}
+
+fn on_term_close(s: SocketRef, State(state): State<RealtimeState>, SocketData(data): SocketData<Value>, ack: AckSender) {
+    let ctx = data.get("contextKey").and_then(Value::as_str).unwrap_or("").to_string();
+    let tid = data.get("terminalId").and_then(Value::as_str).unwrap_or("").to_string();
+    match state.terminal.close(s.id.as_str(), &ctx, &tid) {
+        Ok(()) => { let _ = ack.send(&json!({ "ok": true })); }
+        Err(e) => { let _ = ack.send(&json!({ "ok": false, "error": e.to_string() })); }
+    }
 }
 
 fn strip_bearer(s: &str) -> &str {

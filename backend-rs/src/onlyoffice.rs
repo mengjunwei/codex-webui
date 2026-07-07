@@ -118,7 +118,7 @@ pub async fn get_config(
     let size = meta.len();
     // H2 修复：用解析后（规范化）的路径生成稳定的文档 key，而非原始输入。
     let mut hasher = Sha256::new();
-    hasher.update(format!("{}:{}:{}", resolved.to_string_lossy(), mtime, size).as_bytes());
+    hasher.update(format!("{}:{}:{}", raw_path, mtime, size).as_bytes());
     let key = format!("{:x}", hasher.finalize());
     let key = key[..key.len().min(48)].to_string();
 
@@ -199,7 +199,7 @@ pub async fn get_config(
         let now = chrono::Utc::now().timestamp() as usize;
         Some(encode(
             &Header::new(Algorithm::HS256),
-            &json!({ "path": resolved.to_string_lossy(), "key": key, "iat": now, "exp": now + 86400 }),
+            &json!({ "path": raw_path, "key": key, "iat": now, "exp": now + 86400 }),
             &EncodingKey::from_secret(s.as_bytes()),
         )
         .map_err(|e| AppError::internal(format!("jwt sign: {e}")))?)

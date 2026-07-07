@@ -462,6 +462,24 @@ impl TerminalService {
         Ok(Self::meta(s))
     }
 
+    /// 重命名终端标签（所有已附着客户端共享）。
+    pub fn rename(&self, socket_id: &str, context_key: &str, terminal_id: &str, title: &str)
+        -> Result<TerminalMetadata, AppError>
+    {
+        let mut sessions = self.sessions.lock().unwrap();
+        let s = sessions.get_mut(terminal_id)
+            .ok_or_else(|| not_found("terminal not found"))?;
+        if s.context_key != context_key { return Err(context_mismatch()); }
+        if !s.attached.contains(socket_id) { return Err(not_attached()); }
+        let trimmed = title.trim();
+        if trimmed.is_empty() {
+            return Err(bad_request(ErrorCode::TerminalInvalidContext, "title must not be empty".to_string()));
+        }
+        s.title = trimmed.to_string();
+        self.emit_metadata(s);
+        Ok(Self::meta(s))
+    }
+
     /// 显式关闭某个终端。
     pub fn close(&self, _socket_id: &str, context_key: &str, terminal_id: &str)
         -> Result<(), AppError>
