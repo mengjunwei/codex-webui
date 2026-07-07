@@ -1,7 +1,7 @@
 //! Terminal service — shared PTY sessions with wezterm VT state reconnect.
 //!
 //! Parity with `src/terminal/terminal.service.ts` + `terminal.gateway.ts`.
-//! Uses tattoy-wezterm-term for full VT100/VT220 emulation (cursor position,
+//! Uses wezterm-term for full VT100/VT220 emulation (cursor position,
 //! alternate screen, colors, scrollback). Reconnect serializes the screen
 //! state for xterm.js rendering — no raw byte replay.
 
@@ -12,8 +12,8 @@ use serde::Serialize;
 use serde_json::{json, Value};
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::{Arc, Mutex};
-use tattoy_wezterm_term::{Terminal, TerminalConfiguration, TerminalSize, config};
-use tattoy_wezterm_term::color::ColorPalette;
+use wezterm_term::{Terminal, TerminalConfiguration, TerminalSize, config};
+use wezterm_term::color::ColorPalette;
 use tokio::sync::broadcast;
 
 // ── Public types (parity with terminal.types.ts) ─────────────────────────────
@@ -301,7 +301,7 @@ impl TerminalService {
         Ok(meta)
     }
 
-    /// Attach a socket and return serialized VT screen state for reconnect.
+    /// Attach a socket and return VT screen state for reconnect.
     pub fn reconnect(&self, socket_id: &str, context_key: &str, terminal_id: &str)
         -> Result<(TerminalMetadata, Vec<String>), AppError>
     {
@@ -312,9 +312,9 @@ impl TerminalService {
         s.attached.insert(socket_id.to_string());
         if let Some(h) = s.grace_handle.take() { h.abort(); }
         let meta = Self::meta(s);
-        // Reconnect: replay ring buffer (raw PTY output for xterm.js).
-        let buf: Vec<String> = s.ring_buffer.lock().unwrap().iter().cloned().collect();
-        Ok((meta, buf))
+        // Serialize VT screen: scrollback + visible lines via wezterm Terminal.
+        let state = serialize_terminal_screen(&s.vt_terminal.lock().unwrap());
+        Ok((meta, vec![state]))
     }
 
     /// Detach a socket from one or all terminals.
@@ -456,7 +456,22 @@ impl TerminalService {
 }
 
 // ── VT screen serialization ─────────────────────────────────────────────────
-// (Reserved for future VT-state reconnect; currently using ring buffer replay.)
+
+/// Serialize the wezterm terminal's screen (scrollback + visible lines) into
+/// a single string. Uses scrollback_rows() + lines_in_phys_range() (non-test
+/// public API in original wezterm-term).
+fn serialize_terminal_screen(term: &Terminal) -> String {
+    let screen = term.screen();
+    let total = screen.scrollback_rows();
+    let lines = screen.lines_in_phys_range(0..total);
+    let mut out = String::new();
+    for line in &lines {
+        let text: std::borrow::Cow<str> = line.as_str();
+        out.push_str(text.trim_end());
+        out.push('\n');
+    }
+    out
+}
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
 
