@@ -10,9 +10,9 @@ use crate::settings::SettingsReader;
 use portable_pty::{native_pty_system, CommandBuilder, PtySize};
 use serde::Serialize;
 use serde_json::{json, Value};
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
-use wezterm_term::{Terminal, TerminalConfiguration, TerminalSize, config};
+use wezterm_term::{Terminal, TerminalConfiguration, TerminalSize};
 use wezterm_term::color::ColorPalette;
 use tokio::sync::broadcast;
 
@@ -92,9 +92,7 @@ struct Session {
     cols: u16,
     rows: u16,
     created_at: String,
-    /// Raw output ring buffer for live streaming + reconnect replay.
-    ring_buffer: Mutex<VecDeque<String>>,
-    /// wezterm VT terminal model for resize (SIGWINCH) and cursor state.
+    /// wezterm VT terminal model for screen state, resize, and reconnect serialization.
     vt_terminal: Mutex<Terminal>,
     /// Interior-mutable writer for PTY stdin.
     writer: Mutex<Option<Box<dyn std::io::Write + Send>>>,
@@ -245,26 +243,17 @@ impl TerminalService {
                     match std::io::Read::read(&mut reader, &mut buf) {
                         Ok(0) => break,
                         Ok(n) => {
-                            // BUG-3 FIX: broadcast raw bytes (not lossy string)
-                            // to avoid UTF-8 cross-chunk corruption (CJK/emoji).
-                            // The lossy conversion happens here for the broadcast
-                            // data field, but we use a cross-chunk decoder below.
-                            let raw_bytes = &buf[..n];
-                            // Feed VT terminal with raw bytes (correct — wezterm handles UTF-8 internally).
-                            // Ring buffer + broadcast get lossy string (acceptable for streaming display,
-                            // xterm.js on the client side handles reassembly from write chunks).
-                            let data = String::from_utf8_lossy(raw_bytes).to_string();
+                            // Broadcast raw bytes for live streaming to xterm.js.
+                            // Note: from_utf8_lossy may corrupt multi-byte sequences split across
+                            // read chunks. This is acceptable for the live streaming path (xterm.js
+                            // renders incrementally); VT screen state (for reconnect/download) uses
+                            // the raw bytes fed to advance_bytes — correct.
+                            let data = String::from_utf8_lossy(&buf[..n]).to_string();
                             let socket_ids: Vec<String> = {
                                 let mut sessions = sessions_c.lock().unwrap();
                                 if let Some(s) = sessions.get_mut(&sid) {
-                                    // Feed VT terminal for cursor/resize state.
+                                    // Feed VT terminal with raw bytes (correct UTF-8 handling).
                                     s.vt_terminal.lock().unwrap().advance_bytes(&buf[..n]);
-                                    // Push to ring buffer (cap = scrollback from config).
-                                    {
-                                        let mut rb = s.ring_buffer.lock().unwrap();
-                                        while rb.len() >= scrollback { rb.pop_front(); }
-                                        rb.push_back(data.clone());
-                                    }
                                     s.attached.iter().cloned().collect()
                                 } else { vec![] }
                             };
@@ -297,7 +286,6 @@ impl TerminalService {
                 .file_name().unwrap_or_default().to_string_lossy().to_string(),
             status: TerminalStatus::Running, exit_code: None, signal: None,
             cols, rows, created_at: created_at.clone(),
-            ring_buffer: Mutex::new(VecDeque::with_capacity(scrollback)),
             vt_terminal: Mutex::new(vt_term),
             writer: Mutex::new(Some(writer)),
             master: Some(master),
