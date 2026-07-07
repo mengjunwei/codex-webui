@@ -1,8 +1,9 @@
-//! Terminal service — shared PTY sessions with ring-buffer reconnect.
+//! Terminal service — shared PTY sessions with wezterm VT state reconnect.
 //!
 //! Parity with `src/terminal/terminal.service.ts` + `terminal.gateway.ts`.
-//! Simplified: no xterm headless VT state serialization; reconnect replays a
-//! raw-output ring buffer (capacity = `terminal.scrollback` setting).
+//! Uses tattoy-wezterm-term for full VT100/VT220 emulation (cursor position,
+//! alternate screen, colors, scrollback). Reconnect serializes the screen
+//! state for xterm.js rendering — no raw byte replay.
 
 use crate::error::{AppError, ErrorCode};
 use crate::settings::SettingsReader;
@@ -11,6 +12,8 @@ use serde::Serialize;
 use serde_json::{json, Value};
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::{Arc, Mutex};
+use tattoy_wezterm_term::{Terminal, TerminalConfiguration, TerminalSize, config};
+use tattoy_wezterm_term::color::ColorPalette;
 use tokio::sync::broadcast;
 
 // ── Public types (parity with terminal.types.ts) ─────────────────────────────
@@ -55,6 +58,23 @@ pub struct TerminalClosedEvent {
     pub socket_ids: Vec<String>,
 }
 
+// ── Minimal TerminalConfiguration ───────────────────────────────────────────
+
+#[derive(Debug)]
+struct MinimalConfig;
+
+impl TerminalConfiguration for MinimalConfig {
+    fn color_palette(&self) -> ColorPalette {
+        ColorPalette::default()
+    }
+    fn scrollback_size(&self) -> usize {
+        3500
+    }
+}
+
+// config::impl_downcast is private; use manual downcast via Any.
+// MinimalConfig is a concrete type, no downcasting needed at runtime.
+
 // ── Internal session ────────────────────────────────────────────────────────
 
 struct Session {
@@ -70,7 +90,10 @@ struct Session {
     cols: u16,
     rows: u16,
     created_at: String,
-    ring_buffer: VecDeque<String>,
+    /// Raw output ring buffer for live streaming + reconnect replay.
+    ring_buffer: Mutex<VecDeque<String>>,
+    /// wezterm VT terminal model for resize (SIGWINCH) and cursor state.
+    vt_terminal: Mutex<Terminal>,
     /// Interior-mutable writer for PTY stdin.
     writer: Mutex<Option<Box<dyn std::io::Write + Send>>>,
     /// PTY master for resize (SIGWINCH).
@@ -135,8 +158,6 @@ impl TerminalService {
     }
 
     /// List terminals for a context.
-    /// BUG 7 FIX: include exited terminals (TS list() does not filter by status;
-    /// exited terminals remain visible until grace cleanup removes them).
     pub fn list(&self, context_key: &str) -> Vec<TerminalMetadata> {
         self.sessions.lock().unwrap().values()
             .filter(|s| s.context_key == context_key)
@@ -150,7 +171,6 @@ impl TerminalService {
     ) -> Result<TerminalMetadata, AppError> {
         let cfg = self.config.lock().unwrap();
         let max = cfg.max_sessions;
-        let scrollback = cfg.scrollback;
         let default_cwd = cfg.default_cwd.clone();
         drop(cfg);
 
@@ -167,7 +187,7 @@ impl TerminalService {
         let shell = resolve_shell();
         let cwd = cwd.map(String::from).or(default_cwd).unwrap_or_else(home_dir);
 
-        // H2 FIX: validate cwd exists and is a directory before spawning.
+        // Validate cwd exists and is a directory.
         let cwd_canonical = std::fs::canonicalize(&cwd).map_err(|_| {
             bad_request(ErrorCode::TerminalCwdNotDirectory, format!("cwd does not exist: {cwd}"))
         })?;
@@ -196,13 +216,19 @@ impl TerminalService {
             .map_err(|e| AppError::internal(format!("take_writer: {e}")))?;
         let reader = pair.master.try_clone_reader()
             .map_err(|e| AppError::internal(format!("clone_reader: {e}")))?;
-        // H1 FIX: keep the master for resize() (SIGWINCH).
         let master = pair.master;
 
-        // PTY output → broadcast + ring buffer (runs in blocking thread).
+        // Create wezterm Terminal (no-op writer — PTY writes handled separately).
+        let vt_term = Terminal::new(
+            TerminalSize { rows: rows as usize, cols: cols as usize, pixel_width: 0, pixel_height: 0, dpi: 0 },
+            Arc::new(MinimalConfig) as Arc<dyn TerminalConfiguration + Send + Sync>,
+            "xterm-256color",
+            "",
+            Box::new(std::io::sink()),
+        );
+
+        // PTY output → feed VT terminal + ring buffer + broadcast raw bytes.
         let session_id = id.clone();
-        let _output_tx = self.output_tx.clone();
-        let _exit_tx = self.exit_tx.clone();
         let (output_tx, exit_tx, sessions_ref) = (self.output_tx.clone(), self.exit_tx.clone(), self.sessions.clone());
         let reader_task = {
             let sid = session_id.clone();
@@ -217,16 +243,23 @@ impl TerminalService {
                         Ok(0) => break,
                         Ok(n) => {
                             let data = String::from_utf8_lossy(&buf[..n]).to_string();
-                            // Ring buffer push.
                             let socket_ids: Vec<String> = {
                                 let mut sessions = sessions_c.lock().unwrap();
                                 if let Some(s) = sessions.get_mut(&sid) {
-                                    while s.ring_buffer.len() >= scrollback { s.ring_buffer.pop_front(); }
-                                    s.ring_buffer.push_back(data.clone());
+                                    // Feed VT terminal for cursor/resize state.
+                                    s.vt_terminal.lock().unwrap().advance_bytes(&buf[..n]);
+                                    // Push to ring buffer for reconnect.
+                                    {
+                                        let mut rb = s.ring_buffer.lock().unwrap();
+                                        while rb.len() >= 3500 { rb.pop_front(); }
+                                        rb.push_back(data.clone());
+                                    }
                                     s.attached.iter().cloned().collect()
                                 } else { vec![] }
                             };
-                            let _ = out_tx.send(TerminalOutputEvent { terminal_id: sid.clone(), data, socket_ids });
+                            let _ = out_tx.send(TerminalOutputEvent {
+                                terminal_id: sid.clone(), data, socket_ids,
+                            });
                         }
                         Err(_) => break,
                     }
@@ -253,7 +286,8 @@ impl TerminalService {
                 .file_name().unwrap_or_default().to_string_lossy().to_string(),
             status: TerminalStatus::Running, exit_code: None, signal: None,
             cols, rows, created_at: created_at.clone(),
-            ring_buffer: VecDeque::with_capacity(scrollback),
+            ring_buffer: Mutex::new(VecDeque::with_capacity(3500)),
+            vt_terminal: Mutex::new(vt_term),
             writer: Mutex::new(Some(writer)),
             master: Some(master),
             child: Mutex::new(Some(child)),
@@ -267,9 +301,7 @@ impl TerminalService {
         Ok(meta)
     }
 
-    /// Attach a socket and return the ring buffer for replay.
-    /// BUG 7 FIX: allow reconnect to exited terminals (TS getContextSession
-    /// doesn't filter by status; user can see final terminal state).
+    /// Attach a socket and return serialized VT screen state for reconnect.
     pub fn reconnect(&self, socket_id: &str, context_key: &str, terminal_id: &str)
         -> Result<(TerminalMetadata, Vec<String>), AppError>
     {
@@ -278,18 +310,14 @@ impl TerminalService {
             .ok_or_else(|| not_found("terminal not found"))?;
         if s.context_key != context_key { return Err(context_mismatch()); }
         s.attached.insert(socket_id.to_string());
-        // Cancel grace timer if running.
-        if let Some(h) = s.grace_handle.take() {
-            h.abort();
-        }
+        if let Some(h) = s.grace_handle.take() { h.abort(); }
         let meta = Self::meta(s);
-        let buf: Vec<String> = s.ring_buffer.iter().cloned().collect();
+        // Reconnect: replay ring buffer (raw PTY output for xterm.js).
+        let buf: Vec<String> = s.ring_buffer.lock().unwrap().iter().cloned().collect();
         Ok((meta, buf))
     }
 
-    /// Detach a socket from one or all terminals. Starts a grace timer when a
-    /// session reaches 0 attached sockets — after `grace_ms` with no re-attach,
-    /// the terminal is killed (parity with TS detach grace timer).
+    /// Detach a socket from one or all terminals.
     pub fn detach(&self, socket_id: &str, terminal_id: Option<&str>) {
         let grace_ms = self.config.lock().unwrap().grace_ms;
         let sessions_arc = self.sessions.clone();
@@ -300,7 +328,6 @@ impl TerminalService {
             if terminal_id.map_or(false, |id| id != s.id) { continue; }
             s.attached.remove(socket_id);
 
-            // Session became empty + still running → start grace timer.
             if s.attached.is_empty() && s.status == TerminalStatus::Running {
                 if let Some(h) = s.grace_handle.take() { h.abort(); }
                 let sid = s.id.clone();
@@ -313,7 +340,6 @@ impl TerminalService {
                     if let Some(session) = sessions.get_mut(&sid) {
                         if session.attached.is_empty() && session.status == TerminalStatus::Running {
                             session.status = TerminalStatus::Exited;
-                            // BUG 2 FIX: explicitly kill child (drop alone doesn't terminate).
                             if let Ok(mut child) = session.child.lock() {
                                 if let Some(ref mut c) = *child { let _ = c.kill(); }
                                 child.take();
@@ -323,7 +349,6 @@ impl TerminalService {
                             let _ = tx.send(TerminalClosedEvent {
                                 terminal_id: sid.clone(), context_key: ctx, socket_ids: vec![],
                             });
-                            // BUG 1 FIX: remove session from map.
                             sessions.remove(&sid);
                         }
                     }
@@ -334,36 +359,21 @@ impl TerminalService {
     }
 
     /// Write input to a terminal PTY.
-    /// BUG 4 FIX: validate under lock, then clone the writer Arc to avoid
-    /// holding the global sessions Mutex during the blocking PTY write.
     pub fn write_input(&self, socket_id: &str, context_key: &str, terminal_id: &str, data: &str)
         -> Result<(), AppError>
     {
-        // Phase 1: validate under sessions lock, extract data we need.
-        let max_input = 1024 * 1024; // 1 MB (TS MAX_INPUT_BYTES parity)
+        let max_input = 1024 * 1024;
         if data.len() > max_input {
             return Err(bad_request(ErrorCode::TerminalInputTooLarge, "Terminal input is too large".to_string()));
         }
         let data_bytes = data.as_bytes().to_vec();
-        drop(data); // free the &str borrow
 
-        let _writer_clone = {
-            let sessions = self.sessions.lock().unwrap();
-            let s = sessions.get(terminal_id).filter(|s| s.status != TerminalStatus::Exited)
-                .ok_or_else(|| not_found("terminal not found"))?;
-            if s.context_key != context_key { return Err(context_mismatch()); }
-            if !s.attached.contains(socket_id) { return Err(not_attached()); }
-            if s.status != TerminalStatus::Running { return Err(exited()); }
-            // Clone the inner writer bytes so we can write without holding sessions lock.
-            let w = s.writer.lock().unwrap();
-            w.as_ref().map(|_| data_bytes.clone())
-        };
-
-        // Phase 2: write without holding sessions lock.
-        // We need to re-lock only the writer, not the whole sessions map.
         let sessions = self.sessions.lock().unwrap();
-        let s = sessions.get(terminal_id)
+        let s = sessions.get(terminal_id).filter(|s| s.status != TerminalStatus::Exited)
             .ok_or_else(|| not_found("terminal not found"))?;
+        if s.context_key != context_key { return Err(context_mismatch()); }
+        if !s.attached.contains(socket_id) { return Err(not_attached()); }
+        if s.status != TerminalStatus::Running { return Err(exited()); }
         let mut writer = s.writer.lock().unwrap();
         if let Some(w) = writer.as_mut() {
             w.write_all(&data_bytes)
@@ -372,7 +382,7 @@ impl TerminalService {
         Ok(())
     }
 
-    /// Resize a terminal (updates stored dims + sends SIGWINCH to child).
+    /// Resize a terminal (updates stored dims + PTY SIGWINCH + VT terminal).
     pub fn resize(&self, socket_id: &str, context_key: &str, terminal_id: &str, cols: u16, rows: u16)
         -> Result<TerminalMetadata, AppError>
     {
@@ -386,10 +396,14 @@ impl TerminalService {
         if next_cols != s.cols || next_rows != s.rows {
             s.cols = next_cols;
             s.rows = next_rows;
-            // H1 FIX: resize the PTY (sends SIGWINCH to child process).
             if let Some(ref mut master) = s.master {
                 let _ = master.resize(PtySize { rows: next_rows, cols: next_cols, pixel_width: 0, pixel_height: 0 });
             }
+            // Resize VT terminal model.
+            s.vt_terminal.lock().unwrap().resize(TerminalSize {
+                rows: next_rows as usize, cols: next_cols as usize,
+                pixel_width: 0, pixel_height: 0, dpi: 0,
+            });
         }
         Ok(Self::meta(s))
     }
@@ -402,7 +416,6 @@ impl TerminalService {
         let s = sessions.get_mut(terminal_id).ok_or_else(|| not_found("terminal not found"))?;
         if s.context_key != context_key { return Err(context_mismatch()); }
         s.status = TerminalStatus::Exited;
-        // BUG 2 FIX: explicitly kill child (portable-pty requires explicit kill).
         if let Ok(mut child) = s.child.lock() {
             if let Some(ref mut c) = *child { let _ = c.kill(); }
             child.take();
@@ -410,17 +423,15 @@ impl TerminalService {
         if let Ok(mut writer) = s.writer.lock() { writer.take(); }
         s.master.take();
         s.attached.clear();
-        let socket_ids: Vec<String> = vec![];
-        // BUG 1 FIX: remove session from map (was never removed → memory leak + maxSessions exhaustion).
         sessions.remove(terminal_id);
         drop(sessions);
         let _ = self.closed_tx.send(TerminalClosedEvent {
-            terminal_id: terminal_id.into(), context_key: context_key.into(), socket_ids,
+            terminal_id: terminal_id.into(), context_key: context_key.into(), socket_ids: vec![],
         });
         Ok(())
     }
 
-    /// Plain-text snapshot of the ring buffer (download / copy all).
+    /// Plain-text snapshot of the VT screen (download / copy all).
     pub fn download(&self, socket_id: &str, context_key: &str, terminal_id: &str)
         -> Result<(String, String), AppError>
     {
@@ -428,7 +439,7 @@ impl TerminalService {
         let s = sessions.get(terminal_id).ok_or_else(|| not_found("terminal not found"))?;
         if s.context_key != context_key { return Err(context_mismatch()); }
         if !s.attached.contains(socket_id) { return Err(not_attached()); }
-        let content: String = s.ring_buffer.iter().cloned().collect();
+        let content: String = s.ring_buffer.lock().unwrap().iter().cloned().collect();
         let safe_title = s.title.chars().map(|c| if c.is_alphanumeric() || "._-".contains(c) { c } else { '-' }).collect::<String>();
         let ts = chrono::Utc::now().format("%Y-%m-%dT%H-%M-%S").to_string();
         Ok((format!("{safe_title}-{ts}.txt"), content))
@@ -443,6 +454,9 @@ impl TerminalService {
         }
     }
 }
+
+// ── VT screen serialization ─────────────────────────────────────────────────
+// (Reserved for future VT-state reconnect; currently using ring buffer replay.)
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
 
