@@ -1520,7 +1520,10 @@ fn list_archive_entries(path: &Path) -> Result<Vec<serde_json::Value>, ArchiveLi
             std::fs::File::open(path).map_err(|e| Other(e.to_string()))?,
         )),
         ArchiveFormat::SevenZip => list_sevenzip(path),
-        ArchiveFormat::TarBz2 | ArchiveFormat::TarXz => Err(UnsupportedFormat),
+        ArchiveFormat::TarBz2 => list_tar(bzip2_rs::DecoderReader::new(
+            std::fs::File::open(path).map_err(|e| Other(e.to_string()))?,
+        )),
+        ArchiveFormat::TarXz => Err(UnsupportedFormat),
     }
 }
 
@@ -1636,9 +1639,13 @@ fn read_archive_entry(path: &Path, entry_name: &str) -> Result<Vec<u8>, ArchiveR
                 .map_err(|e| Other(e.to_string()))?;
             result
         }
-        ArchiveFormat::TarBz2 | ArchiveFormat::TarXz => {
-            // bz2/xz 解码器需要额外的 crate；暂未实现。
-            Err(Other("bz2/xz archive entry extraction not yet supported".into()))
+        ArchiveFormat::TarBz2 => read_tar_entry(
+            bzip2_rs::DecoderReader::new(std::fs::File::open(path).map_err(|e| Other(e.to_string()))?),
+            entry_name,
+        ),
+        ArchiveFormat::TarXz => {
+            // xz 暂无纯 Rust 流式 Read 包装;需要时再引入。
+            Err(Other("xz archive entry extraction not yet supported".into()))
         }
     }
 }
