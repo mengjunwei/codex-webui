@@ -128,17 +128,40 @@ pub async fn get_config(
         .get_string("general.publicBaseUrl")
         .filter(|s| !s.is_empty())
         .unwrap_or_default();
-    if base_url.is_empty() {
-        return Err(bad_request(
-            ErrorCode::OnlyOfficePublicHostRequired,
-            "Cannot determine public host. Configure general.publicBaseUrl in Settings.",
-        ));
-    }
-    let base_url = normalize_http_base_url(&base_url, "general.publicBaseUrl")
-        .map_err(|_| bad_request(
-            ErrorCode::OnlyOfficeInvalidUrl,
-            "general.publicBaseUrl must be a valid http(s) URL",
-        ))?;
+    // H3 FIX: auto-detect from request headers when publicBaseUrl is empty
+    // (TS onlyoffice.controller.ts:518-546).
+    let base_url = if !base_url.is_empty() {
+        normalize_http_base_url(&base_url, "general.publicBaseUrl")
+            .map_err(|_| bad_request(
+                ErrorCode::OnlyOfficeInvalidUrl,
+                "general.publicBaseUrl must be a valid http(s) URL",
+            ))?
+    } else {
+        let proto = headers.get("x-forwarded-proto")
+            .and_then(|v| v.to_str().ok())
+            .and_then(|s| s.split(',').next())
+            .map(|s| s.trim().to_string())
+            .unwrap_or_else(|| "http".to_string());
+        let host = headers.get("x-forwarded-host")
+            .and_then(|v| v.to_str().ok())
+            .and_then(|s| s.split(',').next())
+            .map(|s| s.trim().to_string())
+            .or_else(|| headers.get(axum::http::header::HOST).and_then(|v| v.to_str().ok()).map(|s| s.to_string()));
+        match host {
+            Some(h) if !h.is_empty() => {
+                let inferred = format!("{proto}://{h}");
+                normalize_http_base_url(&inferred, "request host headers")
+                    .map_err(|_| bad_request(
+                        ErrorCode::OnlyOfficePublicHostRequired,
+                        "Cannot determine public host from request headers. Configure general.publicBaseUrl.",
+                    ))?
+            }
+            _ => return Err(bad_request(
+                ErrorCode::OnlyOfficePublicHostRequired,
+                "Cannot determine public host. Configure general.publicBaseUrl in Settings.",
+            )),
+        }
+    };
 
     // Extract caller's bearer JWT for the document URL (OnlyOffice Document Server
     // fetches without credentials — needs access_token query per RFC 6750 §2.3).
