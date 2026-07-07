@@ -171,7 +171,8 @@ pub fn validate_value(
     def: &SettingDef,
     value: &serde_json::Value,
 ) -> Result<serde_json::Value, String> {
-    match def.ty {
+    // 先按类型归一化（number 范围/整数校验在此完成）。
+    let normalized = match def.ty {
         SettingType::Number => {
             let n = value
                 .as_f64()
@@ -189,19 +190,53 @@ pub fn validate_value(
                     return Err(format!("{} must be <= {}", def.key, max));
                 }
             }
-            Ok(num_value(n))
+            num_value(n)
         }
         SettingType::String => match value {
-            serde_json::Value::String(_) => Ok(value.clone()),
+            serde_json::Value::String(_) => value.clone(),
             // null → 视作空字符串（与 TS 对齐，TS 会拒绝非字符串；
             // 但 PATCH 的 null 表示“重置”，由 handler 层处理）。
-            _ => Err(format!("expected string for {}", def.key)),
+            _ => return Err(format!("expected string for {}", def.key)),
         },
         SettingType::Boolean => value
             .as_bool()
             .map(serde_json::Value::Bool)
-            .ok_or_else(|| format!("expected boolean for {}", def.key)),
-        SettingType::Json => Ok(value.clone()),
+            .ok_or_else(|| format!("expected boolean for {}", def.key))?,
+        // JSON 类型：递归校验合法性（对齐 TS isJsonValue + validateValue 的 json 分支）。
+        // 拒绝 null；对象键名禁止 __proto__/constructor/prototype（防原型污染）。
+        SettingType::Json => {
+            if !is_valid_json_value(value) {
+                return Err(format!("{} must be JSON", def.key));
+            }
+            value.clone()
+        }
+    };
+
+    // enum 约束校验（对齐 TS constraints.enum）：归一化后的值必须命中其一。
+    if let Some(enum_values) = &def.constraints.enum_values {
+        if !enum_values.iter().any(|c| c == &normalized) {
+            return Err(format!("{} is not an allowed value", def.key));
+        }
+    }
+
+    Ok(normalized)
+}
+
+/// 递归校验 JSON 值的合法性（对齐 TS settings.service.ts:isJsonValue，
+/// 并增加原型污染键名防护）。
+/// - null 视为非法（validateValue 的 json 分支要求 value !== null）
+/// - serde_json::Number 不含 NaN/Infinity，等价于 TS Number.isFinite 校验
+/// - 对象键名禁止 __proto__/constructor/prototype
+fn is_valid_json_value(value: &serde_json::Value) -> bool {
+    match value {
+        serde_json::Value::Null => false,
+        serde_json::Value::Bool(_)
+        | serde_json::Value::Number(_)
+        | serde_json::Value::String(_) => true,
+        serde_json::Value::Array(arr) => arr.iter().all(is_valid_json_value),
+        serde_json::Value::Object(obj) => obj.iter().all(|(k, v)| {
+            k != "__proto__" && k != "constructor" && k != "prototype" && is_valid_json_value(v)
+        }),
     }
 }
 

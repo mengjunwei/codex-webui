@@ -32,7 +32,7 @@ pub async fn upload_attachment(
     maybe_sweep_uploads(&upload_root);
 
     // 只读取一个文件 part（字段名为 "file"）。
-    while let Ok(Some(field)) = multipart.next_field().await {
+    while let Ok(Some(mut field)) = multipart.next_field().await {
         if field.name() != Some("file") {
             continue; // 跳过非文件 part
         }
@@ -64,10 +64,45 @@ pub async fn upload_attachment(
         let target_path = upload_root.join(format!("{id}{extension}"));
         let tmp_path = upload_root.join(format!(".{id}.tmp"));
 
-        // 读取字段数据并施加大小限制。
-        let data = field.bytes().await
-            .map_err(|e| AppError::internal(format!("read multipart: {e}")))?;
-        if data.len() as u64 > max_bytes {
+        // 流式写入临时文件 + 累计字节（对齐 TS pipeline；避免大文件全量缓冲导致内存峰值）。
+        // 先创建临时文件（unix 以 0o600，对齐 TS mode:0o600），再用 chunk 流式写入。
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            std::fs::OpenOptions::new()
+                .write(true).create(true).truncate(true).mode(0o600)
+                .open(&tmp_path)
+                .map_err(|e| AppError::internal(format!("open tmp: {e}")))?;
+        }
+        #[cfg(not(unix))]
+        {
+            std::fs::File::create(&tmp_path)
+                .map_err(|e| AppError::internal(format!("create tmp: {e}")))?;
+        }
+        let mut tmp = tokio::fs::OpenOptions::new()
+            .write(true)
+            .open(&tmp_path)
+            .await
+            .map_err(|e| AppError::internal(format!("open tmp: {e}")))?;
+        let mut total: u64 = 0;
+        let mut oversize = false;
+        while let Some(chunk) = field
+            .chunk()
+            .await
+            .map_err(|e| AppError::internal(format!("read multipart: {e}")))?
+        {
+            total = total.saturating_add(chunk.len() as u64);
+            if total > max_bytes {
+                oversize = true;
+                break;
+            }
+            use tokio::io::AsyncWriteExt;
+            tmp.write_all(&chunk)
+                .await
+                .map_err(|e| AppError::internal(format!("write tmp: {e}")))?;
+        }
+        drop(tmp);
+        if oversize {
             let _ = tokio::fs::remove_file(&tmp_path).await;
             return Err(AppError::business(
                 ErrorCode::FilesUploadTooLarge,
@@ -76,30 +111,12 @@ pub async fn upload_attachment(
                 None,
             ));
         }
-
-        // 原子写入：临时文件 → 重命名（unix 下以 0o600 创建，对齐 TS mode:0o600）。
-        #[cfg(unix)]
-        {
-            use std::io::Write;
-            use std::os::unix::fs::OpenOptionsExt;
-            std::fs::OpenOptions::new()
-                .write(true).create(true).truncate(true).mode(0o600)
-                .open(&tmp_path)
-                .map_err(|e| AppError::internal(format!("open tmp: {e}")))?
-                .write_all(&data)
-                .map_err(|e| AppError::internal(format!("write tmp: {e}")))?;
+        if let Err(e) = tokio::fs::rename(&tmp_path, &target_path).await {
+            let _ = tokio::fs::remove_file(&tmp_path).await;
+            return Err(AppError::internal(format!("rename: {e}")));
         }
-        #[cfg(not(unix))]
-        {
-            tokio::fs::write(&tmp_path, &data)
-                .await
-                .map_err(|e| AppError::internal(format!("write tmp: {e}")))?;
-        }
-        tokio::fs::rename(&tmp_path, &target_path)
-            .await
-            .map_err(|e| AppError::internal(format!("rename: {e}")))?;
 
-        let size = data.len();
+        let size = total;
         tracing::info!(path = %target_path.display(), size, "chat upload saved");
 
         return Ok(Json(json!({

@@ -25,6 +25,11 @@ fn bad_request(code: ErrorCode, msg: impl Into<String>) -> AppError {
     AppError::business(code, StatusCode::BAD_REQUEST, msg.into(), None)
 }
 
+/// 413 Payload Too Large —— 对齐 TS BusinessException.payloadTooLarge。
+fn payload_too_large(code: ErrorCode, msg: impl Into<String>) -> AppError {
+    AppError::business(code, StatusCode::PAYLOAD_TOO_LARGE, msg.into(), None)
+}
+
 // ── GET /onlyoffice/config?path=…&mode=… ────────────────────────────────────
 
 #[derive(Deserialize)]
@@ -420,7 +425,7 @@ async fn callback_inner(
     // 校验 Content-Length 请求头是否超出限制。
     if let Some(len) = response.content_length() {
         if len > max_bytes {
-            return Err(bad_request(
+            return Err(payload_too_large(
                 ErrorCode::OnlyOfficeSaveTooLarge,
                 "OnlyOffice save payload exceeds size limit",
             ));
@@ -465,7 +470,7 @@ async fn download_and_write(
         let chunk = chunk.map_err(|e| AppError::internal(format!("download stream: {e}")))?;
         total += chunk.len() as u64;
         if total > max_bytes {
-            return Err(bad_request(
+            return Err(payload_too_large(
                 ErrorCode::OnlyOfficeSaveTooLarge,
                 "OnlyOffice save payload exceeds size limit",
             ));
@@ -477,6 +482,16 @@ async fn download_and_write(
     file.flush()
         .await
         .map_err(|e| AppError::internal(format!("flush: {e}")))?;
+    // 空响应体保护（对齐 TS onlyoffice.controller.ts 的 saveNoBody）。
+    // TS 在 writeAtomically 开头检查 !response.body 即抛 saveNoBody；
+    // Rust 这里在流式读取完成后通过 total==0 判定无内容下载，
+    // 避免把空文件写回工作区（当前实现会先创建空临时文件，由调用方清理）。
+    if total == 0 {
+        return Err(bad_request(
+            ErrorCode::OnlyOfficeSaveNoBody,
+            "OnlyOffice save response has no body",
+        ));
+    }
     Ok(())
 }
 

@@ -59,7 +59,7 @@ SQLite (better-sqlite3 + Drizzle ORM) · Pino (pino-roll 滚动日志)
 - 不重写前端（`web/`）。
 - 不改变数据库 schema（复用现有迁移）。
 - 不改变对外 API 契约（路由 / operationId / WS 事件名）。
-- **不做终端 VT 断线重连**（见 §6.5）：终端功能保留，但放弃 xterm headless VT 状态序列化，重连只回放原始输出 ring buffer。
+- 终端重连采用 `wezterm-term` VT 状态序列化（见 §6.5）：终端功能保留，重连回放 VT 屏幕纯文本快照。
 
 ---
 
@@ -138,13 +138,13 @@ account · apps · models · mcp-servers · skills · plugins · token-usage · 
 
 ### Phase 4 — chat / archive / onlyoffice
 - chat：multipart 上传 + `chat-upload.service`。
-- archive：zip / tar(.gz/.bz2/.xz) / rar / 7z 四适配器（免解压预览）。
+- archive：zip / tar(.gz/.bz2) / 7z 适配器（免解压预览）。**rar 与 .tar.xz 不支持**（决策：不引入 unrar 的 C 绑定、无成熟纯 Rust xz 流式解码器；前端对这两种格式不提供预览）。
 - onlyoffice：630 行 controller，回调保存、publicBaseUrl 检测。
 
-### Phase 5 — 终端（简化重连）
+### Phase 5 — 终端
 - `portable-pty` 会话、多 tab、按 context 分组（`global` / `thread:<id>`）、多 socket 附着。
-- **重连策略**：原始输出 ring buffer（容量 = scrollback 设置），重连时回放 buffer；**不实现 xterm VT 状态序列化**（放弃光标位置 / alternate-screen / 颜色等完整 VT 状态保证）。
-- terminal gateway：复刻 WS 事件集（`terminal.reconnect` 返回 `{terminal, state}`、attach / input / resize / 输出流等）。**契约变化**：`terminal.reconnect.state` 由 VT 序列化字符串改为**原始输出 ring buffer 回放字符串**（类型仍为 string，前端兼容；但全屏 TUI 的 alternate-screen / 光标等 VT 状态保真度降低，已声明为非目标 §6.5）。
+- **重连策略**：使用 `wezterm-term` VT 模型——PTY 输出实时 `advance_bytes` 喂入 VT；重连 / 下载时序列化 VT 屏幕（回滚 + 可见行）为**纯文本快照**回放。scrollback 容量取自 settings。
+- terminal gateway：复刻 WS 事件集（`terminal.reconnect` 返回 `{terminal, state}`、attach / input / resize / 输出流等）。`terminal.reconnect.state` 为 VT 屏幕纯文本快照字符串（类型仍为 string，前端 `term.write` 回放）。
 
 ### Phase 6 — 静态服务 / OpenAPI / 校验 / 切换
 - 静态前端：用 **`rust-embed` / `include_dir`** 把构建产物（`web/` → `public/`）嵌入二进制（目标 B 单二进制），tower-http ServeDir 在嵌入资源上提供，**排除 `/api`**，`fallthrough` 对齐。
@@ -176,11 +176,10 @@ account · apps · models · mcp-servers · skills · plugins · token-usage · 
 - codex 通知路由：从 notification.params 取 `threadId`，有则 `to(room)`，无则广播——与 TS `handleCodexNotification` 完全一致。
 - 审批（服务端请求）：首个响应的客户端胜出，结果回传 app-server；REST 响应走持久化 CAS 语义（pending-approvals）。
 
-### 6.5 终端：保留功能、放弃 VT 断线重连
-- **决策**：终端功能完整保留（多 tab、PTY 流、共享会话）。
-- **取舍**：断线重连不再序列化 xterm headless VT 的完整状态（光标 / alternate screen / SGR / 滚动区等），改为回放一段**原始输出 ring buffer**。
-- **影响**：长会话重连后，终端画面可能不如旧版精确（例如全屏 TUI 程序的 alternate-screen 状态丢失，需用户触发重绘）。这是明确的非目标，用户已知悉并接受。
-- **未来可选**：若需完整 VT 重连，可引入 `wezterm-term` / `termwiz`（Rust 全功能终端模拟器）替代 xterm，作为后续增强，不列入本次迁移。
+### 6.5 终端：wezterm-term VT 重连
+- **决策**：终端功能完整保留（多 tab、PTY 流、共享会话）。重连采用 `wezterm-term` VT 模型：PTY 输出实时驱动 VT，重连 / 下载时序列化 VT 屏幕（回滚 + 可见行）为**纯文本快照**回放。
+- **取舍（相较 TS xterm `SerializeAddon`）**：Rust 版序列化输出为纯文本（`line.as_str() + trim_end`），**不含 SGR 颜色 / 光标位置 / alternate-screen 等控制序列**——即重连回放为黑白纯文本，颜色与全屏 TUI 状态不保真。以 wezterm-term 依赖 + 每输出 VT 解析算力，换取结构化的屏幕 / scrollback 模型与 resize 同步。
+- **依赖**：`wezterm-term`（git 依赖）。若后续要降低构建复杂度或提升颜色保真，可改为 ring buffer 回放原始字节（保留 SGR）或完整 VT 序列化。
 
 ### 6.6 进程生命周期与 generation
 - 完整复刻 `generation` 机制：app-server 每次重启 generation+1，generation-scoped 缓存（如 pending-approvals 的 `(generation, requestId)` 主键）必须正确。

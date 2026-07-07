@@ -303,11 +303,21 @@ impl TerminalService {
                     let mut sessions = sessions_c.lock().unwrap();
                     if let Some(s) = sessions.get_mut(&sid) {
                         s.status = TerminalStatus::Exited;
-                        // 尝试获取退出码。
+                        // 捕获退出码/signal（对齐 node-pty onExit 的 { exitCode, signal }）。
+                        //
+                        // portable-pty 0.8 的 ExitStatus 公开 API 仅 with_exit_code /
+                        // with_signal / success / exit_code —— 其 `signal` 字段
+                        // （Option<String>，存的是 strsignal 的信号名字符串而非数字）
+                        // 为私有且无公开 getter，因此无法读取信号编号，也就无法对齐
+                        // node-pty 的 `exit_code = Some(128 + signal)` 语义。
+                        // 这里 exit_code 取 ExitStatus::exit_code()（被信号杀死时
+                        // portable-pty 内部用 `std code().unwrap_or(1)`，通常为 1），
+                        // signal 保持 None。
                         if let Ok(mut child_guard) = s.child.lock() {
                             if let Some(ref mut child) = *child_guard {
                                 if let Ok(status) = child.wait() {
                                     s.exit_code = Some(status.exit_code() as i32);
+                                    // signal 无法通过 portable-pty 0.8 公开 API 获取，保持 None。
                                 }
                             }
                         }

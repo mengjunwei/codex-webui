@@ -611,7 +611,7 @@ pub async fn create_file(
     if body.overwrite.unwrap_or(false) {
         tokio::fs::write(&p, content)
             .await
-            .map_err(|e| AppError::internal(format!("create file: {e}")))?;
+            .map_err(|e| map_fs_error(e, ErrorCode::FilesOperationFailed))?;
     } else {
         // 原子独占创建（对齐 TS flag 'wx'），消除 exists()→write 的 TOCTOU。
         use tokio::io::AsyncWriteExt;
@@ -620,14 +620,14 @@ pub async fn create_file(
             .create_new(true)
             .open(&p)
             .await
-            .map_err(|e| AppError::internal(format!("create file: {e}")))?;
+            .map_err(|e| map_fs_error(e, ErrorCode::FilesOperationFailed))?;
         f.write_all(content.as_bytes())
             .await
-            .map_err(|e| AppError::internal(format!("write: {e}")))?;
+            .map_err(|e| map_fs_error(e, ErrorCode::FilesOperationFailed))?;
     }
     let meta = tokio::fs::metadata(&p)
         .await
-        .map_err(|e| AppError::internal(format!("stat: {e}")))?;
+        .map_err(|e| map_fs_error(e, ErrorCode::FilesOperationFailed))?;
     Ok(Json(json!({
         "ok": true,
         "path": raw,
@@ -768,10 +768,10 @@ pub async fn write_file(
     }
     tokio::fs::write(&p, content)
         .await
-        .map_err(|e| AppError::internal(format!("write: {e}")))?;
+        .map_err(|e| map_fs_error(e, ErrorCode::FilesOperationFailed))?;
     let meta = tokio::fs::metadata(&p)
         .await
-        .map_err(|e| AppError::internal(format!("stat: {e}")))?;
+        .map_err(|e| map_fs_error(e, ErrorCode::FilesOperationFailed))?;
     let mtime_ms = meta
         .modified()
         .ok()
@@ -1122,7 +1122,7 @@ pub async fn rename_path(
     }
     tokio::fs::rename(&resolved.resolved, &dest)
         .await
-        .map_err(|e| AppError::internal(format!("rename: {e}")))?;
+        .map_err(|e| map_fs_error(e, ErrorCode::FilesOperationFailed))?;
     let canonical = tokio::fs::canonicalize(&dest).await
         .map_err(|e| AppError::internal(format!("canonicalize: {e}")))?;
     Ok(Json(json!({
@@ -1204,26 +1204,17 @@ async fn do_relocate(
     if is_move {
         tokio::fs::rename(&src.resolved, &dest)
             .await
-            .map_err(|e| {
-                // 跨设备移动（EXDEV）→ 400（对齐 TS：提示用 copy+delete，而非 500）。
-                if e.raw_os_error() == Some(18) {
-                    AppError::business(
-                        ErrorCode::FilesOperationFailed,
-                        StatusCode::BAD_REQUEST,
-                        "cannot move across devices; copy then delete instead".into(),
-                        None,
-                    )
-                } else {
-                    AppError::internal(format!("move: {e}"))
-                }
-            })?;
+            // map_fs_error 已含 EXDEV→400 FilesOperationFailed（跨设备移动），
+            // 与原手写分支语义一致。
+            .map_err(|e| map_fs_error(e, ErrorCode::FilesOperationFailed))?;
     } else if src.kind == ResolvedKind::Directory {
-        copy_dir_recursive(&src.resolved, &dest).await
-            .map_err(|e| AppError::internal(format!("copy dir: {e}")))?;
+        copy_dir_recursive(&src.resolved, &dest)
+            .await
+            .map_err(|e| map_fs_error(e, ErrorCode::FilesOperationFailed))?;
     } else {
         tokio::fs::copy(&src.resolved, &dest)
             .await
-            .map_err(|e| AppError::internal(format!("copy file: {e}")))?;
+            .map_err(|e| map_fs_error(e, ErrorCode::FilesOperationFailed))?;
     }
     // move 返回 oldPath/newPath；copy 返回 sourcePath/destinationPath（对齐 TS DTO）。
     let body = if is_move {
@@ -1301,6 +1292,12 @@ pub async fn upload_files(
             "destinationPath must be a directory"));
     }
 
+    // 上传字节上限（对齐 TS files.uploadMaxBytes，默认 100 MB）。
+    let max_bytes: u64 = {
+        let reader = crate::settings::SettingsReader::new(&state.db);
+        reader.get_upload_max_bytes()
+    };
+
     let mut files = Vec::new();
     while let Ok(Some(field)) = multipart.next_field().await {
         let raw_filename = field.file_name().unwrap_or("upload").to_string();
@@ -1327,14 +1324,15 @@ pub async fn upload_files(
                 parts.join("/")
             }
         };
-        let data = field.bytes().await
-            .map_err(|e| AppError::internal(format!("read multipart field: {e}")))?;
         let file_path = dest_canonical.join(&safe_name);
         // 保留子路径时需先创建父目录。
-        if let Some(parent) = file_path.parent() {
-            tokio::fs::create_dir_all(parent).await
-                .map_err(|e| AppError::internal(format!("mkdir upload parent: {e}")))?;
-        }
+        let parent_dir = file_path
+            .parent()
+            .map(|p| p.to_path_buf())
+            .unwrap_or_else(|| dest_canonical.clone());
+        tokio::fs::create_dir_all(&parent_dir)
+            .await
+            .map_err(|e| map_fs_error(e, ErrorCode::FilesOperationFailed))?;
         if file_path.exists() && !overwrite {
             return Err(conflict(ErrorCode::FilesPathExists,
                 format!("{safe_name} already exists (set overwrite=true)")));
@@ -1346,17 +1344,66 @@ pub async fn upload_files(
                 return Err(forbidden("target resolves outside workspace (symlink escape?)"));
             }
         }
-        tokio::fs::write(&file_path, &data)
-            .await
-            .map_err(|e| AppError::internal(format!("write {safe_name}: {e}")))?;
-        let size = data.len();
-        files.push(json!({ "path": file_path.to_string_lossy(), "size": size }));
+        // 流式写临时文件（对齐 TS saveSingleUpload：.codex-upload-<uuid>.tmp），
+        // 累计字节超 uploadMaxBytes → 413 FilesUploadTooLarge 并清理 tmp；成功后
+        // rename 到目标（overwrite 语义：rename 覆盖已存在的同名文件）。
+        let tmp_path = parent_dir
+            .join(format!(".codex-upload-{}.tmp", uuid::Uuid::new_v4()));
+        let total = match stream_upload_to_tmp(field, &tmp_path, max_bytes).await {
+            Ok(n) => n,
+            Err(e) => {
+                let _ = tokio::fs::remove_file(&tmp_path).await;
+                return Err(e);
+            }
+        };
+        if let Err(e) = tokio::fs::rename(&tmp_path, &file_path).await {
+            let _ = tokio::fs::remove_file(&tmp_path).await;
+            return Err(map_fs_error(e, ErrorCode::FilesOperationFailed));
+        }
+        files.push(json!({ "path": file_path.to_string_lossy(), "size": total }));
     }
     // 对齐 TS：上传至少需要一个文件（uploadFileRequired）。
     if files.is_empty() {
         return Err(bad_request(ErrorCode::FilesUploadFileRequired, "at least one file is required"));
     }
     Ok(Json(json!({ "ok": true, "files": files })))
+}
+
+/// 流式把一个 multipart field 写入临时文件，累计字节；超 `max_bytes` 返回
+/// 413 FilesUploadTooLarge（对齐 TS saveSingleUpload 的流式 + 大小限制）。
+async fn stream_upload_to_tmp(
+    mut field: axum::extract::multipart::Field<'_>,
+    tmp_path: &Path,
+    max_bytes: u64,
+) -> Result<u64, AppError> {
+    use tokio::io::AsyncWriteExt;
+    let mut f = tokio::fs::File::create(tmp_path)
+        .await
+        .map_err(|e| map_fs_error(e, ErrorCode::FilesOperationFailed))?;
+    let mut total: u64 = 0;
+    while let Some(chunk) = field
+        .chunk()
+        .await
+        .map_err(|e| AppError::internal(format!("read multipart chunk: {e}")))?
+    {
+        total += chunk.len() as u64;
+        if total > max_bytes {
+            // 超限：413（对齐 TS files.upload_too_large）。
+            return Err(AppError::business(
+                ErrorCode::FilesUploadTooLarge,
+                StatusCode::PAYLOAD_TOO_LARGE,
+                format!("upload exceeds the {max_bytes}-byte limit"),
+                None,
+            ));
+        }
+        f.write_all(&chunk)
+            .await
+            .map_err(|e| map_fs_error(e, ErrorCode::FilesOperationFailed))?;
+    }
+    f.flush()
+        .await
+        .map_err(|e| map_fs_error(e, ErrorCode::FilesOperationFailed))?;
+    Ok(total)
 }
 
 // ── 归档列表 / 条目读取（zip + tar/gz/bz2/xz）──────────────────────────────
@@ -1468,10 +1515,38 @@ fn detect_format(path: &Path) -> Option<ArchiveFormat> {
     else { None }
 }
 
-/// C1+C2 修复：校验归档条目路径（防止 zip-slip）并限制总条目数。
-fn is_safe_entry_name(name: &str) -> bool {
-    // 拒绝含 `..` 分量的路径（zip-slip 攻击）。
-    !name.split(|c| c == '/' || c == '\\').any(|part| part == "..")
+/// C1+C2 修复：规范化归档条目路径，拒绝穿越/绝对路径/NUL/空段（对齐 TS
+/// `normalizeArchiveEntryPath`）。返回 `None` 视为不安全。
+///
+/// 步骤：空或含 NUL → 拒绝；反斜杠转正；去一次前导 `./`；拒绝 `/` 或
+/// `[A-Za-z]:/` 绝对路径；按 `/` 切分并丢弃空段；含 `.`/`..` 段或无剩余段 → 拒绝。
+fn normalize_archive_entry_path(entry_path: &str) -> Option<String> {
+    if entry_path.is_empty() || entry_path.contains('\0') {
+        return None;
+    }
+    // 反斜杠 → 正斜杠（zip/tar 内部可能用反斜杠）。
+    let slashed = entry_path.replace('\\', "/");
+    // 仅去一次前导 `./`（对齐 TS `replace(/^\.\//, '')`）。
+    let stripped = slashed.strip_prefix("./").unwrap_or(&slashed);
+    // 拒绝绝对路径：`/` 开头（Unix）或 `[A-Za-z]:/`（Windows 盘符）。
+    if stripped.starts_with('/') {
+        return None;
+    }
+    if stripped.len() >= 3 {
+        let b = stripped.as_bytes();
+        if b[0].is_ascii_alphabetic() && b[1] == b':' && b[2] == b'/' {
+            return None;
+        }
+    }
+    // 切分并丢弃空段（等价 TS `split('/').filter(Boolean)`）。
+    let parts: Vec<&str> = stripped.split('/').filter(|p| !p.is_empty()).collect();
+    if parts.is_empty() {
+        return None;
+    }
+    if parts.iter().any(|p| *p == "." || *p == "..") {
+        return None;
+    }
+    Some(parts.join("/"))
 }
 
 const MAX_ARCHIVE_ENTRIES: usize = 20_000;
@@ -1533,22 +1608,28 @@ fn list_archive_entries(path: &Path) -> Result<Vec<serde_json::Value>, ArchiveLi
             let mut total_size: u64 = 0;
             for i in 0..archive.len() {
                 let entry = archive.by_index(i).map_err(|e| Other(e.to_string()))?;
-                let name = entry.name().to_string();
-                if !is_safe_entry_name(&name) {
-                    // 整体拒绝（对齐 TS validateArchiveEntries），而非静默跳过。
-                    return Err(UnsafeEntryPath);
-                }
+                let raw_name = entry.name().to_string();
+                // 规范化 + 安全校验（zip-slip / 绝对路径 / NUL / 空段）。
+                let path =
+                    normalize_archive_entry_path(&raw_name).ok_or(UnsafeEntryPath)?;
                 let entry_size = entry.size();
+                // 对照 zip-archive.adapter.ts：compressedSize + encrypted（general
+                // purpose bit flag bit0）。
+                let compressed_size = entry.compressed_size();
+                let encrypted = entry.encrypted();
                 total_size += entry_size;
                 if total_size > MAX_ARCHIVE_TOTAL_BYTES {
                     return Err(TotalSizeTooLarge);
                 }
                 let is_dir = entry.is_dir();
+                let name = path.rsplit('/').next().unwrap_or(&path).to_string();
                 entries.push(json!({
-                    "name": name.rsplit('/').next().unwrap_or(&name),
-                    "path": name,
+                    "name": name,
+                    "path": path,
                     "type": if is_dir { "directory" } else { "file" },
                     "size": if is_dir { serde_json::Value::Null } else { serde_json::json!(entry_size) },
+                    "compressedSize": compressed_size,
+                    "encrypted": encrypted,
                 }));
             }
             Ok(entries)
@@ -1573,10 +1654,13 @@ fn list_tar<R: std::io::Read>(reader: R) -> Result<Vec<serde_json::Value>, Archi
     let mut count = 0usize;
     for entry in archive.entries().map_err(|e| Other(e.to_string()))? {
         let entry = entry.map_err(|e| Other(e.to_string()))?;
-        let path = entry.path().map_err(|e| Other(e.to_string()))?.to_string_lossy().to_string();
-        if !is_safe_entry_name(&path) {
-            return Err(UnsafeEntryPath);
-        }
+        let raw_path = entry
+            .path()
+            .map_err(|e| Other(e.to_string()))?
+            .to_string_lossy()
+            .to_string();
+        // 规范化 + 安全校验；list 输出使用规范化后的 path。
+        let path = normalize_archive_entry_path(&raw_path).ok_or(UnsafeEntryPath)?;
         count += 1;
         if count > MAX_ARCHIVE_ENTRIES {
             return Err(TooManyEntries);
@@ -1586,12 +1670,20 @@ fn list_tar<R: std::io::Read>(reader: R) -> Result<Vec<serde_json::Value>, Archi
         if total_size > MAX_ARCHIVE_TOTAL_BYTES {
             return Err(TotalSizeTooLarge);
         }
-        let is_dir = entry.header().entry_type().is_dir();
+        // 对照 tar-archive.adapter.ts：mtime（毫秒）+ unsupported（非 file/dir）。
+        let entry_type = entry.header().entry_type();
+        let is_dir = entry_type.is_dir();
+        let is_file = entry_type.is_file();
+        let unsupported = !is_dir && !is_file;
+        let mtime_ms = entry.header().mtime().ok().map(|s| s * 1000).unwrap_or(0);
+        let name = path.rsplit('/').next().unwrap_or(&path).to_string();
         entries.push(json!({
-            "name": path.rsplit('/').next().unwrap_or(&path),
+            "name": name,
             "path": path,
             "type": if is_dir { "directory" } else { "file" },
             "size": if is_dir { serde_json::Value::Null } else { serde_json::json!(entry_size) },
+            "mtime": mtime_ms,
+            "unsupported": unsupported,
         }));
     }
     Ok(entries)
@@ -1601,6 +1693,16 @@ fn list_sevenzip(path: &Path) -> Result<Vec<serde_json::Value>, ArchiveListError
     use ArchiveListError::*;
     let mut reader = sevenz_rust2::ArchiveReader::open(path, sevenz_rust2::Password::empty())
         .map_err(|e| Other(e.to_string()))?;
+    // sevenz-rust2 的 entry 本身不暴露加密标志（加密位于 folder/coder 级别）。
+    // 近似判断：若任一 block 的 coder 链含 AES256_SHA256，则视为整包加密
+    // （7z 通常整包加密），对所有条目输出 encrypted=true（对齐 TS sevenzip
+    // adapter 的 encrypted 字段）。
+    const AES256_SHA256_ID: &[u8] = &[0x06, 0xF1, 0x07, 0x01];
+    let archive_encrypted = reader
+        .archive()
+        .blocks
+        .iter()
+        .any(|b| b.coders.iter().any(|c| c.encoder_method_id() == AES256_SHA256_ID));
     let mut entries: Vec<serde_json::Value> = Vec::new();
     let mut total_size: u64 = 0;
     let mut err: Option<ArchiveListError> = None;
@@ -1609,11 +1711,15 @@ fn list_sevenzip(path: &Path) -> Result<Vec<serde_json::Value>, ArchiveListError
             if err.is_some() {
                 return Ok(false);
             }
-            let name = entry.name().to_string();
-            if !is_safe_entry_name(&name) {
-                err = Some(UnsafeEntryPath);
-                return Ok(false);
-            }
+            let raw_name = entry.name().to_string();
+            // 规范化 + 安全校验；list 输出使用规范化后的 path。
+            let name = match normalize_archive_entry_path(&raw_name) {
+                Some(n) => n,
+                None => {
+                    err = Some(UnsafeEntryPath);
+                    return Ok(false);
+                }
+            };
             if entries.len() >= MAX_ARCHIVE_ENTRIES {
                 err = Some(TooManyEntries);
                 return Ok(false);
@@ -1625,11 +1731,13 @@ fn list_sevenzip(path: &Path) -> Result<Vec<serde_json::Value>, ArchiveListError
                 return Ok(false);
             }
             let is_dir = entry.is_directory();
+            let display_name = name.rsplit('/').next().unwrap_or(&name).to_string();
             entries.push(json!({
-                "name": name.rsplit('/').next().unwrap_or(&name),
+                "name": display_name,
                 "path": name,
                 "type": if is_dir { "directory" } else { "file" },
                 "size": if is_dir { serde_json::Value::Null } else { serde_json::json!(size) },
+                "encrypted": archive_encrypted,
             }));
             Ok(true)
         })
@@ -1649,15 +1757,36 @@ enum ArchiveReadError {
 fn read_archive_entry(path: &Path, entry_name: &str) -> Result<Vec<u8>, ArchiveReadError> {
     use ArchiveReadError::*;
     let fmt = detect_format(path).ok_or_else(|| Other("unsupported archive format".into()))?;
+    // 入口路径需为已规范化的安全路径（与 list 输出一致），否则直接拒绝。
+    let target = normalize_archive_entry_path(entry_name)
+        .ok_or_else(|| Other("unsafe archive entry path".into()))?;
     match fmt {
         ArchiveFormat::Zip => {
             let file = std::fs::File::open(path).map_err(|e| Other(e.to_string()))?;
             let mut archive = zip::ZipArchive::new(file).map_err(|e| Other(e.to_string()))?;
-            let entry = archive.by_name(entry_name).map_err(|e| Other(e.to_string()))?;
-            read_limited(entry)
+            // 用规范化名匹配原始条目（list 输出规范化 path，read 按同一规则定位），
+            // 避免内部名带 `./` 前缀或反斜杠时 `by_name` 找不到。
+            for i in 0..archive.len() {
+                let mut entry = archive.by_index(i).map_err(|e| Other(e.to_string()))?;
+                let raw = entry.name().to_string();
+                if normalize_archive_entry_path(&raw).as_deref() == Some(target.as_str()) {
+                    return read_limited(&mut entry);
+                }
+            }
+            Err(Other(format!("entry not found: {entry_name}")))
         }
-        ArchiveFormat::Tar => read_tar_entry(std::fs::File::open(path).map_err(|e| Other(e.to_string()))?, entry_name),
-        ArchiveFormat::TarGz => read_tar_entry(flate2::read::GzDecoder::new(std::fs::File::open(path).map_err(|e| Other(e.to_string()))?), entry_name),
+        ArchiveFormat::Tar => read_tar_entry(
+            std::fs::File::open(path).map_err(|e| Other(e.to_string()))?,
+            &target,
+            entry_name,
+        ),
+        ArchiveFormat::TarGz => read_tar_entry(
+            flate2::read::GzDecoder::new(
+                std::fs::File::open(path).map_err(|e| Other(e.to_string()))?,
+            ),
+            &target,
+            entry_name,
+        ),
         ArchiveFormat::SevenZip => {
             let mut reader = sevenz_rust2::ArchiveReader::open(path, sevenz_rust2::Password::empty())
                 .map_err(|e| Other(e.to_string()))?;
@@ -1668,7 +1797,8 @@ fn read_archive_entry(path: &Path, entry_name: &str) -> Result<Vec<u8>, ArchiveR
                     if result.is_ok() {
                         return Ok(false);
                     }
-                    if entry.name() == entry_name {
+                    let raw = entry.name().to_string();
+                    if normalize_archive_entry_path(&raw).as_deref() == Some(target.as_str()) {
                         result = read_limited(stream);
                         return Ok(false);
                     }
@@ -1678,7 +1808,10 @@ fn read_archive_entry(path: &Path, entry_name: &str) -> Result<Vec<u8>, ArchiveR
             result
         }
         ArchiveFormat::TarBz2 => read_tar_entry(
-            bzip2_rs::DecoderReader::new(std::fs::File::open(path).map_err(|e| Other(e.to_string()))?),
+            bzip2_rs::DecoderReader::new(
+                std::fs::File::open(path).map_err(|e| Other(e.to_string()))?,
+            ),
+            &target,
             entry_name,
         ),
         ArchiveFormat::TarXz => {
@@ -1688,14 +1821,23 @@ fn read_archive_entry(path: &Path, entry_name: &str) -> Result<Vec<u8>, ArchiveR
     }
 }
 
-fn read_tar_entry<R: std::io::Read>(reader: R, entry_name: &str) -> Result<Vec<u8>, ArchiveReadError> {
+fn read_tar_entry<R: std::io::Read>(
+    reader: R,
+    target: &str,
+    entry_name: &str,
+) -> Result<Vec<u8>, ArchiveReadError> {
     use ArchiveReadError::*;
     let mut archive = tar::Archive::new(reader);
     for entry in archive.entries().map_err(|e| Other(e.to_string()))? {
-        let entry = entry.map_err(|e| Other(e.to_string()))?;
-        let path = entry.path().map_err(|e| Other(e.to_string()))?.to_string_lossy().to_string();
-        if path == entry_name {
-            return read_limited(entry);
+        let mut entry = entry.map_err(|e| Other(e.to_string()))?;
+        let raw = entry
+            .path()
+            .map_err(|e| Other(e.to_string()))?
+            .to_string_lossy()
+            .to_string();
+        // 用规范化名匹配（与 list 输出一致）。
+        if normalize_archive_entry_path(&raw).as_deref() == Some(target) {
+            return read_limited(&mut entry);
         }
     }
     Err(Other(format!("entry not found: {entry_name}")))
@@ -1723,6 +1865,9 @@ fn build_archive_tree(entries: Vec<serde_json::Value>) -> Vec<serde_json::Value>
         path: String,
         is_dir: bool,
         size: serde_json::Value,
+        // 透传给前端的额外字段（compressedSize/encrypted/mtime/unsupported 等）。
+        // 中间目录节点没有这些字段，留空 Map。
+        props: serde_json::Map<String, serde_json::Value>,
         children: Vec<usize>, // arena 索引
     }
 
@@ -1775,6 +1920,7 @@ fn build_archive_tree(entries: Vec<serde_json::Value>) -> Vec<serde_json::Value>
                 path: p.clone(),
                 is_dir: true,
                 size: serde_json::Value::Null,
+                props: serde_json::Map::new(),
                 children: Vec::new(),
             });
             dir_index.insert(p.clone(), idx);
@@ -1794,19 +1940,28 @@ fn build_archive_tree(entries: Vec<serde_json::Value>) -> Vec<serde_json::Value>
         *dir_index.get(dir_path).unwrap()
     }
 
-    // 先按 path 排序：目录路径短于其下文件，保证父目录先于子项处理。
-    let mut flat: Vec<(String, bool, serde_json::Value)> = entries
+    // 已知键之外的字段全部透传（compressedSize/encrypted/mtime/unsupported 等）。
+    let known: [&str; 4] = ["name", "path", "type", "size"];
+    let mut flat: Vec<(String, bool, serde_json::Value, serde_json::Map<String, serde_json::Value>)> = entries
         .into_iter()
         .map(|e| {
             let path = norm(e.get("path").and_then(|v| v.as_str()).unwrap_or(""));
             let is_dir = e.get("type").and_then(|v| v.as_str()) == Some("directory");
             let size = e.get("size").cloned().unwrap_or(serde_json::Value::Null);
-            (path, is_dir, size)
+            let mut props = serde_json::Map::new();
+            if let Some(obj) = e.as_object() {
+                for (k, v) in obj {
+                    if !known.iter().any(|x| *x == k.as_str()) {
+                        props.insert(k.clone(), v.clone());
+                    }
+                }
+            }
+            (path, is_dir, size, props)
         })
         .collect();
     flat.sort_by(|a, b| a.0.cmp(&b.0));
 
-    for (path, is_dir, size) in flat {
+    for (path, is_dir, size, props) in flat {
         if path.is_empty() {
             continue;
         }
@@ -1818,6 +1973,7 @@ fn build_archive_tree(entries: Vec<serde_json::Value>) -> Vec<serde_json::Value>
             path: path.clone(),
             is_dir,
             size,
+            props,
             children: Vec::new(),
         });
         if parent.is_empty() {
@@ -1860,6 +2016,10 @@ fn build_archive_tree(entries: Vec<serde_json::Value>) -> Vec<serde_json::Value>
             ),
         );
         m.insert("size".into(), n.size.clone());
+        // 透传额外字段（compressedSize/encrypted/mtime/unsupported 等）。
+        for (k, v) in &n.props {
+            m.insert(k.clone(), v.clone());
+        }
         if n.is_dir {
             let kids: Vec<serde_json::Value> =
                 n.children.iter().map(|&c| to_json(arena, c)).collect();
@@ -1879,4 +2039,35 @@ fn _unused_fs() {
 // ── 冲突辅助函数（409 CONFLICT，对齐 TS assertNoOverwrite）──────────────────
 fn conflict(code: ErrorCode, msg: impl Into<String>) -> AppError {
     AppError::business(code, StatusCode::CONFLICT, msg.into(), None)
+}
+
+/// 把 `std::io::Error` 映射为业务错误（对齐 TS `rethrowFsError`）。
+///
+/// 优先按 `raw_os_error()`（POSIX errno）区分：EEXIST→409 FilesPathExists、
+/// ENOENT→404 FilesPathNotFound、ENOTEMPTY→400 FilesDirNotEmpty、EXDEV→400
+/// FilesOperationFailed；命中不了时用 `ErrorKind` 跨平台兜底（Windows 上
+/// `raw_os_error` 为 Win32 码），最终回落到 400 `fallback_code`，避免一律 500。
+fn map_fs_error(e: std::io::Error, fallback_code: ErrorCode) -> AppError {
+    use std::io::ErrorKind;
+    match e.raw_os_error() {
+        // POSIX EEXIST
+        Some(17) => conflict(ErrorCode::FilesPathExists, "Path already exists"),
+        // POSIX ENOENT
+        Some(2) => not_found("Path not found"),
+        // POSIX ENOTEMPTY
+        Some(39) => bad_request(ErrorCode::FilesDirNotEmpty, "Directory is not empty"),
+        // POSIX EXDEV（跨设备移动）
+        Some(18) => bad_request(
+            ErrorCode::FilesOperationFailed,
+            "cannot move across devices; copy/delete fallback is not supported",
+        ),
+        _ => match e.kind() {
+            // Windows 等平台兜底（Win32 码与 POSIX errno 不同）。
+            ErrorKind::AlreadyExists => {
+                conflict(ErrorCode::FilesPathExists, "Path already exists")
+            }
+            ErrorKind::NotFound => not_found("Path not found"),
+            _ => bad_request(fallback_code, format!("File operation failed: {e}")),
+        },
+    }
 }

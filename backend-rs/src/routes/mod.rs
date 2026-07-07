@@ -6,6 +6,9 @@ pub mod health;
 use crate::auth::middleware::require_auth;
 use crate::state::AppState;
 use axum::{
+    extract::Request,
+    middleware::{from_fn, Next},
+    response::Response,
     routing::{get, post},
     Json, Router,
 };
@@ -56,7 +59,7 @@ pub fn build_router(state: AppState) -> Router {
         .route("/_ping", get(health::ping))
         .route("/status", get(health::ping))
         // ── chat 上传(受保护;multipart)──
-        .route("/chat/upload", post(chat_mod::upload_attachment))
+        .route("/chat/upload", post(chat_mod::upload_attachment).layer(axum::extract::DefaultBodyLimit::disable()))
         // ── settings 增删改查(CRUD)──
         .route("/settings", get(s::list).patch(s::update_batch))
         .route("/settings/:key", get(s::get_one).patch(s::update_one).delete(s::delete_one))
@@ -134,7 +137,7 @@ pub fn build_router(state: AppState) -> Router {
         .route("/files/rename", post(fl::rename_path))
         .route("/files/copy", post(fl::copy_path))
         .route("/files/move", post(fl::move_path))
-        .route("/files/upload", post(fl::upload_files))
+        .route("/files/upload", post(fl::upload_files).layer(axum::extract::DefaultBodyLimit::disable()))
         .route("/files/archive/list", get(fl::archive_list))
         .route("/files/archive/entry", get(fl::archive_entry))
         // ── onlyoffice 配置(受保护)──
@@ -158,5 +161,24 @@ pub fn build_router(state: AppState) -> Router {
         .route("/api/docs-json", get(openapi_json))
         .nest("/api", api)
         .fallback_service(static_files)
+        .layer(from_fn(request_logger))
         .with_state(state)
+}
+
+/// 请求日志中间件（对齐 TS pino-http）：记录 method / 脱敏 path / status / 耗时。
+/// 不记录请求头，故 authorization/cookie 天然不入日志；path 经 `sanitize_url`
+/// 脱敏 `access_token` 查询参数。
+async fn request_logger(req: Request, next: Next) -> Response {
+    let method = req.method().clone();
+    let path = crate::logging::sanitize_url(&req.uri().to_string());
+    let start = std::time::Instant::now();
+    let resp = next.run(req).await;
+    tracing::info!(
+        method = %method,
+        path = %path,
+        status = resp.status().as_u16(),
+        elapsed_ms = start.elapsed().as_millis() as u64,
+        "request"
+    );
+    resp
 }

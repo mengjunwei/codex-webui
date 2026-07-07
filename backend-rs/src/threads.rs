@@ -210,10 +210,12 @@ pub async fn resume_thread(
     State(state): State<AppState>,
     Path(thread_id): Path<String>,
 ) -> Result<(StatusCode, Json<Value>), AppError> {
-    // H6：若本 generation 已 resume 过该线程，直接返回缓存响应（对齐 TS
-    // resumeRegistry.ensureResumed —— 命中缓存则不再重发非幂等的 thread/resume）。
+    // H6：若本 generation 已 resume 过该线程，命中缓存（不再重发非幂等的 thread/resume，
+    // 对齐 TS resumeRegistry.ensureResumed）。但为避免返回陈旧的 turns，命中时走
+    // readAsResume：重新 thread/read 取最新 thread 合并进缓存（对齐 TS readAsResume）。
     if let Some(cached) = state.resume_registry.get_cached(&thread_id) {
-        return Ok((StatusCode::CREATED, Json(cached)));
+        let merged = read_as_resume(&state, &thread_id, cached).await;
+        return Ok((StatusCode::CREATED, Json(merged)));
     }
     let result = state
         .codex
@@ -222,6 +224,49 @@ pub async fn resume_thread(
         .map_err(map_rpc)?;
     state.resume_registry.mark_resumed(&thread_id, result.clone());
     Ok((StatusCode::CREATED, Json(result)))
+}
+
+/// readAsResume（对齐 TS `readAsResume`）：缓存命中时，重新 `thread/read` 取最新
+/// `thread` 字段（含最新 turns）合并进缓存响应；resolved settings（model/approvalPolicy
+/// 等顶层字段）保留缓存的值。读取失败则回退缓存，保证至少返回有效响应。
+async fn read_as_resume(state: &AppState, thread_id: &str, cached: Value) -> Value {
+    let fresh_opt: Option<Value> = match state
+        .codex
+        .request("thread/read", Some(json!({ "threadId": thread_id, "includeTurns": true })))
+        .await
+    {
+        Ok(f) => Some(f),
+        Err(e) if is_not_materialized(&e) => {
+            match state
+                .codex
+                .request("thread/read", Some(json!({ "threadId": thread_id, "includeTurns": false })))
+                .await
+            {
+                Ok(mut f) => {
+                    if let Value::Object(ref mut m) = f {
+                        m.get_mut("thread")
+                            .and_then(|t| t.as_object_mut())
+                            .map(|t| t.insert("turns".into(), Value::Array(vec![])));
+                    }
+                    Some(f)
+                }
+                Err(_) => None,
+            }
+        }
+        Err(_) => None,
+    };
+    match fresh_opt {
+        Some(fresh) => {
+            let mut merged = cached;
+            if let (Some(fresh_thread), Value::Object(ref mut m)) =
+                (fresh.get("thread").cloned(), &mut merged)
+            {
+                m.insert("thread".into(), fresh_thread);
+            }
+            merged
+        }
+        None => cached,
+    }
 }
 
 // ── POST /threads/:threadId/turns(开始 turn)──────────────────────────────

@@ -43,17 +43,20 @@ impl Category {
 }
 
 /// 设置项的约束（与 TS 的 `SettingConstraints` 对齐）。
-#[derive(Clone, Copy, Debug, Default)]
+// 注意：`enum_values` 含 Vec，无法 derive Copy；调用方按引用或 clone 使用。
+#[derive(Clone, Debug, Default)]
 pub struct SettingConstraints {
     pub min: Option<f64>,
     pub max: Option<f64>,
     /// 标记必须为整数的 number 类型设置。
     pub integer: bool,
+    /// 枚举约束：值必须在此列表内（对齐 TS SettingConstraints.enum）。
+    pub enum_values: Option<Vec<serde_json::Value>>,
 }
 
 impl SettingConstraints {
     /// 编码为 JSON 字符串以便存入数据库（与 TS 的 `encodeJson(def.constraints)` 对齐）。
-    pub fn to_json(self) -> serde_json::Value {
+    pub fn to_json(&self) -> serde_json::Value {
         let mut m = serde_json::Map::new();
         if let Some(min) = self.min {
             m.insert("min".into(), num_value(min));
@@ -63,6 +66,9 @@ impl SettingConstraints {
         }
         if self.integer {
             m.insert("integer".into(), serde_json::Value::Bool(true));
+        }
+        if let Some(enum_values) = &self.enum_values {
+            m.insert("enum".into(), serde_json::Value::Array(enum_values.clone()));
         }
         serde_json::Value::Object(m)
     }
@@ -85,14 +91,16 @@ const fn int_range(min: f64, max: f64) -> SettingConstraints {
         min: Some(min),
         max: Some(max),
         integer: true,
+        enum_values: None,
     }
 }
 
-/// 无约束（用于没有 min/max/integer 的设置项）。
+/// 无约束（用于没有 min/max/integer/enum 的设置项）。
 const NO_CONSTRAINTS: SettingConstraints = SettingConstraints {
     min: None,
     max: None,
     integer: false,
+    enum_values: None,
 };
 
 pub struct SettingDef {

@@ -15,12 +15,18 @@ pub fn reconcile_settings(db: &Db) -> Result<()> {
         .lock()
         .map_err(|e| anyhow::anyhow!("db lock poisoned: {e}"))?;
 
+    // 将逐条 INSERT/UPDATE 包进单个事务（对齐 TS settings.service.ts:initialize
+    // 的 db.transaction）——中途任意一条失败即整体回滚，避免部分写入导致
+    // settings 表元数据不一致。unchecked_transaction 与 handlers.rs 写入路径
+    // 一致；中途 `?` 提前返回时 Transaction 在 Drop 时自动回滚。
+    let tx = conn.unchecked_transaction()?;
+
     for def in SETTINGS_DEFINITIONS {
         let constraints_json = def.constraints.to_json();
         let constraints_str = serde_json::to_string(&constraints_json)
             .unwrap_or_else(|_| "{}".to_string());
         // INSERT OR IGNORE: preserves any existing value set by the user.
-        conn.execute(
+        tx.execute(
             "INSERT OR IGNORE INTO settings \
              (key, value, type, category, description, default_value, constraints, updated_at) \
              VALUES (?1, NULL, ?2, ?3, ?4, ?5, ?6, (strftime('%s','now')*1000))",
@@ -36,7 +42,7 @@ pub fn reconcile_settings(db: &Db) -> Result<()> {
 
         // UPDATE metadata + constraints — never touches `value` (user overrides are sacred)。
         // 仅当元数据实际变化时才 UPDATE（避免每次启动都刷新 updated_at，对齐 TS hasMetadataChanged）。
-        let changed: bool = conn
+        let changed: bool = tx
             .query_row(
                 "SELECT type, category, description, default_value, constraints FROM settings WHERE key = ?1",
                 rusqlite::params![def.key],
@@ -54,7 +60,7 @@ pub fn reconcile_settings(db: &Db) -> Result<()> {
             )
             .unwrap_or(true); // 行缺失或查询错误 → 保守执行 UPDATE。
         if changed {
-            conn.execute(
+            tx.execute(
                 "UPDATE settings \
                  SET type = ?1, category = ?2, description = ?3, \
                      default_value = ?4, constraints = ?5, updated_at = (strftime('%s','now')*1000) \
@@ -70,6 +76,9 @@ pub fn reconcile_settings(db: &Db) -> Result<()> {
             )?;
         }
     }
+
+    // 全部成功后提交事务。
+    tx.commit()?;
 
     tracing::info!(
         "reconciled {} settings definitions",

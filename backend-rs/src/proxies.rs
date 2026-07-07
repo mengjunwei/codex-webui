@@ -337,9 +337,12 @@ pub async fn mcp_servers_reload(State(state): State<AppState>) -> Result<StatusC
 #[derive(Deserialize)]
 pub struct McpOauthBody {
     pub name: Option<String>,
-    pub scopes: Option<Vec<String>>,
+    /// 保留原始 JSON 值，在 mcp_servers_oauth_login 内手动校验类型，
+    /// 避免非数组直接触发 axum 422（无 errorCode），对齐 TS parseScopes。
+    pub scopes: Option<Value>,
+    /// 同上，避免非整数触发 axum 422，对齐 TS parseTimeoutSecs。
     #[serde(rename = "timeoutSecs")]
-    pub timeout_secs: Option<i64>,
+    pub timeout_secs: Option<Value>,
 }
 
 pub async fn mcp_servers_oauth_login(
@@ -356,28 +359,59 @@ pub async fn mcp_servers_oauth_login(
     }
     let mut params = serde_json::Map::new();
     params.insert("name".into(), Value::String(name.into()));
-    if let Some(scopes) = body.scopes {
-        let cleaned: Vec<String> = scopes
-            .into_iter()
-            .map(|s| s.trim().to_string())
-            .filter(|s| !s.is_empty())
-            .collect();
-        if !cleaned.is_empty() {
-            params.insert(
-                "scopes".into(),
-                Value::Array(cleaned.into_iter().map(Value::String).collect()),
-            );
+    // scopes：手动校验原始 JSON，对齐 TS parseScopes。
+    // - None/null → 省略 scopes；
+    // - 非数组 → mcp.scopes_invalid；
+    // - 任一元素非字符串或 trim 后为空 → mcp.scopes_empty；
+    // - 全部非空才组装为 Vec<String>；空数组省略（与 TS 一致）。
+    if let Some(scopes_val) = body.scopes {
+        if !scopes_val.is_null() {
+            let scopes_arr = scopes_val.as_array().ok_or_else(|| {
+                bad_request(ErrorCode::McpScopesInvalid, "scopes must be an array")
+            })?;
+            let mut cleaned: Vec<String> = Vec::with_capacity(scopes_arr.len());
+            for scope in scopes_arr {
+                // 非字符串或 trim 后为空统一抛 mcp.scopes_empty（对齐 TS）。
+                let trimmed = scope
+                    .as_str()
+                    .map(|s| s.trim())
+                    .filter(|s| !s.is_empty())
+                    .ok_or_else(|| {
+                        bad_request(
+                            ErrorCode::McpScopesEmpty,
+                            "scopes must be a non-empty array of strings",
+                        )
+                    })?;
+                cleaned.push(trimmed.to_string());
+            }
+            if !cleaned.is_empty() {
+                params.insert(
+                    "scopes".into(),
+                    Value::Array(cleaned.into_iter().map(Value::String).collect()),
+                );
+            }
         }
     }
-    if let Some(t) = body.timeout_secs {
-        if !(1..=600).contains(&t) {
-            return Err(bad_request_params(
-                ErrorCode::McpTimeoutTooLarge,
-                "timeoutSecs must be an integer between 1 and 600",
-                one_param("max", 600),
-            ));
+    // timeoutSecs：手动校验原始 JSON，对齐 TS parseTimeoutSecs。
+    // - None/null → 省略；
+    // - 非整数 → mcp.timeout_invalid；
+    // - 超出 1..=600 → mcp.timeout_too_large。
+    if let Some(t_val) = body.timeout_secs {
+        if !t_val.is_null() {
+            let t = t_val
+                .as_i64()
+                .ok_or_else(|| {
+                    bad_request(ErrorCode::McpTimeoutInvalid, "timeoutSecs must be an integer")
+                })?;
+            if !(1..=600).contains(&t) {
+                return Err(bad_request_params(
+                    ErrorCode::McpTimeoutTooLarge,
+                    "timeoutSecs must be an integer between 1 and 600",
+                    one_param("max", 600),
+                ));
+            }
+            params.insert("timeoutSecs".into(), Value::Number(t.into()));
         }
-        params.insert("timeoutSecs".into(), Value::Number(t.into()));
     }
     let result = state
         .codex
@@ -580,9 +614,11 @@ pub async fn plugins_uninstall(
 fn require_trimmed(value: &Option<String>, field: &str) -> Result<String, AppError> {
     match value.as_deref().map(|s| s.trim()).filter(|s| !s.is_empty()) {
         Some(s) => Ok(s.into()),
-        None => Err(bad_request(
+        // 对齐 TS requireTrimmedString：携带 { field } 供前端 i18n 插值。
+        None => Err(bad_request_params(
             ErrorCode::PluginsFieldRequired,
             format!("{field} is required"),
+            one_param("field", field),
         )),
     }
 }

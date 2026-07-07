@@ -47,7 +47,14 @@ impl Config {
             .map(|s| s.trim().to_string())
             .filter(|s| !s.is_empty());
 
-        let log_level = env::var("LOG_LEVEL").unwrap_or_else(|_| "info".to_string());
+        // 对齐 src/app.module.ts：LOG_LEVEL 未设置时开发态默认 "debug"、发布态默认 "info"。
+        let log_level = env::var("LOG_LEVEL").unwrap_or_else(|_| {
+            if cfg!(debug_assertions) {
+                "debug".to_string()
+            } else {
+                "info".to_string()
+            }
+        });
         let codex_bin = env::var("CODEX_BIN").unwrap_or_else(|_| "codex".to_string());
 
         Ok(Self {
