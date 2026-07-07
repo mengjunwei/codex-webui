@@ -27,7 +27,8 @@ pub fn spawn_all(db: Arc<Db>, codex: Arc<CodexProcessManager>) {
     spawn_token_usage(db.clone(), codex.clone());
     spawn_turn_diff(db.clone(), codex.clone());
     spawn_turn_errors(db.clone(), codex.clone());
-    spawn_pending_record(db.clone(), codex.clone());
+    // M1 FIX: pending_record moved to realtime.rs to merge with WS emit
+    // (was separate subscribers → TOCTOU: emit could arrive before DB record).
     spawn_pending_resolved(db.clone(), codex.clone());
     spawn_pending_expire(db.clone(), codex.clone());
 }
@@ -250,25 +251,12 @@ fn upsert_turn_error(db: &Db, thread_id: &str, turn_id: &str, message: &str) -> 
 }
 
 // ── pending-approvals: record server requests ───────────────────────────────
+// M1 FIX: record+emit is now done in realtime.rs::spawn_server_request_record_and_emit
+// to guarantee DB record completes before WS delivery (prevents TOCTOU where
+// client responds to a request that hasn't been recorded yet → 404).
+// record_server_request is called from there.
 
-fn spawn_pending_record(db: Arc<Db>, codex: Arc<CodexProcessManager>) {
-    let mut rx = codex.subscribe_server_requests();
-    tokio::spawn(async move {
-        loop {
-            match rx.recv().await {
-                Ok(req) => {
-                    if let Err(e) = record_server_request(&db, &codex, &req) {
-                        tracing::warn!("record server request failed: {e}");
-                    }
-                }
-                Err(RecvError::Lagged(n)) => tracing::warn!("pending-record subscriber lagged {n}"),
-                Err(RecvError::Closed) => break,
-            }
-        }
-    });
-}
-
-fn record_server_request(db: &Db, codex: &CodexProcessManager, req: &Value) -> Result<()> {
+pub fn record_server_request(db: &Db, codex: &CodexProcessManager, req: &Value) -> Result<()> {
     let params = req.get("params");
     let thread_id = params
         .and_then(|p| p.get("threadId"))

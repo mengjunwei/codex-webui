@@ -198,9 +198,11 @@ fn strip_bearer(s: &str) -> &str {
 // ── emit-forwarding tasks ────────────────────────────────────────────────────
 
 /// Spawn tasks that forward codex + terminal events to Socket.IO clients.
-pub fn spawn_emit_tasks(io: SocketIo, codex: Arc<CodexProcessManager>, terminal: Arc<TerminalService>) {
+/// M1 FIX: pending-record is merged with WS emit to prevent TOCTOU (DB record
+/// must complete before WS delivery so respond endpoint can find the row).
+pub fn spawn_emit_tasks(io: SocketIo, codex: Arc<CodexProcessManager>, terminal: Arc<TerminalService>, db: Arc<crate::db::Db>) {
     spawn_notification_emit(io.clone(), codex.clone());
-    spawn_server_request_emit(io.clone(), codex.clone());
+    spawn_server_request_record_and_emit(io.clone(), codex.clone(), db);
     spawn_lifecycle_emit(io.clone(), codex);
     spawn_terminal_output_emit(io.clone(), terminal.clone());
     spawn_terminal_exit_emit(io.clone(), terminal.clone());
@@ -235,12 +237,18 @@ fn spawn_notification_emit(io: SocketIo, codex: Arc<CodexProcessManager>) {
     });
 }
 
-fn spawn_server_request_emit(io: SocketIo, codex: Arc<CodexProcessManager>) {
+/// M1 FIX: merged record + emit — DB record completes before WS delivery.
+fn spawn_server_request_record_and_emit(io: SocketIo, codex: Arc<CodexProcessManager>, db: Arc<crate::db::Db>) {
     let mut rx = codex.subscribe_server_requests();
     tokio::spawn(async move {
         loop {
             match rx.recv().await {
                 Ok(req) => {
+                    // Phase 1: record to DB (must complete before WS emit).
+                    if let Err(e) = crate::event_subscribers::record_server_request(&db, &codex, &req) {
+                        tracing::warn!("record server request failed: {e}");
+                    }
+                    // Phase 2: emit to WS.
                     let thread_id = req
                         .get("params")
                         .and_then(|p| p.get("threadId"))
@@ -261,7 +269,7 @@ fn spawn_server_request_emit(io: SocketIo, codex: Arc<CodexProcessManager>) {
                         tracing::warn!("emit codex.serverRequest failed: {e}");
                     }
                 }
-                Err(RecvError::Lagged(n)) => tracing::warn!("server-request emit lagged {n}"),
+                Err(RecvError::Lagged(n)) => tracing::warn!("server-request record+emit lagged {n}"),
                 Err(RecvError::Closed) => break,
             }
         }
