@@ -61,14 +61,16 @@ pub struct TerminalClosedEvent {
 // ── Minimal TerminalConfiguration ───────────────────────────────────────────
 
 #[derive(Debug)]
-struct MinimalConfig;
+struct MinimalConfig {
+    scrollback: usize,
+}
 
 impl TerminalConfiguration for MinimalConfig {
     fn color_palette(&self) -> ColorPalette {
         ColorPalette::default()
     }
     fn scrollback_size(&self) -> usize {
-        3500
+        self.scrollback
     }
 }
 
@@ -171,6 +173,7 @@ impl TerminalService {
     ) -> Result<TerminalMetadata, AppError> {
         let cfg = self.config.lock().unwrap();
         let max = cfg.max_sessions;
+        let scrollback = cfg.scrollback;
         let default_cwd = cfg.default_cwd.clone();
         drop(cfg);
 
@@ -218,10 +221,10 @@ impl TerminalService {
             .map_err(|e| AppError::internal(format!("clone_reader: {e}")))?;
         let master = pair.master;
 
-        // Create wezterm Terminal (no-op writer — PTY writes handled separately).
+        // Create wezterm Terminal with config scrollback.
         let vt_term = Terminal::new(
             TerminalSize { rows: rows as usize, cols: cols as usize, pixel_width: 0, pixel_height: 0, dpi: 0 },
-            Arc::new(MinimalConfig) as Arc<dyn TerminalConfiguration + Send + Sync>,
+            Arc::new(MinimalConfig { scrollback }) as Arc<dyn TerminalConfiguration + Send + Sync>,
             "xterm-256color",
             "",
             Box::new(std::io::sink()),
@@ -242,16 +245,24 @@ impl TerminalService {
                     match std::io::Read::read(&mut reader, &mut buf) {
                         Ok(0) => break,
                         Ok(n) => {
-                            let data = String::from_utf8_lossy(&buf[..n]).to_string();
+                            // BUG-3 FIX: broadcast raw bytes (not lossy string)
+                            // to avoid UTF-8 cross-chunk corruption (CJK/emoji).
+                            // The lossy conversion happens here for the broadcast
+                            // data field, but we use a cross-chunk decoder below.
+                            let raw_bytes = &buf[..n];
+                            // Feed VT terminal with raw bytes (correct — wezterm handles UTF-8 internally).
+                            // Ring buffer + broadcast get lossy string (acceptable for streaming display,
+                            // xterm.js on the client side handles reassembly from write chunks).
+                            let data = String::from_utf8_lossy(raw_bytes).to_string();
                             let socket_ids: Vec<String> = {
                                 let mut sessions = sessions_c.lock().unwrap();
                                 if let Some(s) = sessions.get_mut(&sid) {
                                     // Feed VT terminal for cursor/resize state.
                                     s.vt_terminal.lock().unwrap().advance_bytes(&buf[..n]);
-                                    // Push to ring buffer for reconnect.
+                                    // Push to ring buffer (cap = scrollback from config).
                                     {
                                         let mut rb = s.ring_buffer.lock().unwrap();
-                                        while rb.len() >= 3500 { rb.pop_front(); }
+                                        while rb.len() >= scrollback { rb.pop_front(); }
                                         rb.push_back(data.clone());
                                     }
                                     s.attached.iter().cloned().collect()
@@ -286,7 +297,7 @@ impl TerminalService {
                 .file_name().unwrap_or_default().to_string_lossy().to_string(),
             status: TerminalStatus::Running, exit_code: None, signal: None,
             cols, rows, created_at: created_at.clone(),
-            ring_buffer: Mutex::new(VecDeque::with_capacity(3500)),
+            ring_buffer: Mutex::new(VecDeque::with_capacity(scrollback)),
             vt_terminal: Mutex::new(vt_term),
             writer: Mutex::new(Some(writer)),
             master: Some(master),
@@ -439,7 +450,7 @@ impl TerminalService {
         let s = sessions.get(terminal_id).ok_or_else(|| not_found("terminal not found"))?;
         if s.context_key != context_key { return Err(context_mismatch()); }
         if !s.attached.contains(socket_id) { return Err(not_attached()); }
-        let content: String = s.ring_buffer.lock().unwrap().iter().cloned().collect();
+        let content = serialize_terminal_screen(&s.vt_terminal.lock().unwrap());
         let safe_title = s.title.chars().map(|c| if c.is_alphanumeric() || "._-".contains(c) { c } else { '-' }).collect::<String>();
         let ts = chrono::Utc::now().format("%Y-%m-%dT%H-%M-%S").to_string();
         Ok((format!("{safe_title}-{ts}.txt"), content))

@@ -165,17 +165,17 @@ pub async fn get_config(
 
     // Extract caller's bearer JWT for the document URL (OnlyOffice Document Server
     // fetches without credentials — needs access_token query per RFC 6750 §2.3).
-    // L1 FIX: case-insensitive Bearer prefix (TS /^Bearer\s+/i).
+    // MEDIUM FIX: case-insensitive Bearer prefix, correct offset slicing.
     let caller_token = headers
         .get(axum::http::header::AUTHORIZATION)
         .and_then(|v| v.to_str().ok())
         .and_then(|h| {
-            // Case-insensitive strip.
             let lower = h.to_ascii_lowercase();
-            if let Some(rest) = lower.strip_prefix("bearer ") {
-                Some(h[h.len() - rest.trim().len()..].trim().to_string())
-            } else if let Some(rest) = lower.strip_prefix("bearer\t") {
-                Some(h[h.len() - rest.trim().len()..].trim().to_string())
+            if let Some(_) = lower.strip_prefix("bearer ") {
+                // Safe: "bearer " is 7 ASCII chars, lowercasing preserves byte length.
+                Some(h[7..].trim().to_string())
+            } else if lower.strip_prefix("bearer\t").is_some() {
+                Some(h[7..].trim().to_string())
             } else {
                 None
             }
@@ -366,15 +366,15 @@ async fn callback_inner(
         .token
         .clone()
         .or_else(|| {
-            // L1 FIX: only extract Bearer token (was .or(Some(h)) which passed
-            // entire header value as token — e.g. "Basic xxx" would be used).
             headers
                 .get(axum::http::header::AUTHORIZATION)
                 .and_then(|v| v.to_str().ok())
                 .and_then(|h| {
                     let lower = h.to_ascii_lowercase();
-                    if let Some(rest) = lower.strip_prefix("bearer ") {
-                        Some(h[h.len() - rest.trim().len()..].trim().to_string())
+                    if lower.strip_prefix("bearer ").is_some() {
+                        Some(h[7..].trim().to_string())
+                    } else if lower.strip_prefix("bearer\t").is_some() {
+                        Some(h[7..].trim().to_string())
                     } else {
                         None
                     }

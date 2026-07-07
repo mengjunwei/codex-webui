@@ -245,8 +245,11 @@ fn spawn_server_request_record_and_emit(io: SocketIo, codex: Arc<CodexProcessMan
             match rx.recv().await {
                 Ok(req) => {
                     // Phase 1: record to DB (must complete before WS emit).
+                    // MEDIUM-1 FIX: if DB record fails, skip emit entirely
+                    // (prevents phantom requests that can't be responded to).
                     if let Err(e) = crate::event_subscribers::record_server_request(&db, &codex, &req) {
-                        tracing::warn!("record server request failed: {e}");
+                        tracing::error!("record server request failed, skipping emit: {e}");
+                        continue;
                     }
                     // Phase 2: emit to WS.
                     let thread_id = req

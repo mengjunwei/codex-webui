@@ -442,6 +442,13 @@ pub async fn create_file(
             "path already exists (set overwrite=true)",
         ));
     }
+    // HIGH FIX: symlink escape check (same as write_file) — if target exists,
+    // canonicalize and verify within_workspace before writing.
+    if let Ok(canonical_target) = tokio::fs::canonicalize(&p).await {
+        if !within_workspace(&state, &canonical_target) {
+            return Err(forbidden("target resolves outside workspace (symlink escape?)"));
+        }
+    }
     let content = body.content.clone().unwrap_or_default();
     tokio::fs::write(&p, content)
         .await
@@ -1078,6 +1085,13 @@ pub async fn upload_files(
         if file_path.exists() && !overwrite {
             return Err(conflict(ErrorCode::FilesPathExists,
                 format!("{safe_name} already exists (set overwrite=true)")));
+        }
+        // HIGH FIX: symlink escape check — if target exists and is a symlink,
+        // canonicalize and verify within_workspace before writing.
+        if let Ok(canonical_target) = tokio::fs::canonicalize(&file_path).await {
+            if !within_workspace(&state, &canonical_target) {
+                return Err(forbidden("target resolves outside workspace (symlink escape?)"));
+            }
         }
         tokio::fs::write(&file_path, &data)
             .await
