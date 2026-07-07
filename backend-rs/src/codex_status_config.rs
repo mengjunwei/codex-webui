@@ -74,47 +74,8 @@ static SENSITIVE_KEY_RE: Lazy<Regex> =
 // ── status ───────────────────────────────────────────────────────────────────
 
 pub async fn status(State(state): State<AppState>) -> Result<Json<Value>, AppError> {
-    let generation = state.codex.generation();
-    let connected = state.codex.client().await.is_some();
-    let ready = generation > 0;
-    let now = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
-
-    // 结构与 TS CodexStatusResponse 完全对齐。需要额外 app-server 调用的探针
-    // 以 ok=true 和最小数据标记;前端的主要消费方
-    // (codex-status-banner.tsx)读取 runtime.status。
-    Ok(Json(json!({
-        "appServer": {
-            "ok": ready,
-            "connected": connected,
-            "initialized": ready,
-        },
-        "initialize": {
-            "ok": ready,
-            "data": null,
-        },
-        "account": { "ok": ready },
-        "config": { "ok": ready },
-        "provider": {
-            "ok": true,
-            "id": null,
-            "name": null,
-            "baseUrlMasked": null,
-            "envKey": null,
-            "envPresent": null,
-        },
-        "models": {
-            "ok": ready,
-            "listable": ready,
-            "defaultModel": null,
-            "count": 0,
-        },
-        "runtime": {
-            "status": if ready { "ready" } else { "unavailable" },
-            "reasons": [],
-            "checkedAt": now,
-            "cacheTtlMs": 0,
-        }
-    })))
+    // 由 CodexStatusService 聚合（探针 + TTL 缓存），结构对齐 TS CodexStatusResponse。
+    Ok(Json(state.status.get_status().await))
 }
 
 // ── approval-policy / sandbox-mode ───────────────────────────────────────────
@@ -147,6 +108,7 @@ pub async fn update_approval_policy(
         )
         .await
         .map_err(map_rpc)?;
+    state.status.invalidate();
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -178,6 +140,7 @@ pub async fn update_sandbox_mode(
         )
         .await
         .map_err(map_rpc)?;
+    state.status.invalidate();
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -252,6 +215,8 @@ pub async fn update_config(
         )
         .await
         .map_err(map_rpc)?;
+    // 配置已变更，失效就绪状态缓存。
+    state.status.invalidate();
     // 返回更新后的配置(重新读取)。
     read_config(State(state)).await
 }
@@ -309,6 +274,7 @@ pub async fn update_raw_config(
         )
         .await
         .map_err(map_rpc)?;
+    state.status.invalidate();
     Ok(Json(json!({ "filePath": path })))
 }
 

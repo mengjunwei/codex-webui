@@ -38,6 +38,9 @@ pub struct CodexProcessManager {
     notify_tx: broadcast::Sender<Value>,
     server_request_tx: broadcast::Sender<Value>,
     lifecycle_tx: broadcast::Sender<LifecycleEvent>,
+    /// 最近一次 initialize 握手结果（原始 JSON），供 CodexStatusService
+    /// 暴露为 `initialize.data`。握手失败或进程退出后为 None。
+    init_result: Mutex<Option<Value>>,
 }
 
 impl CodexProcessManager {
@@ -56,6 +59,7 @@ impl CodexProcessManager {
             notify_tx,
             server_request_tx,
             lifecycle_tx,
+            init_result: Mutex::new(None),
         }
     }
 
@@ -85,6 +89,11 @@ impl CodexProcessManager {
     /// 当前 generation（首次成功初始化之前为 0）。
     pub fn generation(&self) -> u64 {
         self.generation.load(Ordering::SeqCst)
+    }
+
+    /// 最近一次 initialize 握手结果（原始 JSON），未初始化时为 None。
+    pub async fn init_result(&self) -> Option<Value> {
+        self.init_result.lock().await.clone()
     }
 
     /// 向当前 app-server 发送 JSON-RPC 请求，不可用则返回错误。
@@ -123,10 +132,11 @@ impl CodexProcessManager {
 
         // 第三阶段：initialize 握手。
         match self.initialize_client(&client).await {
-            Ok(init) => {
+            Ok((init, init_value)) => {
                 self.generation.fetch_add(1, Ordering::SeqCst);
                 let restarted = new_generation > 1;
                 *self.current.lock().await = Some((new_generation, client));
+                *self.init_result.lock().await = Some(init_value);
 
                 tracing::info!(
                     codex_home = ?init.codex_home,
@@ -182,12 +192,16 @@ impl CodexProcessManager {
     }
 
     /// 在已启动的客户端上执行 initialize 握手。
-    async fn initialize_client(&self, client: &Arc<CodexJsonRpcClient>) -> Result<InitializeResponse, RpcError> {
+    /// 返回 `(结构化结果, 原始 JSON)` —— 原始 JSON 保留全部字段，供状态聚合暴露。
+    async fn initialize_client(
+        &self,
+        client: &Arc<CodexJsonRpcClient>,
+    ) -> Result<(InitializeResponse, Value), RpcError> {
         let params = serde_json::to_value(default_initialize_params())?;
         let init_value = client.request("initialize", Some(params)).await?;
-        let init: InitializeResponse = serde_json::from_value(init_value)?;
+        let init: InitializeResponse = serde_json::from_value(init_value.clone())?;
         client.notify("initialized", Some(Value::Object(Default::default())))?;
-        Ok(init)
+        Ok((init, init_value))
     }
 
     /// 将新客户端的事件重新广播到管理器级别的通道中。
@@ -244,6 +258,7 @@ impl CodexProcessManager {
         // 才发出 Unavailable（不是陈旧/重复的关闭，也不是 destroy ——
         // 后者会在监视器唤醒前已将 `current` 置空）。
         if stale {
+            *self.init_result.lock().await = None;
             let _ = self.lifecycle_tx.send(LifecycleEvent::Unavailable {
                 generation,
                 message: "codex app-server exited".into(),

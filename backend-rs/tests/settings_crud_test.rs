@@ -24,11 +24,14 @@ fn state() -> AppState {
         let r = settings::SettingsReader::new(&db);
         TerminalConfig::from_settings(&r)
     };
+    let codex = Arc::new(CodexProcessManager::new("codex".into(), None));
     AppState {
         db,
         auth: Arc::new(AuthService::new("test-key")),
-        codex: Arc::new(CodexProcessManager::new("codex".into(), None)),
+        status: Arc::new(codex_webui::codex_status::CodexStatusService::new(codex.clone())),
+        codex,
         terminal: TerminalService::new(term_cfg),
+        resume_registry: Arc::new(codex_webui::threads::ThreadResumeRegistry::new()),
         dynamic_files_roots: Arc::new(Mutex::new(HashSet::new())),
     }
 }
@@ -276,4 +279,21 @@ async fn pending_approvals_respond_not_found_is_404() {
         .unwrap();
     let v: Value = serde_json::from_slice(&body).unwrap();
     assert_eq!(v["errorCode"], "approvals.not_found");
+}
+
+// ── CodexStatusService 接线（codex 未连接时应报告 unavailable）────────────────
+
+#[tokio::test]
+async fn codex_status_reports_unavailable_when_not_connected() {
+    // codex 进程未启动 → CodexStatusService 应聚合为 unavailable，并带原因。
+    let app = build_router(state());
+    let v = authed(app, "GET", "/api/codex/status", None).await;
+    assert_eq!(v["appServer"]["ok"], false);
+    assert_eq!(v["appServer"]["connected"], false);
+    assert_eq!(v["runtime"]["status"], "unavailable");
+    let reasons = v["runtime"]["reasons"].as_array().unwrap();
+    assert!(
+        reasons.iter().any(|r| r == "appServerUnavailable"),
+        "expected appServerUnavailable reason, got {reasons:?}"
+    );
 }

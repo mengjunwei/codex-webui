@@ -2,6 +2,7 @@
 
 use crate::auth::AuthService;
 use crate::codex::CodexProcessManager;
+use crate::codex_status::CodexStatusService;
 use crate::db::Db;
 use crate::terminal::TerminalService;
 use crate::threads::ThreadResumeRegistry;
@@ -14,6 +15,8 @@ pub struct AppState {
     pub auth: Arc<AuthService>,
     pub codex: Arc<CodexProcessManager>,
     pub terminal: Arc<TerminalService>,
+    /// 就绪状态聚合服务（驱动 /codex/status、/account.provider、/logs/export.runtimeStatus）。
+    pub status: Arc<CodexStatusService>,
     /// H6：线程 resume 注册表（按 generation 去重，对齐 TS ThreadResumeRegistryService）。
     pub resume_registry: Arc<ThreadResumeRegistry>,
     /// 通过 POST /api/files/roots 动态注册的工作区根目录。

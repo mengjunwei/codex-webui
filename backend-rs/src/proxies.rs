@@ -72,10 +72,11 @@ pub async fn account_read(State(state): State<AppState>) -> Result<Json<Value>, 
         .request("account/read", Some(json!({ "refreshToken": false })))
         .await
         .map_err(map_rpc)?;
-    // provider 元数据需要 CodexStatusService(Phase 3);目前暂以 null 占位。
+    // provider 元数据来自 CodexStatusService（对齐 TS getProviderStatus）。
+    let provider = state.status.provider_status().await;
     let mut merged = account;
     if let Value::Object(ref mut m) = merged {
-        m.insert("provider".into(), Value::Null);
+        m.insert("provider".into(), provider);
     }
     Ok(Json(merged))
 }
@@ -145,6 +146,7 @@ pub async fn account_login(
         .request("account/login/start", Some(params))
         .await
         .map_err(map_rpc)?;
+    state.status.invalidate();
     Ok(Json(result))
 }
 
@@ -179,6 +181,7 @@ pub async fn account_logout(State(state): State<AppState>) -> Result<StatusCode,
         .request("account/logout", None)
         .await
         .map_err(map_rpc)?;
+    state.status.invalidate();
     Ok(StatusCode::NO_CONTENT)
 }
 

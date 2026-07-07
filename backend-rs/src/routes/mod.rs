@@ -45,6 +45,11 @@ pub fn build_router(state: AppState) -> Router {
     use crate::sqlite_handlers as sq;
     use crate::threads as th;
 
+    // 上传体积上限（取自 settings 的 `files.uploadMaxBytes`，默认 100 MB）。
+    // axum 的 `Multipart` 提取器在缺少 `DefaultBodyLimit` 时回落到 2 MB 默认值，
+    // 会让 /chat/upload 与 /files/upload 任何 >2 MB 的上传都被拒绝；这里显式覆盖。
+    let upload_limit = state.settings_reader().get_upload_max_bytes() as usize;
+
     // 受保护的 API 子路由。
     let api = Router::new()
         // ── Phase 0 探针(同时作为 GET /api/status,与 AppController 对齐)──
@@ -134,6 +139,7 @@ pub fn build_router(state: AppState) -> Router {
         .route("/files/archive/entry", get(fl::archive_entry))
         // ── onlyoffice 配置(受保护)──
         .route("/onlyoffice/config", get(oo::get_config))
+        .layer(axum::extract::DefaultBodyLimit::max(upload_limit))
         .layer(axum::middleware::from_fn_with_state(
             state.clone(),
             require_auth,

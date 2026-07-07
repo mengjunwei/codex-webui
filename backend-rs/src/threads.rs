@@ -452,6 +452,43 @@ impl ThreadResumeRegistry {
 /// ChatUploadService.resolveStoredUploadPath)暂缓,直到这些服务落地。
 /// H5 修复：校验 discriminated UserInput 数组。返回已校验的数组。
 /// H4 修复：mention / localImage 路径现在通过 `files::resolve_safe_path` 校验。
+/// 提取文本中内联的绝对路径 @mention（对齐 TS `validateInlineTextMentions` 的正则
+/// `/(^|\s)@(\/(?:\\ |[^\s])+)/g`）：前导为行首或空白，路径以 `/` 开头，
+/// 其中 `\ ` 转义为真实空格。返回去重后的路径列表（含前导 `/`）。
+fn extract_inline_mentions(text: &str) -> Vec<String> {
+    let chars: Vec<char> = text.chars().collect();
+    let n = chars.len();
+    let mut i = 0usize;
+    let mut out: Vec<String> = Vec::new();
+    let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+    while i < n {
+        let at_boundary = i == 0 || chars[i - 1].is_whitespace();
+        if at_boundary && chars[i] == '@' && i + 1 < n && chars[i + 1] == '/' {
+            let mut j = i + 1; // 从前导 '/' 开始捕获
+            let mut path = String::new();
+            while j < n {
+                if chars[j] == '\\' && j + 1 < n && chars[j + 1] == ' ' {
+                    path.push(' '); // `\ ` → 真实空格
+                    j += 2;
+                    continue;
+                }
+                if chars[j].is_whitespace() {
+                    break;
+                }
+                path.push(chars[j]);
+                j += 1;
+            }
+            i = j;
+            if !path.is_empty() && seen.insert(path.clone()) {
+                out.push(path);
+            }
+        } else {
+            i += 1;
+        }
+    }
+    out
+}
+
 async fn validate_turn_input(input: &Value, state: &AppState) -> Result<Value, AppError> {
     let arr = input.as_array().filter(|a| !a.is_empty()).ok_or_else(|| {
         bad_request(
@@ -481,6 +518,24 @@ async fn validate_input_item(item: &Value, i: usize, state: &AppState) -> Result
     match ty {
         "text" => {
             let text = req_string(obj, "text", i)?;
+            // H7：校验文本中内联的绝对 @mention 路径（对齐 TS validateInlineTextMentions）。
+            // 前端会把文件 mention 内联为 @/abs/path，后端仍是路径访问的安全边界。
+            for mention in extract_inline_mentions(&text) {
+                crate::files::resolve_safe_path(state, &mention)
+                    .await
+                    .map_err(|e| {
+                        AppError::business(
+                            ErrorCode::FilesPathOutsideWorkspace,
+                            StatusCode::BAD_REQUEST,
+                            format!("inline mention path validation failed: {e}"),
+                            Some({
+                                let mut p = std::collections::BTreeMap::new();
+                                p.insert("index".to_string(), serde_json::Value::Number(i.into()));
+                                p
+                            }),
+                        )
+                    })?;
+            }
             // H5：校验 text_elements（byteRange + placeholder 结构校验）。
             if let Some(elements) = obj.get("text_elements") {
                 if let Some(arr) = elements.as_array() {

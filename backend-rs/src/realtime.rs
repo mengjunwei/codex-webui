@@ -10,11 +10,13 @@
 
 use crate::auth::AuthService;
 use crate::codex::{CodexProcessManager, LifecycleEvent};
+use crate::db::Db;
 use crate::terminal::{TerminalMetadataEvent, TerminalService};
 use serde_json::{json, Value};
 use socketioxide::extract::{AckSender, Data as SocketData, SocketRef, State};
 use socketioxide::SocketIo;
-use std::sync::Arc;
+use std::collections::HashSet;
+use std::sync::{Arc, Mutex};
 use tokio::sync::broadcast::error::RecvError;
 
 /// 注入到 socketioxide 处理器中的共享 realtime 状态。
@@ -23,6 +25,9 @@ pub struct RealtimeState {
     pub auth: Arc<AuthService>,
     pub codex: Arc<CodexProcessManager>,
     pub terminal: Arc<TerminalService>,
+    /// 用于终端 cwd 沙箱校验（工作区根目录）。
+    pub db: Arc<Db>,
+    pub dynamic_files_roots: Arc<Mutex<HashSet<String>>>,
 }
 
 /// 构建 Socket.IO 层与句柄,挂接 `/ws` 命名空间。
@@ -144,11 +149,31 @@ fn on_term_list(_s: SocketRef, State(state): State<RealtimeState>, SocketData(da
 
 fn on_term_open(s: SocketRef, State(state): State<RealtimeState>, SocketData(data): SocketData<Value>, ack: AckSender) {
     let ctx = data.get("contextKey").and_then(Value::as_str).unwrap_or("global").to_string();
-    let cwd = data.get("cwd").and_then(Value::as_str);
+    let cwd_in = data.get("cwd").and_then(Value::as_str);
     let cols = data.get("cols").and_then(Value::as_u64).map(|n| n as u16);
     let rows = data.get("rows").and_then(Value::as_u64).map(|n| n as u16);
     let title = data.get("title").and_then(Value::as_str);
-    match state.terminal.open(s.id.as_str(), &ctx, cwd, cols, rows, title) {
+    // 终端 cwd 沙箱化：按 TS resolveTerminalCwd 解析候选并强制限定在工作区根目录内。
+    let default_cwd = state.terminal.default_cwd();
+    let dyn_roots: HashSet<String> = state
+        .dynamic_files_roots
+        .lock()
+        .map(|g| g.iter().cloned().collect())
+        .unwrap_or_default();
+    let cwd = match crate::files::resolve_terminal_cwd(
+        &state.db,
+        &dyn_roots,
+        &ctx,
+        cwd_in,
+        default_cwd.as_deref(),
+    ) {
+        Ok(c) => c,
+        Err(e) => {
+            let _ = ack.send(&json!({ "ok": false, "error": e.to_string() }));
+            return;
+        }
+    };
+    match state.terminal.open(s.id.as_str(), &ctx, Some(&cwd), cols, rows, title) {
         Ok(meta) => { let _ = ack.send(&json!({ "ok": true, "terminal": meta, "config": state.terminal.get_config_json() })); }
         Err(e) => { let _ = ack.send(&json!({ "ok": false, "error": e.to_string() })); }
     }
@@ -207,7 +232,7 @@ fn on_term_download(s: SocketRef, State(state): State<RealtimeState>, SocketData
     let ctx = data.get("contextKey").and_then(Value::as_str).unwrap_or("").to_string();
     let tid = data.get("terminalId").and_then(Value::as_str).unwrap_or("").to_string();
     match state.terminal.download(s.id.as_str(), &ctx, &tid) {
-        Ok((filename, content)) => { let _ = ack.send(&json!({ "ok": true, "filename": filename, "content": content })); }
+        Ok((filename, content)) => { let _ = ack.send(&json!({ "ok": true, "data": { "filename": filename, "content": content } })); }
         Err(e) => { let _ = ack.send(&json!({ "ok": false, "error": e.to_string() })); }
     }
 }

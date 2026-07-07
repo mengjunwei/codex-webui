@@ -176,6 +176,11 @@ impl TerminalService {
         json!({ "maxSessions": c.max_sessions, "graceMs": c.grace_ms, "scrollback": c.scrollback, "defaultCwd": c.default_cwd })
     }
 
+    /// 配置的默认终端 cwd（供 realtime 层在做 cwd 沙箱解析时按 TS 优先级使用）。
+    pub fn default_cwd(&self) -> Option<String> {
+        self.config.lock().unwrap().default_cwd.clone()
+    }
+
     /// 列出某个 context 下的终端。
     pub fn list(&self, context_key: &str) -> Vec<TerminalMetadata> {
         self.sessions.lock().unwrap().values()

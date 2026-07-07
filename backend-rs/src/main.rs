@@ -58,14 +58,22 @@ async fn main() -> anyhow::Result<()> {
     let reader = settings::SettingsReader::new(&db);
     let terminal = TerminalService::new(TerminalConfig::from_settings(&reader));
 
+    // 动态工作区根目录（POST /api/files/roots 注册）；终端 cwd 沙箱与文件路由共用。
+    let dynamic_files_roots = Arc::new(Mutex::new(HashSet::new()));
+
     // 实时 Socket.IO 网关（`/ws` 命名空间）+ emit 转发任务。
     let rt_state = codex_webui::realtime::RealtimeState {
         auth: auth.clone(),
         codex: codex.clone(),
         terminal: terminal.clone(),
+        db: db.clone(),
+        dynamic_files_roots: dynamic_files_roots.clone(),
     };
     let (ws_layer, io) = codex_webui::realtime::build(rt_state);
     codex_webui::realtime::spawn_emit_tasks(io, codex.clone(), terminal.clone(), db.clone());
+
+    // 就绪状态聚合服务（/codex/status、/account.provider、/logs/export 共享其缓存）。
+    let status_service = Arc::new(codex_webui::codex_status::CodexStatusService::new(codex.clone()));
 
     // 共享状态。
     let state = AppState {
@@ -73,8 +81,9 @@ async fn main() -> anyhow::Result<()> {
         auth,
         codex,
         terminal,
+        status: status_service,
         resume_registry: Arc::new(ThreadResumeRegistry::new()),
-        dynamic_files_roots: Arc::new(Mutex::new(HashSet::new())),
+        dynamic_files_roots,
     };
 
     let app = build_router(state).layer(ws_layer);

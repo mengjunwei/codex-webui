@@ -27,10 +27,12 @@ fn state(api_key: &str) -> AppState {
         let r = codex_webui::settings::SettingsReader::new(&db);
         TerminalConfig::from_settings(&r)
     };
+    let codex = Arc::new(CodexProcessManager::new("codex".into(), None));
     AppState {
         db,
         auth: Arc::new(AuthService::new(api_key)),
-        codex: Arc::new(CodexProcessManager::new("codex".into(), None)),
+        status: Arc::new(codex_webui::codex_status::CodexStatusService::new(codex.clone())),
+        codex,
         terminal: TerminalService::new(term_cfg),
         resume_registry: Arc::new(codex_webui::threads::ThreadResumeRegistry::new()),
         dynamic_files_roots: Arc::new(Mutex::new(HashSet::new())),

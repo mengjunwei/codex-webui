@@ -142,8 +142,8 @@ pub async fn export_diagnostics(
             uptime_seconds: uptime_seconds(),
             codex_version: codex_version_async(&state).await,
         },
-        // runtimeStatus 需要 CodexStatusService（Phase 1）；在此之前先用占位值。
-        runtime_status: Value::Null,
+        // 运行时就绪状态（来自 CodexStatusService，对齐 TS statusService.getStatus()）。
+        runtime_status: state.status.get_status().await,
         logs,
     }))
 }

@@ -148,7 +148,9 @@ fn is_descendant_of(child: &Path, ancestor: &Path) -> bool {
     }
 }
 
-fn workspace_roots(state: &AppState) -> Vec<String> {
+/// 计算工作区根目录集合（配置根 + 家目录 + 动态根），供路径校验复用。
+/// 从 `workspace_roots(state)` 抽出，以便终端 cwd 沙箱等无 AppState 的调用方复用。
+pub fn compute_workspace_roots(db: &crate::db::Db, dynamic_roots: &HashSet<String>) -> Vec<String> {
     let mut out: HashSet<String> = HashSet::new();
     // 家目录 —— 规范化以匹配 Windows 上规范化后文件路径的逐字前缀（\\?\）
     // （修复评审提出的 C1）。
@@ -161,7 +163,7 @@ fn workspace_roots(state: &AppState) -> Vec<String> {
         }
     }
     // 从设置中读取已配置的 WORKSPACE_ROOTS（修复评审提出的 H1）。
-    let reader = crate::settings::SettingsReader::new(&state.db);
+    let reader = crate::settings::SettingsReader::new(db);
     if let Some(roots_str) = reader.get_string("security.workspaceRoots") {
         for root in roots_str.split(',').map(|s| s.trim()).filter(|s| !s.is_empty()) {
             if let Ok(c) = std::fs::canonicalize(root) {
@@ -170,10 +172,95 @@ fn workspace_roots(state: &AppState) -> Vec<String> {
         }
     }
     // 动态根目录（在 add_root 时已规范化）。
-    for r in state.dynamic_files_roots.lock().map(|g| g.iter().cloned().collect::<Vec<_>>()).unwrap_or_default() {
-        out.insert(r);
+    for r in dynamic_roots {
+        out.insert(r.clone());
     }
     out.into_iter().collect()
+}
+
+fn workspace_roots(state: &AppState) -> Vec<String> {
+    let dyn_roots: HashSet<String> = state
+        .dynamic_files_roots
+        .lock()
+        .map(|g| g.iter().cloned().collect())
+        .unwrap_or_default();
+    compute_workspace_roots(&state.db, &dyn_roots)
+}
+
+/// 判断规范化路径是否位于任一工作区根目录之下（含等于根本身）。
+pub fn is_path_in_workspace(db: &crate::db::Db, dynamic_roots: &HashSet<String>, p: &Path) -> bool {
+    let roots = compute_workspace_roots(db, dynamic_roots);
+    let p_str = p.to_string_lossy().to_string();
+    roots.iter().any(|r| is_within(p, Path::new(r)) || p_str == *r)
+}
+
+/// 解析终端 cwd：按 TS `resolveTerminalCwd` 优先级选择候选，并强制沙箱化
+/// （必须位于工作区根目录之内且为已存在的目录）。
+///
+/// 优先级（对齐 TS）：
+/// 1. 配置的 `defaultCwd`（若设置则对所有终端生效）；
+/// 2. `thread:` 上下文 —— 必须显式提供 cwd，否则 `terminal.cwd_required`；
+/// 3. 其他上下文 —— 回落到家目录。
+pub fn resolve_terminal_cwd(
+    db: &crate::db::Db,
+    dynamic_roots: &HashSet<String>,
+    context_key: &str,
+    requested: Option<&str>,
+    default_cwd: Option<&str>,
+) -> Result<String, AppError> {
+    let candidate = if let Some(d) = default_cwd.map(str::trim).filter(|s| !s.is_empty()) {
+        d.to_string()
+    } else if context_key.starts_with("thread:") {
+        match requested.map(str::trim).filter(|s| !s.is_empty()) {
+            Some(c) => c.to_string(),
+            None => {
+                return Err(bad_request(
+                    ErrorCode::TerminalCwdRequired,
+                    "Thread terminal cwd is required",
+                ))
+            }
+        }
+    } else {
+        std::env::var("USERPROFILE")
+            .or_else(|_| std::env::var("HOME"))
+            .unwrap_or_default()
+    };
+
+    if candidate.trim().is_empty() {
+        return Err(AppError::business(
+            ErrorCode::TerminalInvalidCwd,
+            StatusCode::BAD_REQUEST,
+            "Terminal cwd is required".into(),
+            None,
+        ));
+    }
+
+    let canon = std::fs::canonicalize(&candidate).map_err(|_| {
+        AppError::business(
+            ErrorCode::TerminalInvalidCwd,
+            StatusCode::BAD_REQUEST,
+            format!("Terminal cwd is invalid or outside allowed workspace roots: {candidate}"),
+            None,
+        )
+    })?;
+    if !is_path_in_workspace(db, dynamic_roots, &canon) {
+        return Err(AppError::business(
+            ErrorCode::FilesPathOutsideWorkspace,
+            StatusCode::FORBIDDEN,
+            "Terminal cwd is outside allowed workspace roots".into(),
+            None,
+        ));
+    }
+    let is_dir = std::fs::metadata(&canon).map(|m| m.is_dir()).unwrap_or(false);
+    if !is_dir {
+        return Err(AppError::business(
+            ErrorCode::TerminalCwdNotDirectory,
+            StatusCode::BAD_REQUEST,
+            "Terminal cwd must be an existing directory".into(),
+            None,
+        ));
+    }
+    Ok(canon.to_string_lossy().to_string())
 }
 
 // ── Handler（处理器）────────────────────────────────────────────────────────
@@ -1182,7 +1269,9 @@ pub async fn archive_list(
         .await
         .map_err(|e| AppError::internal(format!("archive task: {e}")))?
         .map_err(|e| AppError::internal(format!("archive list: {e}")))?;
-    Ok(Json(json!({ "path": resolved.original, "entries": entries })))
+    // 扁平条目 → 嵌套目录树（对齐 TS ArchiveService.buildTree）。
+    let tree = build_archive_tree(entries);
+    Ok(Json(json!({ "path": resolved.original, "entries": tree })))
 }
 
 pub async fn archive_entry(
@@ -1202,7 +1291,18 @@ pub async fn archive_entry(
     let data = tokio::task::spawn_blocking(move || read_archive_entry(&path, &ep))
         .await
         .map_err(|e| AppError::internal(format!("archive task: {e}")))?
-        .map_err(|e| AppError::internal(format!("archive read: {e}")))?;
+        .map_err(|e| match e {
+            ArchiveReadError::TooLarge => AppError::business(
+                ErrorCode::FilesFileTooLarge,
+                StatusCode::PAYLOAD_TOO_LARGE,
+                format!(
+                    "Archive entry exceeds maximum size ({} bytes)",
+                    MAX_ARCHIVE_ENTRY_BYTES
+                ),
+                None,
+            ),
+            ArchiveReadError::Other(s) => AppError::internal(format!("archive read: {s}")),
+        })?;
 
     let mime = guess_mime_type(entry_path);
     Ok(Response::builder()
@@ -1247,6 +1347,8 @@ fn is_safe_entry_name(name: &str) -> bool {
 
 const MAX_ARCHIVE_ENTRIES: usize = 20_000;
 const MAX_ARCHIVE_TOTAL_BYTES: u64 = 1 << 30; // 1 GB
+/// 单个归档条目解压后的字节上限（对齐 TS MAX_ARCHIVE_ENTRY_BYTES，防 zip-bomb OOM）。
+const MAX_ARCHIVE_ENTRY_BYTES: u64 = 50 * 1024 * 1024; // 50 MB
 
 fn list_archive_entries(path: &Path) -> Result<Vec<serde_json::Value>, String> {
     let fmt = detect_format(path).ok_or("unsupported archive format")?;
@@ -1322,38 +1424,212 @@ fn list_tar<R: std::io::Read>(reader: R) -> Result<Vec<serde_json::Value>, Strin
     Ok(entries)
 }
 
-fn read_archive_entry(path: &Path, entry_name: &str) -> Result<Vec<u8>, String> {
-    let fmt = detect_format(path).ok_or("unsupported archive format")?;
+/// 归档读取错误：`TooLarge` 区分"条目超过解压上限"（→ 413）与其他错误（→ 500）。
+enum ArchiveReadError {
+    TooLarge,
+    Other(String),
+}
+
+fn read_archive_entry(path: &Path, entry_name: &str) -> Result<Vec<u8>, ArchiveReadError> {
+    use ArchiveReadError::*;
+    let fmt = detect_format(path).ok_or_else(|| Other("unsupported archive format".into()))?;
     match fmt {
         ArchiveFormat::Zip => {
-            let file = std::fs::File::open(path).map_err(|e| e.to_string())?;
-            let mut archive = zip::ZipArchive::new(file).map_err(|e| e.to_string())?;
-            let mut entry = archive.by_name(entry_name).map_err(|e| e.to_string())?;
-            let mut buf = Vec::new();
-            std::io::Read::read_to_end(&mut entry, &mut buf).map_err(|e| e.to_string())?;
-            Ok(buf)
+            let file = std::fs::File::open(path).map_err(|e| Other(e.to_string()))?;
+            let mut archive = zip::ZipArchive::new(file).map_err(|e| Other(e.to_string()))?;
+            let entry = archive.by_name(entry_name).map_err(|e| Other(e.to_string()))?;
+            read_limited(entry)
         }
-        ArchiveFormat::Tar => read_tar_entry(std::fs::File::open(path).map_err(|e| e.to_string())?, entry_name),
-        ArchiveFormat::TarGz => read_tar_entry(flate2::read::GzDecoder::new(std::fs::File::open(path).map_err(|e| e.to_string())?), entry_name),
+        ArchiveFormat::Tar => read_tar_entry(std::fs::File::open(path).map_err(|e| Other(e.to_string()))?, entry_name),
+        ArchiveFormat::TarGz => read_tar_entry(flate2::read::GzDecoder::new(std::fs::File::open(path).map_err(|e| Other(e.to_string()))?), entry_name),
         ArchiveFormat::TarBz2 | ArchiveFormat::TarXz => {
             // bz2/xz 解码器需要额外的 crate；暂未实现。
-            Err("bz2/xz archive entry extraction not yet supported".into())
+            Err(Other("bz2/xz archive entry extraction not yet supported".into()))
         }
     }
 }
 
-fn read_tar_entry<R: std::io::Read>(reader: R, entry_name: &str) -> Result<Vec<u8>, String> {
+fn read_tar_entry<R: std::io::Read>(reader: R, entry_name: &str) -> Result<Vec<u8>, ArchiveReadError> {
+    use ArchiveReadError::*;
     let mut archive = tar::Archive::new(reader);
-    for entry in archive.entries().map_err(|e| e.to_string())? {
-        let mut entry = entry.map_err(|e| e.to_string())?;
-        let path = entry.path().map_err(|e| e.to_string())?.to_string_lossy().to_string();
+    for entry in archive.entries().map_err(|e| Other(e.to_string()))? {
+        let entry = entry.map_err(|e| Other(e.to_string()))?;
+        let path = entry.path().map_err(|e| Other(e.to_string()))?.to_string_lossy().to_string();
         if path == entry_name {
-            let mut buf = Vec::new();
-            std::io::Read::read_to_end(&mut entry, &mut buf).map_err(|e| e.to_string())?;
-            return Ok(buf);
+            return read_limited(entry);
         }
     }
-    Err(format!("entry not found: {entry_name}"))
+    Err(Other(format!("entry not found: {entry_name}")))
+}
+
+/// 最多读取 `MAX_ARCHIVE_ENTRY_BYTES` 字节；超出则返回 `TooLarge`（防 zip-bomb 导致 OOM）。
+fn read_limited<R: std::io::Read>(reader: R) -> Result<Vec<u8>, ArchiveReadError> {
+    let limit = MAX_ARCHIVE_ENTRY_BYTES as usize;
+    let mut buf = Vec::new();
+    let mut limited = std::io::Read::take(reader, (limit + 1) as u64);
+    std::io::Read::read_to_end(&mut limited, &mut buf)
+        .map_err(|e| ArchiveReadError::Other(e.to_string()))?;
+    if buf.len() > limit {
+        return Err(ArchiveReadError::TooLarge);
+    }
+    Ok(buf)
+}
+
+/// 将扁平归档条目构建为嵌套目录树（对齐 TS `ArchiveService.buildTree`）。
+///
+/// 目录节点带 `children` 数组；按"目录优先 + 名称"递归排序。
+fn build_archive_tree(entries: Vec<serde_json::Value>) -> Vec<serde_json::Value> {
+    struct Node {
+        name: String,
+        path: String,
+        is_dir: bool,
+        size: serde_json::Value,
+        children: Vec<usize>, // arena 索引
+    }
+
+    fn norm(p: &str) -> String {
+        p.trim_end_matches('/').to_string()
+    }
+    fn dirname(p: &str) -> &str {
+        match p.rfind('/') {
+            Some(i) => &p[..i],
+            None => "",
+        }
+    }
+
+    let mut arena: Vec<Node> = Vec::new();
+    let mut dir_index: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
+    let mut roots: Vec<usize> = Vec::new();
+
+    // ensure_dir：返回（必要时创建）目录路径对应的节点索引。
+    fn ensure_dir(
+        arena: &mut Vec<Node>,
+        dir_index: &mut std::collections::HashMap<String, usize>,
+        roots: &mut Vec<usize>,
+        dir_path: &str,
+    ) -> usize {
+        if let Some(&idx) = dir_index.get(dir_path) {
+            return idx;
+        }
+        // 自底向上收集尚未创建的祖先，再自顶向下创建。
+        let mut chain: Vec<String> = Vec::new();
+        let mut cur = dir_path.to_string();
+        loop {
+            if dir_index.contains_key(&cur) {
+                break;
+            }
+            chain.push(cur.clone());
+            let parent = match cur.rfind('/') {
+                Some(i) => &cur[..i],
+                None => "",
+            };
+            if parent.is_empty() {
+                break;
+            }
+            cur = parent.to_string();
+        }
+        for p in chain.into_iter().rev() {
+            let name = p.rsplit('/').next().unwrap_or(&p).to_string();
+            let idx = arena.len();
+            arena.push(Node {
+                name,
+                path: p.clone(),
+                is_dir: true,
+                size: serde_json::Value::Null,
+                children: Vec::new(),
+            });
+            dir_index.insert(p.clone(), idx);
+            let parent = match p.rfind('/') {
+                Some(i) => &p[..i],
+                None => "",
+            };
+            if parent.is_empty() {
+                roots.push(idx);
+            } else {
+                let pidx = *dir_index
+                    .get(parent)
+                    .expect("ancestor created in prior iteration");
+                arena[pidx].children.push(idx);
+            }
+        }
+        *dir_index.get(dir_path).unwrap()
+    }
+
+    // 先按 path 排序：目录路径短于其下文件，保证父目录先于子项处理。
+    let mut flat: Vec<(String, bool, serde_json::Value)> = entries
+        .into_iter()
+        .map(|e| {
+            let path = norm(e.get("path").and_then(|v| v.as_str()).unwrap_or(""));
+            let is_dir = e.get("type").and_then(|v| v.as_str()) == Some("directory");
+            let size = e.get("size").cloned().unwrap_or(serde_json::Value::Null);
+            (path, is_dir, size)
+        })
+        .collect();
+    flat.sort_by(|a, b| a.0.cmp(&b.0));
+
+    for (path, is_dir, size) in flat {
+        if path.is_empty() {
+            continue;
+        }
+        let name = path.rsplit('/').next().unwrap_or(&path).to_string();
+        let parent = dirname(&path);
+        let idx = arena.len();
+        arena.push(Node {
+            name,
+            path: path.clone(),
+            is_dir,
+            size,
+            children: Vec::new(),
+        });
+        if parent.is_empty() {
+            roots.push(idx);
+        } else {
+            let pidx = ensure_dir(&mut arena, &mut dir_index, &mut roots, parent);
+            arena[pidx].children.push(idx);
+        }
+        if is_dir {
+            dir_index.insert(path, idx);
+        }
+    }
+
+    // 每个节点的子列表按"目录优先 + 名称"排序（遍历所有节点即覆盖所有层级）。
+    for i in 0..arena.len() {
+        let mut keys: Vec<(bool, String, usize)> = {
+            let children = &arena[i].children;
+            children
+                .iter()
+                .map(|&c| (arena[c].is_dir, arena[c].name.clone(), c))
+                .collect()
+        };
+        keys.sort_by(|a, b| match (a.0, b.0) {
+            (true, false) => std::cmp::Ordering::Less,
+            (false, true) => std::cmp::Ordering::Greater,
+            _ => a.1.cmp(&b.1),
+        });
+        arena[i].children = keys.into_iter().map(|(_, _, c)| c).collect();
+    }
+
+    fn to_json(arena: &[Node], idx: usize) -> serde_json::Value {
+        let n = &arena[idx];
+        let mut m = serde_json::Map::new();
+        m.insert("name".into(), serde_json::Value::String(n.name.clone()));
+        m.insert("path".into(), serde_json::Value::String(n.path.clone()));
+        m.insert(
+            "type".into(),
+            serde_json::Value::String(
+                if n.is_dir { "directory" } else { "file" }.to_string(),
+            ),
+        );
+        m.insert("size".into(), n.size.clone());
+        if n.is_dir {
+            let kids: Vec<serde_json::Value> =
+                n.children.iter().map(|&c| to_json(arena, c)).collect();
+            m.insert("children".into(), serde_json::Value::Array(kids));
+        }
+        serde_json::Value::Object(m)
+    }
+
+    roots.into_iter().map(|i| to_json(&arena, i)).collect()
 }
 
 #[allow(dead_code)]
