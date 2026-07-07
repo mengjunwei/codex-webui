@@ -434,7 +434,7 @@ pub async fn create_file(
         return Err(forbidden("parent is outside workspace"));
     }
     if p.exists() && !body.overwrite.unwrap_or(false) {
-        return Err(bad_request(
+        return Err(conflict(
             ErrorCode::FilesPathExists,
             "path already exists (set overwrite=true)",
         ));
@@ -475,7 +475,7 @@ pub async fn create_directory(
     let p = PathBuf::from(raw);
     if p.exists() {
         if !body.overwrite.unwrap_or(false) {
-            return Err(bad_request(
+            return Err(conflict(
                 ErrorCode::FilesPathExists,
                 "path already exists",
             ));
@@ -487,15 +487,29 @@ pub async fn create_directory(
             ));
         }
     } else if body.recursive.unwrap_or(false) {
+        // H2 FIX: validate nearest existing ancestor BEFORE creating any dirs.
+        // Resolves ancestor → checks workspace → then create_dir_all is safe.
+        let mut ancestor = p.clone();
+        while !ancestor.exists() {
+            match ancestor.parent() {
+                Some(par) => ancestor = par.to_path_buf(),
+                None => break,
+            }
+        }
+        let canonical_ancestor = tokio::fs::canonicalize(&ancestor)
+            .await
+            .map_err(|_| not_found("nearest existing ancestor not found"))?;
+        if !within_workspace(&state, &canonical_ancestor) {
+            return Err(forbidden("nearest existing ancestor is outside workspace"));
+        }
         tokio::fs::create_dir_all(&p)
             .await
             .map_err(|e| AppError::internal(format!("mkdir -p: {e}")))?;
-        // Validate after creation.
+        // Post-validate the created path itself.
         let canonical = tokio::fs::canonicalize(&p)
             .await
             .map_err(|e| AppError::internal(format!("canonicalize: {e}")))?;
         if !within_workspace(&state, &canonical) {
-            // Roll back: best effort.
             let _ = tokio::fs::remove_dir(&p).await;
             return Err(forbidden("created path is outside workspace"));
         }
@@ -629,14 +643,20 @@ pub async fn download_file(
             "path must be a file",
         ));
     }
-    serve_with_range(
-        &resolved.resolved,
-        &resolved.original,
-        resolved.size,
-        false, // attachment
-        HeaderMap::new(),
-    )
-    .await
+    // M2 FIX: download always uses application/octet-stream (TS files.controller.ts:290)
+    // regardless of the actual file type. Browsers always trigger download.
+    let filename = resolved.resolved.file_name()
+        .map(|n| n.to_string_lossy().to_string())
+        .unwrap_or_else(|| "file".into());
+    let bytes = tokio::fs::read(&resolved.resolved).await
+        .map_err(|e| AppError::internal(format!("read: {e}")))?;
+    Ok(Response::builder()
+        .header(header::CONTENT_TYPE, "application/octet-stream")
+        .header(header::CONTENT_LENGTH, resolved.size)
+        .header(header::CONTENT_DISPOSITION,
+            build_content_disposition(&filename, false).as_str())
+        .body(Body::from(bytes))
+        .map_err(|e| AppError::internal(format!("response: {e}")))?)
 }
 
 async fn serve_with_range(

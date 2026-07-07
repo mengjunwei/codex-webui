@@ -142,10 +142,21 @@ pub async fn get_config(
 
     // Extract caller's bearer JWT for the document URL (OnlyOffice Document Server
     // fetches without credentials — needs access_token query per RFC 6750 §2.3).
+    // L1 FIX: case-insensitive Bearer prefix (TS /^Bearer\s+/i).
     let caller_token = headers
         .get(axum::http::header::AUTHORIZATION)
         .and_then(|v| v.to_str().ok())
-        .and_then(|h| h.strip_prefix("Bearer ").map(|t| t.trim()))
+        .and_then(|h| {
+            // Case-insensitive strip.
+            let lower = h.to_ascii_lowercase();
+            if let Some(rest) = lower.strip_prefix("bearer ") {
+                Some(h[h.len() - rest.trim().len()..].trim().to_string())
+            } else if let Some(rest) = lower.strip_prefix("bearer\t") {
+                Some(h[h.len() - rest.trim().len()..].trim().to_string())
+            } else {
+                None
+            }
+        })
         .filter(|t| !t.is_empty());
 
     let document_url = if let Some(ref t) = caller_token {
@@ -153,7 +164,7 @@ pub async fn get_config(
             "{}/api/files/serve?path={}&access_token={}",
             base_url.trim_end_matches('/'),
             url_encode(raw_path),
-            url_encode(t)
+            url_encode(t.as_str())
         )
     } else {
         format!(
@@ -452,6 +463,8 @@ fn verify_callback_state(
     v.leeway = 0;
     // OnlyOffice callback JWT may not carry exp (TS verify doesn't require it).
     v.required_spec_claims.clear();
+    // L3 FIX: disable aud validation (jsonwebtoken default rejects tokens with aud field).
+    v.validate_aud = false;
     let data = decode::<CallbackStatePayload>(
         token,
         &DecodingKey::from_secret(secret.as_bytes()),
@@ -492,6 +505,7 @@ fn verify_onlyoffice_token(token: Option<&str>, secret: &str) -> Result<(), AppE
     v.validate_exp = true;
     v.leeway = 0;
     v.required_spec_claims.clear();
+    v.validate_aud = false;
     decode::<CallbackJwtPayload>(
         token,
         &DecodingKey::from_secret(secret.as_bytes()),
@@ -536,10 +550,13 @@ fn validate_download_url(raw_url: &str, allowed_origin_url: &str) -> Result<(), 
 // ── helpers ────────────────────────────────────────────────────────────────
 
 fn normalize_http_base_url(raw: &str, _label: &str) -> Result<String, String> {
-    let url = url::Url::parse(raw).map_err(|_| "invalid URL".to_string())?;
+    let mut url = url::Url::parse(raw).map_err(|_| "invalid URL".to_string())?;
     if url.scheme() != "http" && url.scheme() != "https" {
         return Err(format!("unsupported protocol: {}", url.scheme()));
     }
+    // L2 FIX: strip query and fragment (TS onlyoffice.controller.ts:608-609).
+    url.set_query(None);
+    url.set_fragment(None);
     Ok(url.to_string().trim_end_matches('/').to_string())
 }
 
