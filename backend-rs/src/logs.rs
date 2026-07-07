@@ -1,13 +1,11 @@
-//! Structured logs reader + sanitized diagnostics export.
+//! 结构化日志读取器 + 脱敏诊断信息导出。
 //!
-//! Parity with `src/logs/logs.service.ts`. Reads JSON log lines from `./logs/`
-//! (files named `app` or `app.*`), parses them into `LogEntry` records, sorts
-//! newest-first, filters by level/source, paginates, and sanitizes sensitive
-//! fields.
+//! 与 `src/logs/logs.service.ts` 保持对齐。从 `./logs/` 目录读取 JSON 日志行
+//! （文件名为 `app` 或 `app.*`），将其解析为 `LogEntry` 记录，按时间倒序排序，
+//! 按级别/来源过滤、分页，并对敏感字段进行脱敏处理。
 //!
-//! Log format: written by our own tracing JSON file layer. The parser also
-//! accepts legacy pino JSON (numeric level, `time`, `msg`, `context`) for
-//! logs produced by the TS backend.
+//! 日志格式：由我们自己的 tracing JSON 文件层写入。解析器同时兼容旧版 pino JSON
+//! （数字级别、`time`、`msg`、`context`），用于解析 TS 后端产生的日志。
 
 use crate::error::AppError;
 use crate::state::AppState;
@@ -36,7 +34,7 @@ static BEARER_TOKEN: Lazy<Regex> =
 
 static PROCESS_START: OnceLock<Instant> = OnceLock::new();
 
-// ── DTOs ─────────────────────────────────────────────────────────────────────
+// ── 数据传输对象（DTOs）─────────────────────────────────────────────────────
 
 #[derive(Serialize, Clone, Debug)]
 pub struct LogEntry {
@@ -87,7 +85,7 @@ pub struct SystemInfo {
     pub codex_version: String,
 }
 
-// ── Handlers ─────────────────────────────────────────────────────────────────
+// ── 处理函数 ─────────────────────────────────────────────────────────────────
 
 pub async fn list_logs(
     State(_state): State<AppState>,
@@ -144,15 +142,15 @@ pub async fn export_diagnostics(
             uptime_seconds: uptime_seconds(),
             codex_version: codex_version_async(&state).await,
         },
-        // runtimeStatus requires CodexStatusService (Phase 1); stubbed until then.
+        // runtimeStatus 需要 CodexStatusService（Phase 1）；在此之前先用占位值。
         runtime_status: Value::Null,
         logs,
     }))
 }
 
-// ── File reading ─────────────────────────────────────────────────────────────
+// ── 文件读取 ─────────────────────────────────────────────────────────────────
 
-/// Read and parse all log entries (newest files first, tail-to-head per file).
+/// 读取并解析所有日志条目（优先读取最新文件，每个文件从尾部向头部读取）。
 pub fn read_all_entries(log_dir: &Path) -> Vec<LogEntry> {
     let files = get_log_files(log_dir);
     let mut entries: Vec<LogEntry> = Vec::new();
@@ -186,7 +184,7 @@ fn get_log_files(log_dir: &Path) -> Vec<PathBuf> {
             .unwrap_or(std::time::UNIX_EPOCH);
         files.push((path, mtime));
     }
-    // Newest first by mtime.
+    // 按修改时间倒序排列（最新优先）。
     files.sort_by(|a, b| b.1.cmp(&a.1));
     files.into_iter().map(|(p, _)| p).collect()
 }
@@ -198,7 +196,7 @@ fn read_entries_from_file(file: &Path, max_entries: usize) -> Vec<LogEntry> {
     };
     let lines: Vec<&str> = content.lines().collect();
     let mut entries = Vec::new();
-    // Tail-to-head so the most recent entries are captured first.
+    // 从尾部向头部读取，以便优先捕获最新的条目。
     for line in lines.iter().rev() {
         let trimmed = line.trim();
         if trimmed.is_empty() {
@@ -214,7 +212,7 @@ fn read_entries_from_file(file: &Path, max_entries: usize) -> Vec<LogEntry> {
     entries
 }
 
-// ── Parsing (tracing JSON + legacy pino JSON) ────────────────────────────────
+// ── 解析（tracing JSON + 旧版 pino JSON）────────────────────────────────────
 
 fn parse_line(line: &str, file: &Path) -> Option<LogEntry> {
     let record: Value = serde_json::from_str(line).ok()?;
@@ -231,7 +229,7 @@ fn parse_line(line: &str, file: &Path) -> Option<LogEntry> {
 }
 
 fn to_timestamp(obj: &Map<String, Value>) -> String {
-    // tracing writes `timestamp` (ISO string); pino writes `time` (ms number).
+    // tracing 写入 `timestamp`（ISO 字符串）；pino 写入 `time`（毫秒数值）。
     if let Some(t) = obj.get("timestamp").and_then(Value::as_str) {
         return t.to_string();
     }
@@ -277,7 +275,7 @@ fn to_level(obj: &Map<String, Value>) -> String {
 }
 
 fn to_source(obj: &Map<String, Value>, file: &Path) -> String {
-    // tracing writes `target` (module path); pino writes `context`/`source`/`name`.
+    // tracing 写入 `target`（模块路径）；pino 写入 `context`/`source`/`name`。
     for key in &["target", "context", "source", "name"] {
         if let Some(Value::String(s)) = obj.get(*key) {
             return s.clone();
@@ -290,7 +288,7 @@ fn to_source(obj: &Map<String, Value>, file: &Path) -> String {
 }
 
 fn to_message(obj: &Map<String, Value>) -> String {
-    // tracing nests under `fields.message`; pino uses `msg`/`message`.
+    // tracing 嵌套在 `fields.message` 下；pino 使用 `msg`/`message`。
     if let Some(Value::Object(fields)) = obj.get("fields") {
         if let Some(Value::String(s)) = fields.get("message") {
             return s.clone();
@@ -304,7 +302,7 @@ fn to_message(obj: &Map<String, Value>) -> String {
     String::new()
 }
 
-// ── Sanitization ─────────────────────────────────────────────────────────────
+// ── 脱敏处理 ─────────────────────────────────────────────────────────────────
 
 fn sanitize_value(value: Value) -> Value {
     match value {
@@ -325,7 +323,7 @@ fn sanitize_value(value: Value) -> Value {
     }
 }
 
-// ── Helpers ──────────────────────────────────────────────────────────────────
+// ── 辅助函数 ──────────────────────────────────────────────────────────────────
 
 fn clamp_usize(value: Option<&str>, min: usize, max: usize, fallback: usize) -> usize {
     let parsed = value
@@ -349,7 +347,7 @@ fn uptime_seconds() -> u64 {
 }
 
 fn platform_name() -> String {
-    // Map to Node conventions for frontend parity: macos→darwin, windows→win32.
+    // 映射为 Node 约定以保持与前端一致：macos→darwin，windows→win32。
     match std::env::consts::OS {
         "macos" => "darwin".into(),
         "windows" => "win32".into(),
@@ -358,7 +356,7 @@ fn platform_name() -> String {
 }
 
 fn arch_name() -> String {
-    // Map to Node conventions: x86_64→x64, aarch64→arm64.
+    // 映射为 Node 约定：x86_64→x64，aarch64→arm64。
     match std::env::consts::ARCH {
         "x86_64" => "x64".into(),
         "aarch64" => "arm64".into(),
@@ -367,8 +365,8 @@ fn arch_name() -> String {
 }
 
 async fn codex_version_async(state: &AppState) -> String {
-    // H4 FIX: run in spawn_blocking to avoid blocking the tokio worker thread
-    // (TS uses execFileAsync with 2s timeout).
+    // H4 修复：放在 spawn_blocking 中执行，避免阻塞 tokio worker 线程
+    // （TS 端使用带 2 秒超时的 execFileAsync）。
     let bin = std::env::var("CODEX_BIN").unwrap_or_else(|_| "codex".into());
     let _ = state;
     let result = tokio::task::spawn_blocking(move || {
@@ -473,7 +471,7 @@ mod tests {
 
         let entries = read_all_entries(&dir);
         assert_eq!(entries.len(), 2);
-        // Sorted newest-first.
+        // 按时间倒序排列（最新优先）。
         assert_eq!(entries[0].message, "new");
         assert_eq!(entries[1].message, "old");
 

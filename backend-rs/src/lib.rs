@@ -1,8 +1,8 @@
-//! Codex WebUI backend — Rust rewrite of the NestJS backend.
+//! Codex WebUI 后端 —— NestJS 后端的 Rust 重写版。
 //!
-//! This crate aggregates all modules for both the binary (`main.rs`) and
-//! integration tests (`tests/*.rs`). Each module is `pub` here so tests can
-//! import via `use codex_webui::<module>::*`.
+//! 本 crate 汇总了所有模块，供二进制程序（`main.rs`）和
+//! 集成测试（`tests/*.rs`）共同使用。每个模块在此声明为 `pub`，
+//! 测试即可通过 `use codex_webui::<module>::*` 导入。
 
 pub mod auth;
 pub mod chat;

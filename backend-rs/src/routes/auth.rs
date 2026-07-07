@@ -1,6 +1,6 @@
-//! `POST /api/auth/login` — exchange the deployment API key for a short-lived JWT.
+//! `POST /api/auth/login` — 用部署 API key 换取短期 JWT。
 //!
-//! Parity with `src/auth/auth.controller.ts:login`. Public (no auth required).
+//! 与 `src/auth/auth.controller.ts:login` 对齐。公开(无需鉴权)。
 
 use crate::auth::{LoginRequest, LoginResponse};
 use crate::error::{AppError, ErrorCode};
@@ -25,7 +25,7 @@ pub async fn login(
     Ok(Json(state.auth.sign_jwt()?))
 }
 
-/// Stateless logout — browser clears the stored JWT. Returns 204 No Content.
+/// 无状态登出 — 浏览器清除已存储的 JWT。返回 204 No Content。
 pub async fn logout() -> StatusCode {
     StatusCode::NO_CONTENT
 }

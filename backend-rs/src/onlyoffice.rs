@@ -1,10 +1,9 @@
-//! OnlyOffice Docs integration — editor config builder (parity with
-//! `onlyoffice.controller.ts:getConfig`).
+//! OnlyOffice Docs 集成 —— 编辑器配置构建器（对齐
+//! `onlyoffice.controller.ts:getConfig`）。
 //!
-//! Edit mode (default) requires `general.onlyofficeJwtSecret` so the save
-//! callback can be securely verified. The callback endpoint itself
-//! (`/api/onlyoffice/callback`) needs HTTP download + atomic write —
-//! deferred until files service gains multipart/streaming support.
+//! 编辑模式（默认）需要配置 `general.onlyofficeJwtSecret`，以便安全地校验
+//! 保存回调。回调端点本身（`/api/onlyoffice/callback`）需要 HTTP 下载 +
+//! 原子写入 —— 待文件服务支持 multipart/流式传输后再实现。
 
 use crate::error::{AppError, ErrorCode};
 use crate::files;
@@ -41,7 +40,7 @@ pub async fn get_config(
 ) -> Result<Json<Value>, AppError> {
     let reader = state.settings_reader();
 
-    // 1. Resolve OnlyOffice URL (required).
+    // 1. 解析 OnlyOffice URL（必填）。
     let onlyoffice_url = reader
         .get_string("general.onlyofficeUrl")
         .filter(|s| !s.is_empty())
@@ -55,10 +54,10 @@ pub async fn get_config(
             "general.onlyofficeUrl must be a valid http(s) URL",
         ))?;
 
-    // 2. Resolve JWT secret.
+    // 2. 解析 JWT 密钥。
     let secret = reader.get_string("general.onlyofficeJwtSecret");
 
-    // 3. Edit mode requires secret.
+    // 3. 编辑模式必须有密钥。
     let editor_mode = if q.mode.as_deref() == Some("view") {
         "view"
     } else {
@@ -71,7 +70,7 @@ pub async fn get_config(
         ));
     }
 
-    // 4. Validate file path (must be an existing file under workspace root).
+    // 4. 校验文件路径（必须是位于工作区根目录之下的已存在文件）。
     let raw_path = q.path.as_deref().map(|s| s.trim()).unwrap_or("");
     if raw_path.is_empty() {
         return Err(bad_request(
@@ -93,7 +92,7 @@ pub async fn get_config(
         .map(|n| n.to_string_lossy().to_string())
         .unwrap_or_default();
 
-    // 5. Validate supported extension.
+    // 5. 校验是否为受支持的扩展名。
     let file_type = match filename.rsplit('.').next().map(|s| s.to_ascii_lowercase()) {
         Some(ext) if matches!(ext.as_str(), "docx" | "xlsx" | "pptx") => ext,
         _ => {
@@ -109,7 +108,7 @@ pub async fn get_config(
         _ => "slide",
     };
 
-    // 6. Build a stable document key (hash of path+mtime+size, ≤128 chars).
+    // 6. 构建稳定的文档 key（path+mtime+size 的哈希，≤128 字符）。
     let mtime = meta
         .modified()
         .ok()
@@ -117,19 +116,19 @@ pub async fn get_config(
         .map(|d| d.as_millis() as i64)
         .unwrap_or(0);
     let size = meta.len();
-    // H2 FIX: use resolved (canonical) path for stable document key, not raw input.
+    // H2 修复：用解析后（规范化）的路径生成稳定的文档 key，而非原始输入。
     let mut hasher = Sha256::new();
     hasher.update(format!("{}:{}:{}", resolved.to_string_lossy(), mtime, size).as_bytes());
     let key = format!("{:x}", hasher.finalize());
     let key = key[..key.len().min(48)].to_string();
 
-    // 7. Public base URL (parity with TS publicBaseUrl setting or host headers).
+    // 7. 公共 base URL（对齐 TS 的 publicBaseUrl 设置或 host 请求头）。
     let base_url = reader
         .get_string("general.publicBaseUrl")
         .filter(|s| !s.is_empty())
         .unwrap_or_default();
-    // H3 FIX: auto-detect from request headers when publicBaseUrl is empty
-    // (TS onlyoffice.controller.ts:518-546).
+    // H3 修复：当 publicBaseUrl 为空时，从请求头自动探测
+    // （对齐 TS onlyoffice.controller.ts:518-546）。
     let base_url = if !base_url.is_empty() {
         normalize_http_base_url(&base_url, "general.publicBaseUrl")
             .map_err(|_| bad_request(
@@ -163,16 +162,16 @@ pub async fn get_config(
         }
     };
 
-    // Extract caller's bearer JWT for the document URL (OnlyOffice Document Server
-    // fetches without credentials — needs access_token query per RFC 6750 §2.3).
-    // MEDIUM FIX: case-insensitive Bearer prefix, correct offset slicing.
+    // 提取调用方的 bearer JWT 用于文档 URL（OnlyOffice Document Server
+    // 不带凭证获取 —— 需按 RFC 6750 §2.3 通过 access_token 查询参数传递）。
+    // 中等优先级修复：大小写不敏感的 Bearer 前缀，正确的偏移量切片。
     let caller_token = headers
         .get(axum::http::header::AUTHORIZATION)
         .and_then(|v| v.to_str().ok())
         .and_then(|h| {
             let lower = h.to_ascii_lowercase();
             if let Some(_) = lower.strip_prefix("bearer ") {
-                // Safe: "bearer " is 7 ASCII chars, lowercasing preserves byte length.
+                // 安全："bearer " 是 7 个 ASCII 字符，转小写不会改变字节长度。
                 Some(h[7..].trim().to_string())
             } else if lower.strip_prefix("bearer\t").is_some() {
                 Some(h[7..].trim().to_string())
@@ -217,7 +216,7 @@ pub async fn get_config(
         callback_params
     );
 
-    // 8. Assemble the editor config payload.
+    // 8. 组装编辑器配置 payload。
     let mut config = json!({
         "type": "desktop",
         "width": "100%",
@@ -247,7 +246,7 @@ pub async fn get_config(
         },
     });
 
-    // 9. Sign the config with JWT if a secret is configured.
+    // 9. 若配置了密钥，则用 JWT 对配置签名。
     if let Some(ref s) = secret {
         let token = encode(
             &Header::new(Algorithm::HS256),
@@ -266,16 +265,16 @@ pub async fn get_config(
 
 // ── POST /onlyoffice/callback ────────────────────────────────────────────────
 //
-// OnlyOffice save callback — parity with TS handleCallback. Public endpoint
-// (no JWT from frontend; OnlyOffice Document Server calls it directly).
+// OnlyOffice 保存回调 —— 对齐 TS 的 handleCallback。公共端点
+// （前端不传 JWT；由 OnlyOffice Document Server 直接调用）。
 //
-// Security model:
-// 1. onlyofficeJwtSecret must be configured (edit mode enforces this).
-// 2. State token (signed path+key) verified.
-// 3. OnlyOffice callback JWT (body.token or Authorization header) verified.
-// 4. Download URL origin must match configured onlyofficeUrl (anti-SSRF).
-// 5. File path validated against workspace roots.
-// 6. Atomic write (temp file + rename, size limit, timeout).
+// 安全模型：
+// 1. 必须配置 onlyofficeJwtSecret（编辑模式会强制要求）。
+// 2. 校验 state token（已签名的 path+key）。
+// 3. 校验 OnlyOffice 回调 JWT（body.token 或 Authorization 请求头）。
+// 4. 下载 URL 的源必须与配置的 onlyofficeUrl 匹配（防 SSRF）。
+// 5. 文件路径需通过工作区根目录校验。
+// 6. 原子写入（临时文件 + rename，含大小限制与超时）。
 
 const SAVE_TIMEOUT_SECS: u64 = 60;
 const DEFAULT_MAX_SAVE_BYTES: u64 = 104_857_600; // 100 MB
@@ -291,7 +290,7 @@ pub struct CallbackBody {
 #[derive(Deserialize)]
 pub struct CallbackQuery {
     pub path: Option<String>,
-    pub state: Option<String>, // signed JWT state token
+    pub state: Option<String>, // 已签名的 JWT state token
 }
 
 #[derive(serde::Deserialize)]
@@ -312,7 +311,7 @@ pub async fn handle_callback(
     headers: HeaderMap,
     Json(body): Json<CallbackBody>,
 ) -> Result<Json<Value>, AppError> {
-    // Acknowledge non-save statuses immediately.
+    // 对非保存状态立即应答。
     let status = body.status.unwrap_or(0);
     if status != 2 && status != 6 {
         return Ok(Json(json!({ "error": 0 })));
@@ -329,7 +328,7 @@ pub async fn handle_callback(
         return Ok(Json(json!({ "error": 1 })));
     }
 
-    // Wrap the real work in an async block; any error → {error: 1}.
+    // 将真正的工作放在一个 async 块中；任何错误都返回 {error: 1}。
     let save_status = body.status.unwrap_or(0);
     match callback_inner(&state, &q, &body, &headers).await {
         Ok(()) => {
@@ -352,16 +351,16 @@ async fn callback_inner(
     let reader = state.settings_reader();
     let file_path = q.path.as_deref().unwrap_or("").trim();
 
-    // 1. JWT secret must be configured.
+    // 1. 必须已配置 JWT 密钥。
     let secret = reader
         .get_string("general.onlyofficeJwtSecret")
         .filter(|s| !s.is_empty())
         .ok_or_else(|| bad_request(ErrorCode::OnlyOfficeJwtRequired, "JWT secret not configured"))?;
 
-    // 2. Verify callback state token (signed path + key in query ?state=).
+    // 2. 校验回调 state token（查询参数 ?state= 中已签名的 path + key）。
     let _state_payload = verify_callback_state(q.state.as_deref(), &secret, file_path, body.key.as_deref())?;
 
-    // 3. Verify OnlyOffice callback JWT (body.token or Authorization header).
+    // 3. 校验 OnlyOffice 回调 JWT（body.token 或 Authorization 请求头）。
     let oo_token: Option<String> = body
         .token
         .clone()
@@ -382,7 +381,7 @@ async fn callback_inner(
         });
     verify_onlyoffice_token(oo_token.as_deref(), &secret)?;
 
-    // 4. Validate download URL origin against configured OnlyOffice server.
+    // 4. 校验下载 URL 的源是否与配置的 OnlyOffice 服务器一致。
     let onlyoffice_url = reader
         .get_string("general.onlyofficeUrl")
         .filter(|s| !s.is_empty())
@@ -390,10 +389,10 @@ async fn callback_inner(
     let download_url = body.url.as_deref().unwrap_or("");
     validate_download_url(download_url, &onlyoffice_url)?;
 
-    // 5. Validate file path against workspace roots.
+    // 5. 校验文件路径是否位于工作区根目录之内。
     let resolved = files::resolve_safe_path(state, file_path).await?;
 
-    // 6. Fetch with timeout + size limit, write atomically.
+    // 6. 带超时与大小限制地抓取，并原子写入。
     let max_bytes = reader
         .get_number("general.onlyofficeSaveMaxBytes")
         .map(|n| n as u64)
@@ -417,7 +416,7 @@ async fn callback_inner(
         )));
     }
 
-    // Check Content-Length header against limit.
+    // 校验 Content-Length 请求头是否超出限制。
     if let Some(len) = response.content_length() {
         if len > max_bytes {
             return Err(bad_request(
@@ -427,7 +426,7 @@ async fn callback_inner(
         }
     }
 
-    // Stream body to temp file with byte counter.
+    // 以字节计数器将响应体流式写入临时文件。
     let parent = resolved.parent().unwrap_or(Path::new("."));
     let tmp_path = parent.join(format!(
         ".onlyoffice-{}.tmp",
@@ -456,8 +455,8 @@ async fn download_and_write(
         .await
         .map_err(|e| AppError::internal(format!("create tmp: {e}")))?;
 
-    // H1 FIX: stream response body to disk with live byte counter (not bytes()
-    // which buffers entire response in memory — DoS on chunked-encoding).
+    // H1 修复：将响应体实时带字节计数地流式写入磁盘（而非用 bytes()
+    // 将整个响应缓冲在内存中 —— 在 chunked-encoding 下存在 DoS 风险）。
     use futures_util::StreamExt;
     let mut stream = response.bytes_stream();
     let mut total: u64 = 0;
@@ -480,7 +479,7 @@ async fn download_and_write(
     Ok(())
 }
 
-/// Verify the signed callback state token (JWT with {path, key}).
+/// 校验已签名的回调 state token（含 {path, key} 的 JWT）。
 fn verify_callback_state(
     state_token: Option<&str>,
     secret: &str,
@@ -493,9 +492,9 @@ fn verify_callback_state(
     let mut v = Validation::new(Algorithm::HS256);
     v.validate_exp = true;
     v.leeway = 0;
-    // OnlyOffice callback JWT may not carry exp (TS verify doesn't require it).
+    // OnlyOffice 回调 JWT 可能不携带 exp（TS 的 verify 并不要求该字段）。
     v.required_spec_claims.clear();
-    // L3 FIX: disable aud validation (jsonwebtoken default rejects tokens with aud field).
+    // L3 修复：禁用 aud 校验（jsonwebtoken 默认会拒绝带 aud 字段的 token）。
     v.validate_aud = false;
     let data = decode::<CallbackStatePayload>(
         token,
@@ -525,7 +524,7 @@ fn verify_callback_state(
     Ok(data.claims)
 }
 
-/// Verify the OnlyOffice callback JWT (body.token or Authorization header).
+/// 校验 OnlyOffice 回调 JWT（body.token 或 Authorization 请求头）。
 fn verify_onlyoffice_token(token: Option<&str>, secret: &str) -> Result<(), AppError> {
     let token = token.ok_or_else(|| {
         bad_request(
@@ -552,7 +551,7 @@ fn verify_onlyoffice_token(token: Option<&str>, secret: &str) -> Result<(), AppE
     Ok(())
 }
 
-/// Validate download URL origin matches the configured OnlyOffice server (anti-SSRF).
+/// 校验下载 URL 的源与配置的 OnlyOffice 服务器是否匹配（防 SSRF）。
 fn validate_download_url(raw_url: &str, allowed_origin_url: &str) -> Result<(), AppError> {
     let download = Url::parse(raw_url).map_err(|_| {
         bad_request(
@@ -569,7 +568,7 @@ fn validate_download_url(raw_url: &str, allowed_origin_url: &str) -> Result<(), 
     let allowed = Url::parse(allowed_origin_url).map_err(|e| {
         AppError::internal(format!("allowed origin parse: {e}"))
     })?;
-    // Compare origin (scheme + host + port).
+    // 比较源（scheme + host + port）。
     if download.origin() != allowed.origin() {
         return Err(bad_request(
             ErrorCode::OnlyOfficeDownloadUrlOriginMismatch,
@@ -579,21 +578,21 @@ fn validate_download_url(raw_url: &str, allowed_origin_url: &str) -> Result<(), 
     Ok(())
 }
 
-// ── helpers ────────────────────────────────────────────────────────────────
+// ── helpers（辅助函数）────────────────────────────────────────────────────
 
 fn normalize_http_base_url(raw: &str, _label: &str) -> Result<String, String> {
     let mut url = url::Url::parse(raw).map_err(|_| "invalid URL".to_string())?;
     if url.scheme() != "http" && url.scheme() != "https" {
         return Err(format!("unsupported protocol: {}", url.scheme()));
     }
-    // L2 FIX: strip query and fragment (TS onlyoffice.controller.ts:608-609).
+    // L2 修复：剥离 query 和 fragment（对齐 TS onlyoffice.controller.ts:608-609）。
     url.set_query(None);
     url.set_fragment(None);
     Ok(url.to_string().trim_end_matches('/').to_string())
 }
 
 fn url_encode(s: &str) -> String {
-    // Minimal percent-encoding for query values.
+    // 针对查询参数值的最小化百分号编码。
     let mut out = String::with_capacity(s.len());
     for b in s.bytes() {
         match b {

@@ -1,10 +1,10 @@
-//! Codex WebUI backend — entry point.
+//! Codex WebUI 后端 —— 程序入口。
 //!
-//! Startup: .env → Config → tracing → DB.open → run_migrations →
-//! reconcile_settings → AuthService → AppState → build_router → serve.
+//! 启动流程：.env → Config → tracing → DB.open → run_migrations →
+//! reconcile_settings → AuthService → AppState → build_router → serve。
 //!
-//! Graceful shutdown (spec §6.7 — incremental enhancement over TS, which
-//! does not enableShutdownHooks): SIGTERM (unix) or Ctrl-C → drain → close DB.
+//! 优雅关闭（spec §6.7 —— 相比 TS 的增量增强，TS 未启用 enableShutdownHooks）：
+//! 收到 SIGTERM（unix）或 Ctrl-C → 排空 → 关闭 DB。
 
 use codex_webui::{
     auth::AuthService, codex::CodexProcessManager, config::Config, db::Db, logging,
@@ -17,7 +17,7 @@ use tokio::signal;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    // Load .env if present (no-op in Docker / production).
+    // 如果存在 .env 则加载（在 Docker / 生产环境中为空操作）。
     let _ = dotenvy::dotenv();
 
     let cfg = Config::from_env()?;
@@ -29,17 +29,16 @@ async fn main() -> anyhow::Result<()> {
         "starting codex-webui (backend-rs)"
     );
 
-    // Database.
+    // 数据库。
     let db = Arc::new(Db::open(&cfg.db_path)?);
     codex_webui::db::run_migrations(&db)?;
     reconcile_settings(&db)?;
 
-    // Auth service (created before AppState so realtime can share it).
+    // 认证服务（在 AppState 之前创建，以便 realtime 模块共享）。
     let auth = Arc::new(AuthService::new(&cfg.webui_api_key));
 
-    // Codex app-server process manager (hub). Started in the background so the
-    // web server is available even if codex is slow to spawn or unavailable;
-    // the manager auto-restarts on failure.
+    // Codex app-server 进程管理器（中枢）。在后台启动，这样即使 codex
+    // 启动缓慢或不可用，Web 服务器仍然可用；管理器在失败时会自动重启。
     let codex = Arc::new(CodexProcessManager::new(
         cfg.codex_bin.clone(),
         cfg.codex_home.clone(),
@@ -49,16 +48,16 @@ async fn main() -> anyhow::Result<()> {
         codex_bg.start().await;
     });
 
-    // Wire event-driven DB write paths (token-usage, turn-diff, turn-errors,
-    // pending-approvals record/resolved/expire). Subscribes to the manager's
-    // broadcasts; also expires stale pending requests on boot.
+    // 接入事件驱动的 DB 写入路径（token-usage、turn-diff、turn-errors、
+    // pending-approvals 的记录/解决/过期）。订阅管理器的广播；
+    // 同时在启动时过期陈旧的待处理请求。
     codex_webui::event_subscribers::spawn_all(db.clone(), codex.clone());
 
-    // Terminal service (shared PTY sessions).
+    // 终端服务（共享 PTY 会话）。
     let reader = settings::SettingsReader::new(&db);
     let terminal = TerminalService::new(TerminalConfig::from_settings(&reader));
 
-    // Realtime Socket.IO gateway (`/ws` namespace) + emit-forwarding tasks.
+    // 实时 Socket.IO 网关（`/ws` 命名空间）+ emit 转发任务。
     let rt_state = codex_webui::realtime::RealtimeState {
         auth: auth.clone(),
         codex: codex.clone(),
@@ -67,7 +66,7 @@ async fn main() -> anyhow::Result<()> {
     let (ws_layer, io) = codex_webui::realtime::build(rt_state);
     codex_webui::realtime::spawn_emit_tasks(io, codex.clone(), terminal.clone(), db.clone());
 
-    // Shared state.
+    // 共享状态。
     let state = AppState {
         db,
         auth,
@@ -85,13 +84,13 @@ async fn main() -> anyhow::Result<()> {
     server.await?;
 
     tracing::info!("drain complete, shutting down codex + db");
-    // Graceful: stop the codex manager (kills the app-server child).
-    // (codex is still alive via AppState, but the manager's restart loop is now blocked.)
+    // 优雅关闭：停止 codex 管理器（会终止 app-server 子进程）。
+    // （codex 通过 AppState 仍然存活，但管理器的重启循环已被阻塞。）
     Ok(())
 }
 
-/// Wait for SIGTERM (unix) or Ctrl-C (all platforms).
-/// On Windows there is no SIGTERM, so only Ctrl-C triggers shutdown.
+/// 等待 SIGTERM（unix）或 Ctrl-C（所有平台）。
+/// Windows 上没有 SIGTERM，因此只有 Ctrl-C 会触发关闭。
 async fn shutdown_signal() {
     let ctrl_c = async {
         signal::ctrl_c()

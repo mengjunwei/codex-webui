@@ -1,16 +1,16 @@
-//! Codex status + config REST endpoints.
+//! Codex status + config REST 端点。
 //!
-//! Parity with `codex-status.controller.ts` + `codex-config.controller.ts`.
+//! 与 `codex-status.controller.ts` + `codex-config.controller.ts` 对齐。
 //!
-//! - GET  /codex/status          — aggregated readiness (simplified: generation/
-//!   connected/initialized; full account/config/provider/model probe aggregation
-//!   deferred). Drives the UI's "codex ready" indicator.
-//! - POST /codex/approval-policy — config/batchWrite approval_policy (validated)
-//! - POST /codex/sandbox-mode    — config/batchWrite sandbox_mode (validated)
-//! - GET  /codex/config          — config/read (includeLayers), secrets redacted
-//! - PATCH /codex/config         — curated edits (allowlist), config/batchWrite
-//! - GET  /codex/config/raw      — read user config.toml
-//! - PUT  /codex/config/raw      — write user config.toml + hot-reload
+//! - GET  /codex/status          — 聚合就绪状态(简化:generation/
+//!   connected/initialized;完整的 account/config/provider/model 探针聚合暂缓)。
+//!   驱动 UI 的 "codex ready" 指示器。
+//! - POST /codex/approval-policy — config/batchWrite approval_policy(已校验)
+//! - POST /codex/sandbox-mode    — config/batchWrite sandbox_mode(已校验)
+//! - GET  /codex/config          — config/read(includeLayers),敏感信息已脱敏
+//! - PATCH /codex/config         — 精选编辑(白名单),config/batchWrite
+//! - GET  /codex/config/raw      — 读取用户 config.toml
+//! - PUT  /codex/config/raw      — 写入用户 config.toml + 热重载
 
 use crate::codex::RpcError;
 use crate::error::{AppError, ErrorCode};
@@ -52,7 +52,7 @@ const CODEX_CONFIG_EDITABLE_KEYS: &[&str] = &[
     "service_tier",
 ];
 
-/// Allowlist patterns for curated app/tool config keys (parity with TS dto).
+/// 精选 app/tool 配置键的白名单模式(与 TS dto 对齐)。
 static APP_CONFIG_PATTERNS: Lazy<[Regex; 2]> = Lazy::new(|| {
     [
         Regex::new(r"^apps\.[A-Za-z0-9_-]+\.(enabled|destructive_enabled|open_world_enabled|default_tools_approval_mode|default_tools_enabled)$").unwrap(),
@@ -67,7 +67,7 @@ fn is_editable_key(key: &str) -> bool {
     APP_CONFIG_PATTERNS.iter().any(|re| re.is_match(key))
 }
 
-/// Pattern matching sensitive key names redacted in config output.
+/// 匹配敏感键名的正则模式,用于在配置输出中脱敏。
 static SENSITIVE_KEY_RE: Lazy<Regex> =
     Lazy::new(|| Regex::new("(?i)(token|password|api[_-]?key|secret|authorization)").unwrap());
 
@@ -79,9 +79,9 @@ pub async fn status(State(state): State<AppState>) -> Result<Json<Value>, AppErr
     let ready = generation > 0;
     let now = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
 
-    // Full shape parity with TS CodexStatusResponse. Probes that require extra
-    // app-server calls are marked ok=true with minimal data; the frontend's
-    // primary consumer (codex-status-banner.tsx) reads runtime.status.
+    // 结构与 TS CodexStatusResponse 完全对齐。需要额外 app-server 调用的探针
+    // 以 ok=true 和最小数据标记;前端的主要消费方
+    // (codex-status-banner.tsx)读取 runtime.status。
     Ok(Json(json!({
         "appServer": {
             "ok": ready,
@@ -181,7 +181,7 @@ pub async fn update_sandbox_mode(
     Ok(StatusCode::NO_CONTENT)
 }
 
-// ── config (structured) ──────────────────────────────────────────────────────
+// ── config(结构化)─────────────────────────────────────────────────────────
 
 pub async fn read_config(State(state): State<AppState>) -> Result<Json<Value>, AppError> {
     let response = state
@@ -213,7 +213,7 @@ pub async fn update_config(
     State(state): State<AppState>,
     Json(body): Json<UpdateConfigBody>,
 ) -> Result<Json<Value>, AppError> {
-    // Validate all edits against the allowlist.
+    // 依据白名单校验所有编辑。
     let mut validated: Vec<Value> = Vec::with_capacity(body.edits.len());
     for (i, edit) in body.edits.iter().enumerate() {
         let key = edit.key_path.trim();
@@ -252,17 +252,17 @@ pub async fn update_config(
         )
         .await
         .map_err(map_rpc)?;
-    // Return the updated config (re-read).
+    // 返回更新后的配置(重新读取)。
     read_config(State(state)).await
 }
 
-/// Validate a JSON value is safe (no prototype-pollution keys; finite numbers).
-/// Parity with TS `isJsonValue`.
+/// 校验 JSON 值是否安全(无原型污染键;数字有限)。
+/// 与 TS `isJsonValue` 对齐。
 fn is_json_value(v: &Value) -> bool {
     match v {
         Value::Null => true,
         Value::Bool(_) | Value::String(_) => true,
-        Value::Number(_) => true, // serde_json never stores non-finite values
+        Value::Number(_) => true, // serde_json 永远不会存储非有限数值
         Value::Array(a) => a.iter().all(is_json_value),
         Value::Object(m) => m
             .keys()
@@ -271,7 +271,7 @@ fn is_json_value(v: &Value) -> bool {
     }
 }
 
-// ── config/raw (config.toml file) ────────────────────────────────────────────
+// ── config/raw(config.toml 文件)───────────────────────────────────────────
 
 pub async fn read_raw_config(State(state): State<AppState>) -> Result<Json<Value>, AppError> {
     let path = user_config_path(&state).await?;
@@ -300,7 +300,7 @@ pub async fn update_raw_config(
     }
     std::fs::write(&path, content)
         .map_err(|e| AppError::internal(format!("write config: {e}")))?;
-    // Hot-reload with empty edit batch.
+    // 以空的编辑批次进行热重载。
     state
         .codex
         .request(
@@ -312,8 +312,8 @@ pub async fn update_raw_config(
     Ok(Json(json!({ "filePath": path })))
 }
 
-/// Resolve the user config.toml path from config/read layers
-/// (the user layer: `{ name: { type: 'user', file: <path> } }`).
+/// 从 config/read 的 layers 中解析用户 config.toml 路径
+/// (user 层:`{ name: { type: 'user', file: <path> } }`)。
 async fn user_config_path(state: &AppState) -> Result<String, AppError> {
     let response = state
         .codex
@@ -341,7 +341,7 @@ async fn user_config_path(state: &AppState) -> Result<String, AppError> {
     ))
 }
 
-/// Recursively redact sensitive-keyed values (parity with TS `redactSecrets`).
+/// 递归脱敏敏感键对应的值(与 TS `redactSecrets` 对齐)。
 fn redact_secrets(value: &Value, parent_key: &str) -> Value {
     if !parent_key.is_empty() && SENSITIVE_KEY_RE.is_match(parent_key) && !value.is_null() {
         return Value::String("[redacted]".into());

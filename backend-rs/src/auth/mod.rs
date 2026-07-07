@@ -1,13 +1,13 @@
-//! AuthService — JWT signing/verification + API key validation.
+//! AuthService —— JWT 签名/校验 + API key 校验。
 //!
-//! Parity with `src/auth/auth.service.ts`:
-//! - JWT secret: HMAC-SHA256(key=WEBUI_API_KEY, msg="codex-webui-jwt").hexdigest
-//! - Algorithm: HS256 | TTL: 86400s | Subject: "webui"
-//! - Payload: `{ sub, iat, exp }`
-//! - authenticate_token: try JWT → if invalid + looksLikeJwt → warn;
-//!   try API key (timing-safe) → fallbackAccepted; else → invalidToken
+//! 与 `src/auth/auth.service.ts` 对齐：
+//! - JWT 密钥：HMAC-SHA256(key=WEBUI_API_KEY, msg="codex-webui-jwt").hexdigest
+//! - 算法：HS256 | TTL：86400s | 主题："webui"
+//! - 载荷：`{ sub, iat, exp }`
+//! - authenticate_token：先尝试 JWT → 若无效且 looksLikeJwt 则告警；
+//!   再尝试 API key（恒定时间比较）→ fallbackAccepted；否则 → invalidToken
 //!
-//! `LoginResponse` / `LoginRequest` also live here (dto parity with `auth/dto/auth.dto.ts`).
+//! `LoginResponse` / `LoginRequest` 也定义于此（DTO 与 `auth/dto/auth.dto.ts` 对齐）。
 
 pub mod middleware;
 
@@ -22,7 +22,7 @@ const SUBJECT: &str = "webui";
 const TTL_SECONDS: i64 = 24 * 60 * 60;
 const SECRET_CONTEXT: &[u8] = b"codex-webui-jwt";
 
-// ── JWT payload ──────────────────────────────────────────────────────────────
+// ── JWT 载荷 ──────────────────────────────────────────────────────────────
 
 #[derive(Debug, Serialize, Deserialize)]
 struct Claims {
@@ -31,15 +31,15 @@ struct Claims {
     iat: usize,
 }
 
-// ── Auth result ──────────────────────────────────────────────────────────────
+// ── 认证结果 ──────────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone)]
 pub struct AuthResult {
     pub ok: bool,
-    pub auth_type: Option<String>, // "jwt" or "apiKey"
+    pub auth_type: Option<String>, // "jwt" 或 "apiKey"
 }
 
-// ── DTOs (parity with auth/dto/auth.dto.ts) ──────────────────────────────────
+// ── DTO（与 auth/dto/auth.dto.ts 对齐）──────────────────────────────────
 
 #[derive(Deserialize)]
 pub struct LoginRequest {
@@ -70,12 +70,12 @@ impl AuthService {
         }
     }
 
-    /// Expose the derived JWT secret (used by parity tests).
+    /// 暴露派生出的 JWT 密钥（供对齐测试使用）。
     pub fn jwt_secret(&self) -> &str {
         &self.jwt_secret
     }
 
-    /// Timing-safe comparison of the candidate against the deployment API key.
+    /// 将候选项与部署的 API key 进行恒定时间比较。
     pub fn validate_api_key(&self, candidate: &str) -> bool {
         if candidate.is_empty() {
             return false;
@@ -85,11 +85,11 @@ impl AuthService {
         if a.len() != b.len() {
             return false;
         }
-        // ConstantTimeEq returns 1 on equal; `bool::from` converts correctly.
+        // ConstantTimeEq 在相等时返回 1；`bool::from` 会正确转换。
         a.ct_eq(b).into()
     }
 
-    /// Sign a short-lived JWT for the single-user WebUI session.
+    /// 为单用户 WebUI 会话签发短期 JWT。
     pub fn sign_jwt(&self) -> Result<LoginResponse, AppError> {
         let now = chrono::Utc::now().timestamp() as usize;
         let claims = Claims {
@@ -110,13 +110,13 @@ impl AuthService {
         })
     }
 
-    /// Verify a JWT and confirm `sub == "webui"`. Returns `Ok(false)` on any
-    /// failure rather than an error (mirrors the TS try/catch → false pattern).
+    /// 校验 JWT 并确认 `sub == "webui"`。任何失败都返回 `Ok(false)`
+    /// 而非错误（对应 TS 中 try/catch → false 的模式）。
     pub fn verify_jwt(&self, token: &str) -> Result<bool, AppError> {
         let mut validation = Validation::new(Algorithm::HS256);
         validation.sub = Some(SUBJECT.to_string());
         validation.validate_exp = true;
-        validation.leeway = 0; // parity with TS (Node jsonwebtoken defaults to 0)
+        validation.leeway = 0; // 与 TS 对齐（Node jsonwebtoken 默认为 0）
 
         match decode::<Claims>(
             token,
@@ -128,20 +128,20 @@ impl AuthService {
         }
     }
 
-    /// Authenticate a bearer token: JWT first, then raw API key fallback.
+    /// 认证 bearer token：先 JWT，再回退到原始 API key。
     ///
-    /// Parity with `auth.service.ts:authenticateToken`:
-    /// - JWT verify → ok: `{ ok: true, auth_type: "jwt" }`
-    /// - If token looks like JWT but failed verify → log warn (no error)
-    /// - API key (timing-safe) → `{ ok: true, auth_type: "apiKey" }`
-    /// - Neither → `{ ok: false }`
+    /// 与 `auth.service.ts:authenticateToken` 对齐：
+    /// - JWT 校验通过 → ok：`{ ok: true, auth_type: "jwt" }`
+    /// - 若 token 形似 JWT 但校验失败 → 记录 warn（不返回错误）
+    /// - API key（恒定时间比较）→ `{ ok: true, auth_type: "apiKey" }`
+    /// - 二者皆不匹配 → `{ ok: false }`
     pub fn authenticate_token(&self, token: Option<&str>, _request_id: Option<&str>) -> AuthResult {
         let token = match token {
             Some(t) if !t.trim().is_empty() => t.trim(),
             _ => return AuthResult { ok: false, auth_type: None },
         };
 
-        // Prefer JWT.
+        // 优先 JWT。
         if self.verify_jwt(token).unwrap_or(false) {
             return AuthResult {
                 ok: true,
@@ -149,12 +149,12 @@ impl AuthService {
             };
         }
 
-        // If it looks like a JWT but verification failed, log a warning.
+        // 若形似 JWT 但校验失败，记录一条警告。
         if looks_like_jwt(token) {
             tracing::warn!(auth_type = "jwt", reason = "verifyFailed", "auth");
         }
 
-        // API key fallback (timing-safe).
+        // 回退到 API key（恒定时间比较）。
         if self.validate_api_key(token) {
             tracing::info!(auth_type = "apiKey", reason = "fallbackAccepted", "auth");
             return AuthResult {
@@ -170,10 +170,10 @@ impl AuthService {
     }
 }
 
-// ── Helpers ──────────────────────────────────────────────────────────────────
+// ── 辅助函数 ──────────────────────────────────────────────────────────────────
 
-/// Derive the JWT signing secret from the deployment API key.
-/// Matches `auth.service.ts:deriveJwtSecret`:
+/// 从部署的 API key 派生 JWT 签名密钥。
+/// 对应 `auth.service.ts:deriveJwtSecret`：
 ///   `HMAC-SHA256(key=WEBUI_API_KEY, msg='codex-webui-jwt').hex`
 fn derive_secret(api_key: &str) -> String {
     let mut mac = Hmac::<Sha256>::new_from_slice(api_key.as_bytes()).expect("hmac key");
@@ -181,7 +181,7 @@ fn derive_secret(api_key: &str) -> String {
     hex::encode(mac.finalize().into_bytes())
 }
 
-/// A token "looks like a JWT" if it has exactly 3 dot-separated parts.
+/// 当 token 恰好由 3 个以点分隔的部分组成时，即视为“形似 JWT”。
 fn looks_like_jwt(token: &str) -> bool {
     token.split('.').count() == 3
 }

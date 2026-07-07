@@ -1,17 +1,17 @@
-//! Minimal Codex JSON-RPC types for Phase 1.
+//! Phase 1 所需的最小 Codex JSON-RPC 类型。
 //!
-//! Full typed v2 DTOs (`src/codex/dto/v2/` in TS) are ported as needed by later
-//! phases; Phase 1 only needs the initialize handshake and generic notification/
-//! server-request forwarding (method + params as `serde_json::Value`).
+//! 完整的 v2 类型化 DTO（TS 中的 `src/codex/dto/v2/`）会在后续阶段按需移植；
+//! Phase 1 只需要 initialize 握手以及通用的通知/服务端请求转发
+//! （method + params 以 `serde_json::Value` 形式处理）。
 
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use serde_json::Value;
 
-/// JSON-RPC request id. The Codex protocol uses incrementing integers from 1.
+/// JSON-RPC 请求 id。Codex 协议使用从 1 开始递增的整数。
 pub type RequestId = u64;
 
-/// `initialize` request params — parity with `codex-jsonrpc-client.ts:initialize`.
+/// `initialize` 请求参数 —— 与 `codex-jsonrpc-client.ts:initialize` 保持对齐。
 #[derive(Serialize)]
 pub struct InitializeParams {
     #[serde(rename = "clientInfo")]
@@ -32,14 +32,14 @@ pub struct Capabilities {
     pub experimental_api: bool,
 }
 
-/// `initialize` response — only the fields we log are typed; the rest is captured.
+/// `initialize` 响应 —— 仅对需要记录日志的字段做了类型化，其余字段一并捕获。
 #[derive(Deserialize, Debug, Clone)]
 pub struct InitializeResponse {
     #[serde(rename = "codexHome", default)]
     pub codex_home: Option<String>,
     #[serde(rename = "platformOs", default)]
     pub platform_os: Option<String>,
-    /// Catch-all for forward-compatible fields.
+    /// 用于前向兼容字段的兜底捕获。
     #[serde(flatten)]
     pub extra: HashMap<String, Value>,
 }

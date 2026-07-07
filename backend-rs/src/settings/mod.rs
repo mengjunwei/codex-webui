@@ -1,15 +1,15 @@
-//! Runtime settings subsystem.
+//! 运行时设置子系统。
 //!
-//! Resolution produces a typed `serde_json::Value` through a 3-tier chain:
-//! 1. **DB value** — JSON-decoded (parity with TS `decodeStoredValue = JSON.parse`).
-//!    TS stores ALL values JSON-encoded (`encodeJson = JSON.stringify`); e.g. a
-//!    string `"abc"` is stored as `"abc"` *with embedded quotes*. Only SQL NULL
-//!    counts as missing (an empty string is a valid stored value).
-//! 2. **envKey fallback** — type-parsed raw env string (parity with TS `readEnvValue`).
-//! 3. **defaultValue** — type-interpreted from the raw definition string.
+//! 解析过程通过三层回退链产出一个有类型的 `serde_json::Value`：
+//! 1. **DB 值** —— JSON 解码（与 TS 的 `decodeStoredValue = JSON.parse` 对齐）。
+//!    TS 将所有值以 JSON 编码存储（`encodeJson = JSON.stringify`）；例如字符串
+//!    `"abc"` 会存储为 `"abc"`（*内嵌引号*）。只有 SQL NULL 才算缺失
+//!    （空字符串是合法的存储值）。
+//! 2. **envKey 回退** —— 按类型解析原始环境变量字符串（与 TS 的 `readEnvValue` 对齐）。
+//! 3. **defaultValue** —— 由定义中的原始字符串按类型解释得到。
 //!
-//! Writes JSON-encode the value for storage. Constraints (min/max/integer) are
-//! modeled, persisted by reconcile, returned in the DTO, and enforced on write.
+//! 写入时会对值进行 JSON 编码后存储。约束（min/max/integer）会被建模、由
+//! reconcile 持久化、在 DTO 中返回，并在写入时强制校验。
 
 pub mod definitions;
 pub mod handlers;
@@ -20,7 +20,7 @@ use crate::db::Db;
 use anyhow::Result;
 use definitions::{SettingDef, SettingType, SETTINGS_DEFINITIONS};
 
-// ── Value source tracking ────────────────────────────────────────────────────
+// ── 值来源追踪 ────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, Copy, PartialEq, serde::Serialize)]
 #[serde(rename_all = "lowercase")]
@@ -30,7 +30,7 @@ pub enum ValueSource {
     Default,
 }
 
-/// A setting value resolved through the fallback chain, with source annotation.
+/// 经回退链解析出的设置值，附带来源标注。
 pub struct ResolvedSetting {
     pub key: &'static str,
     pub value: serde_json::Value,
@@ -39,12 +39,12 @@ pub struct ResolvedSetting {
     pub updated_at: Option<i64>,
 }
 
-/// Find the `SettingDef` for a given key. Returns `None` for unknown keys.
+/// 查找给定 key 对应的 `SettingDef`。未知 key 返回 `None`。
 pub fn find_def(key: &str) -> Option<&'static SettingDef> {
     SETTINGS_DEFINITIONS.iter().find(|d| d.key == key)
 }
 
-// ── Reader ───────────────────────────────────────────────────────────────────
+// ── 读取器 ───────────────────────────────────────────────────────────────────
 
 pub struct SettingsReader<'a> {
     db: &'a Db,
@@ -55,7 +55,7 @@ impl<'a> SettingsReader<'a> {
         Self { db }
     }
 
-    /// Resolve one setting with source tracking.
+    /// 解析单个设置，并追踪其来源。
     pub fn resolve(&self, key: &str) -> Option<ResolvedSetting> {
         let def = find_def(key)?;
         let conn = self.db.conn.lock().ok()?;
@@ -68,7 +68,7 @@ impl<'a> SettingsReader<'a> {
             )
             .unwrap_or((None, None));
 
-        // DB tier: JSON-decode; TS treats only NULL as missing (not empty string).
+        // DB 层：JSON 解码；TS 仅把 NULL 视为缺失（空字符串不算）。
         if let Some(raw) = db_raw {
             if let Ok(value) = serde_json::from_str::<serde_json::Value>(&raw) {
                 return Some(ResolvedSetting {
@@ -79,11 +79,11 @@ impl<'a> SettingsReader<'a> {
                     updated_at,
                 });
             }
-            // Corrupt stored value: TS warns + falls through to env/default.
+            // 存储值已损坏：TS 会告警并回退到 env/default。
             tracing::warn!("ignoring invalid stored setting {}: {}", def.key, raw);
         }
 
-        // env tier: type-parse the raw env string.
+        // env 层：按类型解析原始环境变量字符串。
         if let Some(raw) = def
             .env_key
             .and_then(|ek| std::env::var(ek).ok())
@@ -100,7 +100,7 @@ impl<'a> SettingsReader<'a> {
             }
         }
 
-        // default tier: type-interpret the definition's default string.
+        // default 层：按类型解释定义中的默认值字符串。
         Some(ResolvedSetting {
             key: def.key,
             value: default_as_value(def),
@@ -110,7 +110,7 @@ impl<'a> SettingsReader<'a> {
         })
     }
 
-    /// Resolve all settings, optionally filtered by category.
+    /// 解析所有设置，可按 category 过滤。
     pub fn list_all(&self, category: Option<&str>) -> Vec<ResolvedSetting> {
         SETTINGS_DEFINITIONS
             .iter()
@@ -120,7 +120,7 @@ impl<'a> SettingsReader<'a> {
     }
 
     pub fn get_string(&self, key: &str) -> Option<String> {
-        // Normalize empty string → None (parity with TS getStringSetting: `s.value || null`).
+        // 将空字符串归一化为 None（与 TS 的 getStringSetting：`s.value || null` 对齐）。
         self.resolve(key)?.value.as_str().filter(|s| !s.is_empty()).map(|s| s.to_string())
     }
 
@@ -132,7 +132,7 @@ impl<'a> SettingsReader<'a> {
         self.resolve(key)?.value.as_bool()
     }
 
-    /// Convenience: `files.uploadMaxBytes` as `u64` with fallback 100 MB.
+    /// 便捷方法：将 `files.uploadMaxBytes` 转为 `u64`，缺失时回退到 100 MB。
     pub fn get_upload_max_bytes(&self) -> u64 {
         self.get_number("files.uploadMaxBytes")
             .map(|n| n as u64)
@@ -140,9 +140,9 @@ impl<'a> SettingsReader<'a> {
     }
 }
 
-// ── Writer ───────────────────────────────────────────────────────────────────
+// ── 写入器 ───────────────────────────────────────────────────────────────────
 
-/// Write (upsert) a setting value. `value` is `None` to reset to env/default.
+/// 写入（upsert）一个设置值。`value` 为 `None` 时重置回 env/default。
 pub fn write_setting(db: &Db, key: &str, value: Option<&str>) -> Result<()> {
     find_def(key).ok_or_else(|| anyhow::anyhow!("unknown setting: {}", key))?;
     let conn = db
@@ -156,8 +156,8 @@ pub fn write_setting(db: &Db, key: &str, value: Option<&str>) -> Result<()> {
     Ok(())
 }
 
-/// Validate a JSON value against the setting's declared type AND constraints,
-/// then JSON-encode for storage. Parity with TS `validateValue` + `encodeJson`.
+/// 依据设置项声明的类型与约束校验一个 JSON 值，
+/// 随后进行 JSON 编码以供存储。与 TS 的 `validateValue` + `encodeJson` 对齐。
 pub fn validate_and_serialize(
     def: &SettingDef,
     value: &serde_json::Value,
@@ -166,7 +166,7 @@ pub fn validate_and_serialize(
     serde_json::to_string(&validated).map_err(|e| format!("encode error: {e}"))
 }
 
-/// Type + constraint validation. Returns the (possibly normalized) Value.
+/// 类型与约束校验。返回（可能经过归一化的）Value。
 pub fn validate_value(
     def: &SettingDef,
     value: &serde_json::Value,
@@ -193,8 +193,8 @@ pub fn validate_value(
         }
         SettingType::String => match value {
             serde_json::Value::String(_) => Ok(value.clone()),
-            // null → treat as empty string (parity with TS which rejects non-strings;
-            // but PATCH null means "reset" handled at the handler layer).
+            // null → 视作空字符串（与 TS 对齐，TS 会拒绝非字符串；
+            // 但 PATCH 的 null 表示“重置”，由 handler 层处理）。
             _ => Err(format!("expected string for {}", def.key)),
         },
         SettingType::Boolean => value
@@ -205,7 +205,7 @@ pub fn validate_value(
     }
 }
 
-/// Build a `serde_json::Number` Value, preferring i64 for whole numbers.
+/// 构造一个 `serde_json::Number` Value，整数优先使用 i64。
 fn num_value(n: f64) -> serde_json::Value {
     if n.fract() == 0.0 && n.is_finite() {
         serde_json::Value::Number(serde_json::Number::from(n as i64))
@@ -216,7 +216,7 @@ fn num_value(n: f64) -> serde_json::Value {
     }
 }
 
-/// Type-interpret the definition's raw default string into a Value.
+/// 将定义中的原始默认值字符串按类型解释为 Value。
 pub fn default_as_value(def: &SettingDef) -> serde_json::Value {
     match def.ty {
         SettingType::Number => def.default_value.parse::<f64>().ok().map(num_value).unwrap_or(serde_json::Value::Null),
@@ -226,7 +226,7 @@ pub fn default_as_value(def: &SettingDef) -> serde_json::Value {
     }
 }
 
-/// Type-parse a raw env string into a Value (parity with TS `readEnvValue`).
+/// 将原始环境变量字符串按类型解析为 Value（与 TS 的 `readEnvValue` 对齐）。
 fn parse_env_value(raw: &str, ty: SettingType) -> Option<serde_json::Value> {
     match ty {
         SettingType::Number => raw.parse::<f64>().ok().map(num_value),

@@ -1,11 +1,11 @@
-//! Settings CRUD HTTP handlers.
+//! 设置 CRUD 的 HTTP handler。
 //!
-//! Routes (mounted at `/api/settings`):
-//! - GET    /                — list all settings (optional `?category=`)
-//! - GET    /:key            — get one setting
-//! - PATCH  /                — batch update `{ updates: [{ key, value }] }`
-//! - PATCH  /:key            — update one `{ value }` (null resets)
-//! - DELETE /:key            — reset to env/default
+//! 路由（挂载于 `/api/settings`）：
+//! - GET    /                —— 列出所有设置（可选 `?category=`）
+//! - GET    /:key            —— 获取单个设置
+//! - PATCH  /                —— 批量更新 `{ updates: [{ key, value }] }`
+//! - PATCH  /:key            —— 更新单个 `{ value }`（null 表示重置）
+//! - DELETE /:key            —— 重置回 env/default
 
 use crate::db::Db;
 use crate::error::{AppError, ErrorCode};
@@ -20,7 +20,7 @@ use axum::{
 };
 use serde::{Deserialize, Serialize};
 
-// ── DTOs ─────────────────────────────────────────────────────────────────────
+// ── DTO ─────────────────────────────────────────────────────────────────────
 
 #[derive(Serialize)]
 pub struct SettingDto {
@@ -79,13 +79,13 @@ pub struct ListQuery {
     pub category: Option<String>,
 }
 
-// ── Handlers ─────────────────────────────────────────────────────────────────
+// ── Handler ─────────────────────────────────────────────────────────────────
 
 pub async fn list(
     State(state): State<AppState>,
     axum::extract::Query(q): axum::extract::Query<ListQuery>,
 ) -> Result<Json<serde_json::Value>, AppError> {
-    // M5 FIX: validate category if provided.
+    // M5 修复：若提供 category 则进行校验。
     if let Some(ref cat) = q.category {
         if !matches!(cat.as_str(), "terminal" | "files" | "security" | "general") {
             return Err(AppError::business(
@@ -136,7 +136,7 @@ pub async fn update_batch(
     State(state): State<AppState>,
     Json(payload): Json<BatchUpdatePayload>,
 ) -> Result<Json<serde_json::Value>, AppError> {
-    // M7 FIX: detect duplicate keys (TS throws settings.duplicate_key).
+    // M7 修复：检测重复 key（TS 会抛出 settings.duplicate_key）。
     let mut seen = std::collections::HashSet::new();
     for entry in &payload.updates {
         if !seen.insert(&entry.key) {
@@ -149,7 +149,7 @@ pub async fn update_batch(
         }
     }
 
-    // Validate all entries first.
+    // 先校验所有条目。
     let mut prepared: Vec<(String, Option<String>)> = Vec::with_capacity(payload.updates.len());
     for entry in &payload.updates {
         let def = find_def(&entry.key).ok_or_else(|| {
@@ -169,13 +169,13 @@ pub async fn update_batch(
                     None,
                 )
             })?),
-            None => None, // reset to env/default
+            None => None, // 重置回 env/default
         };
         prepared.push((entry.key.clone(), serialized));
     }
 
-    // Persist (scoped so the connection lock is released before the read-back below,
-    // which calls resolve() → conn.lock() again — otherwise deadlock).
+    // 持久化（用作用域隔离，以便在下方回读之前释放连接锁，
+    // 因为回读会再次调用 resolve() → conn.lock() —— 否则会死锁）。
     {
         let conn = state
             .db
@@ -196,7 +196,7 @@ pub async fn update_batch(
             .map_err(|e| AppError::internal(format!("tx commit: {e}")))?;
     }
 
-    // Return updated settings (lock re-acquired safely inside resolve).
+    // 返回更新后的设置（锁会在 resolve 内部安全地重新获取）。
     let dtos: Vec<SettingDto> = prepared
         .iter()
         .filter_map(|(k, _)| {
@@ -278,9 +278,9 @@ pub async fn delete_one(
     )))
 }
 
-// ── Helpers ──────────────────────────────────────────────────────────────────
+// ── 辅助函数 ──────────────────────────────────────────────────────────────────
 
-/// Load constraints JSON from the `settings` row, defaulting to `{}`.
+/// 从 `settings` 行加载 constraints JSON，缺失时默认为 `{}`。
 fn constraints_for_key(db: &Db, key: &str) -> serde_json::Value {
     let conn = match db.conn.lock() {
         Ok(c) => c,
@@ -296,7 +296,7 @@ fn constraints_for_key(db: &Db, key: &str) -> serde_json::Value {
     .unwrap_or(serde_json::json!({}))
 }
 
-/// Free-function `resolve` for use in handler scope.
+/// 供 handler 作用域使用的独立函数 `resolve`。
 fn resolve(db: &Db, key: &str) -> Option<ResolvedSetting> {
     crate::settings::SettingsReader::new(db).resolve(key)
 }

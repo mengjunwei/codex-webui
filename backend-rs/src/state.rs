@@ -1,4 +1,4 @@
-//! Shared application state, wrapped in `Arc` for cheap cloning into axum handlers.
+//! 共享的应用状态，用 `Arc` 包装以便低成本克隆到各 axum handler 中。
 
 use crate::auth::AuthService;
 use crate::codex::CodexProcessManager;
@@ -13,7 +13,7 @@ pub struct AppState {
     pub auth: Arc<AuthService>,
     pub codex: Arc<CodexProcessManager>,
     pub terminal: Arc<TerminalService>,
-    /// Workspace roots dynamically registered via POST /api/files/roots.
+    /// 通过 POST /api/files/roots 动态注册的工作区根目录。
     pub dynamic_files_roots: Arc<Mutex<HashSet<String>>>,
 }
 
@@ -24,7 +24,7 @@ impl AppState {
             .unwrap_or_default()
     }
 
-    /// Convenience: a `SettingsReader` borrowing this state's DB.
+    /// 便捷方法：借用本状态中的 DB 构造一个 `SettingsReader`。
     pub fn settings_reader(&self) -> crate::settings::SettingsReader<'_> {
         crate::settings::SettingsReader::new(&self.db)
     }

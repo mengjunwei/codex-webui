@@ -1,14 +1,14 @@
-//! Unified error model — ErrorCode, AppError, and IntoResponse.
+//! 统一错误模型 —— ErrorCode、AppError 与 IntoResponse。
 //!
-//! Response body: `{ statusCode, errorCode, message, params? }`
-//! **errorCode strings MUST be verbatim copies of `src/common/error-codes.ts`**
-//! because the React frontend uses them as i18n translation keys.
+//! 响应体：`{ statusCode, errorCode, message, params? }`
+//! **errorCode 字符串必须与 `src/common/error-codes.ts` 逐字一致**
+//! 因为 React 前端会将其用作 i18n 翻译键。
 //!
-//! Status fallback table (parity with `all-exceptions.filter.ts`):
+//! 状态码回退表（与 `all-exceptions.filter.ts` 对齐）：
 //! 400→http.bad_request, 401→http.unauthorized, 403→http.forbidden,
 //! 404→http.not_found, 409→http.conflict, 413→http.payload_too_large,
-//! 500→http.internal_error; other ≥500→http.internal_error; other→http.request_failed
-//! (with `params: { status }`).
+//! 500→http.internal_error；其他 ≥500→http.internal_error；其他→http.request_failed
+//! （附带 `params: { status }`）。
 
 use axum::{
     http::StatusCode,
@@ -18,9 +18,9 @@ use axum::{
 use serde_json::{json, Value};
 use std::collections::BTreeMap;
 
-/// Frontend i18n error code enum.
-/// Only codes needed by Phase 0 modules are listed here; additional codes
-/// (files.*, codex.*, terminal.*, etc.) are appended as those modules are ported.
+/// 前端 i18n 错误码枚举。
+/// 此处仅列出 Phase 0 模块所需的错误码；随着相应模块的迁移，
+/// 其他错误码（files.*、codex.*、terminal.* 等）会逐步追加。
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum ErrorCode {
     // ── http.* ─────────────────────────────────────────────────────────
@@ -77,10 +77,10 @@ pub enum ErrorCode {
     ThreadsInvalidInputUrl,
     ThreadsInvalidInputField,
     ThreadsInvalidInputType,
-    // ── threads.* (config hot-reload validation) ──
+    // ── threads.*（配置热重载校验）──
     ThreadsInvalidApprovalPolicy,
     ThreadsInvalidSandboxMode,
-    // ── codex.* (config editing) ──
+    // ── codex.*（配置编辑）──
     CodexRawContentInvalid,
     CodexEditsNotArray,
     CodexEditInvalid,
@@ -154,7 +154,7 @@ pub enum ErrorCode {
     TerminalNotFound,
     TerminalContextMismatch,
     TerminalSocketNotAttached,
-    // future modules appended here.
+    // 后续模块追加于此。
 }
 
 impl ErrorCode {
@@ -278,7 +278,7 @@ impl ErrorCode {
         }
     }
 
-    /// Lookup the fallback ErrorCode for a given HTTP status code.
+    /// 查找给定 HTTP 状态码对应的回退 ErrorCode。
     pub fn fallback_for(status: u16) -> Self {
         match status {
             400 => Self::HttpBadRequest,
@@ -294,23 +294,23 @@ impl ErrorCode {
     }
 }
 
-/// Optional interpolation params for frontend i18n.
-/// Parity with TS `ErrorParams = Record<string, string | number>`.
+/// 前端 i18n 的可选插值参数。
+/// 与 TS 的 `ErrorParams = Record<string, string | number>` 对齐。
 pub type Params = BTreeMap<String, serde_json::Value>;
 
-/// Unified application error type.
+/// 统一的应用错误类型。
 #[derive(Debug)]
 pub enum AppError {
-    /// Structured business error with explicit code + status + message.
+    /// 带有显式 code + status + message 的结构化业务错误。
     Business {
         code: ErrorCode,
         status: StatusCode,
         message: Value,
         params: Option<Params>,
     },
-    /// HTTP status-only error; code and message are derived from the status.
+    /// 仅包含 HTTP 状态码的错误；code 与 message 由状态码派生。
     Status { status: StatusCode },
-    /// Unhandled internal error; always renders as 500 + http.internal_error.
+    /// 未处理的内部错误；始终渲染为 500 + http.internal_error。
     Internal(String),
 }
 

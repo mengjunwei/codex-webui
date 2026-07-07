@@ -1,15 +1,15 @@
-//! JSON-RPC client for communicating with `codex app-server` over stdio.
+//! 通过 stdio 与 `codex app-server` 通信的 JSON-RPC 客户端。
 //!
-//! Parity with `src/codex/codex-jsonrpc-client.ts`. Handles:
-//! - request/response correlation (id → oneshot), with per-request timeout
-//! - server-initiated requests (has id + method, no result/error)
-//! - notifications (has method, no id)
-//! - bidirectional JSONL logging to `logs/codex-jsonrpc.jsonl` as `{ts, dir, msg}`
+//! 与 `src/codex/codex-jsonrpc-client.ts` 保持对齐。负责：
+//! - 请求/响应关联（id → oneshot），每个请求独立超时
+//! - 服务端主动发起的请求（有 id + method，无 result/error）
+//! - 通知（有 method，无 id）
+//! - 双向 JSONL 日志写入 `logs/codex-jsonrpc.jsonl`，格式为 `{ts, dir, msg}`
 //!
-//! **Wire format note**: the Codex protocol OMITS the `jsonrpc: "2.0"` field.
-//! Messages are `{method, id, params}` (request), `{method, params}` (notification),
-//! `{id, result}` / `{id, error}` (response). Do NOT use a generic JSON-RPC crate
-//! that injects `jsonrpc`.
+//! **传输格式说明**：Codex 协议省略了 `jsonrpc: "2.0"` 字段。
+//! 消息格式为 `{method, id, params}`（请求）、`{method, params}`（通知）、
+//! `{id, result}` / `{id, error}`（响应）。不要使用会自动注入
+//! `jsonrpc` 字段的通用 JSON-RPC 库。
 
 use crate::codex::types::RequestId;
 use serde_json::Value;
@@ -25,7 +25,7 @@ use tokio::time::timeout;
 
 const DEFAULT_REQUEST_TIMEOUT_MS: u64 = 30_000;
 
-/// Errors that can arise from a JSON-RPC request.
+/// JSON-RPC 请求可能产生的错误。
 #[derive(Debug, thiserror::Error)]
 pub enum RpcError {
     #[error("client is closed")]
@@ -48,7 +48,7 @@ pub enum RpcError {
 type PendingMap = Arc<Mutex<HashMap<RequestId, oneshot::Sender<Result<Value, RpcError>>>>>;
 
 pub struct CodexJsonRpcClient {
-    next_id: AtomicU64, // initialized to 1; fetch_add returns 1, 2, 3, …
+    next_id: AtomicU64, // 初始化为 1；fetch_add 依次返回 1、2、3……
     pending: PendingMap,
     write_tx: mpsc::UnboundedSender<String>,
     notify_tx: broadcast::Sender<Value>,
@@ -58,12 +58,12 @@ pub struct CodexJsonRpcClient {
     request_timeout: Duration,
     _reader_task: JoinHandle<()>,
     _writer_task: JoinHandle<()>,
-    /// Held to keep the child process alive (kill_on_drop would kill it on
-    /// drop otherwise). Killed explicitly in `destroy`.
+    /// 持有以保持子进程存活（否则 kill_on_drop 会在 drop 时将其杀死）。
+    /// 在 `destroy` 中显式杀死。
     child: Mutex<Option<Child>>,
 }
 
-/// Why the client closed (for the close broadcast).
+/// 客户端关闭的原因（用于关闭事件的广播）。
 #[derive(Debug, Clone)]
 pub enum CloseReason {
     StdoutEof,
@@ -71,8 +71,8 @@ pub enum CloseReason {
 }
 
 impl CodexJsonRpcClient {
-    /// Construct the client around an already-spawned `codex app-server` child.
-    /// The child must have piped stdin/stdout. Spawns reader + writer tasks.
+    /// 基于已启动的 `codex app-server` 子进程构造客户端。
+    /// 子进程必须使用管道化的 stdin/stdout。会启动读取 + 写入任务。
     pub fn new(
         mut child: Child,
         request_timeout_ms: Option<u64>,
@@ -93,14 +93,14 @@ impl CodexJsonRpcClient {
         let (close_tx, _) = broadcast::channel::<CloseReason>(8);
         let closed = Arc::new(AtomicBool::new(false));
 
-        // JSONL log channel (best-effort bidirectional logging).
+        // JSONL 日志通道（尽力而为的双向日志记录）。
         let (jsonl_tx, jsonl_rx) = mpsc::unbounded_channel::<String>();
 
         let request_timeout = Duration::from_millis(
             request_timeout_ms.unwrap_or(DEFAULT_REQUEST_TIMEOUT_MS),
         );
 
-        // Reader task: parse stdout lines, dispatch responses/notifications/server-requests.
+        // 读取任务：解析 stdout 行，分发响应/通知/服务端请求。
         let reader_pending = pending.clone();
         let reader_notify = notify_tx.clone();
         let reader_server_req = server_request_tx.clone();
@@ -120,13 +120,13 @@ impl CodexJsonRpcClient {
             .await;
         });
 
-        // Writer task: drain write_tx → stdin (logs each outbound line to jsonl).
+        // 写入任务：从 write_tx 取出数据写入 stdin（每条出站行都记录到 jsonl）。
         let writer_jsonl = jsonl_tx.clone();
         let writer_task = tokio::spawn(async move {
             write_loop(stdin, write_rx, writer_jsonl).await;
         });
 
-        // JSONL appender task (detaches; ends when all jsonl senders drop).
+        // JSONL 追加任务（分离运行；所有 jsonl 发送端 drop 后结束）。
         tokio::spawn(jsonl_loop(jsonl_rx));
 
         Ok(Self {
@@ -148,7 +148,7 @@ impl CodexJsonRpcClient {
         self.closed.load(Ordering::SeqCst)
     }
 
-    /// Send a JSON-RPC request and await the correlated response.
+    /// 发送 JSON-RPC 请求并等待关联的响应。
     pub async fn request(
         &self,
         method: &str,
@@ -176,7 +176,7 @@ impl CodexJsonRpcClient {
 
         match timeout(self.request_timeout, rx).await {
             Ok(Ok(result)) => result,
-            Ok(Err(_)) => Err(RpcError::Closed), // sender dropped (destroy/close)
+            Ok(Err(_)) => Err(RpcError::Closed), // 发送端被 drop（destroy/关闭）
             Err(_) => {
                 self.pending.lock().await.remove(&id);
                 Err(RpcError::Timeout {
@@ -187,7 +187,7 @@ impl CodexJsonRpcClient {
         }
     }
 
-    /// Fire-and-forget notification.
+    /// 发后即忘（fire-and-forget）的通知。
     pub fn notify(&self, method: &str, params: Option<Value>) -> Result<(), RpcError> {
         if self.is_closed() {
             return Err(RpcError::Closed);
@@ -201,9 +201,9 @@ impl CodexJsonRpcClient {
         self.write_tx.send(line).map_err(|_| RpcError::Closed)
     }
 
-    /// Respond to a server-initiated request (e.g. approval decision).
-    /// `id` is forwarded verbatim to preserve number-vs-string type (codex
-    /// correlates responses by id value AND type).
+    /// 响应服务端主动发起的请求（例如审批决定）。
+    /// `id` 原样转发以保持数字/字符串类型（codex 通过 id 的值和类型
+    /// 共同关联响应）。
     pub fn respond_to_server_request(
         &self,
         id: Value,
@@ -219,25 +219,25 @@ impl CodexJsonRpcClient {
         self.write_tx.send(line).map_err(|_| RpcError::Closed)
     }
 
-    /// Subscribe to server notifications (method + params, no id).
+    /// 订阅服务端通知（method + params，无 id）。
     pub fn subscribe_notifications(&self) -> broadcast::Receiver<Value> {
         self.notify_tx.subscribe()
     }
 
-    /// Subscribe to server-initiated requests (id + method + params).
+    /// 订阅服务端主动发起的请求（id + method + params）。
     pub fn subscribe_server_requests(&self) -> broadcast::Receiver<Value> {
         self.server_request_tx.subscribe()
     }
 
-    /// Subscribe to close events.
+    /// 订阅关闭事件。
     pub fn subscribe_close(&self) -> broadcast::Receiver<CloseReason> {
         self.close_tx.subscribe()
     }
 
-    /// Mark closed, reject all pending, and kill the child process.
+    /// 标记为关闭，拒绝所有待处理请求，并杀死子进程。
     pub async fn destroy(&self) {
         self.closed.store(true, Ordering::SeqCst);
-        self.pending.lock().await.clear(); // drops senders → requests get Closed
+        self.pending.lock().await.clear(); // drop 发送端 → 请求收到 Closed
         if let Some(mut child) = self.child.lock().await.take() {
             let _ = child.kill().await;
         }
@@ -245,7 +245,7 @@ impl CodexJsonRpcClient {
     }
 }
 
-// ── Reader / writer / jsonl tasks ────────────────────────────────────────────
+// ── 读取 / 写入 / jsonl 任务 ────────────────────────────────────────────
 
 async fn read_loop(
     stdout: ChildStdout,
@@ -271,7 +271,7 @@ async fn read_loop(
             }
         }
     }
-    // stdout closed: reject all pending + signal close.
+    // stdout 已关闭：拒绝所有待处理请求 + 发送关闭信号。
     closed.store(true, Ordering::SeqCst);
     pending.lock().await.clear();
     let _ = close_tx.send(CloseReason::StdoutEof);
@@ -311,7 +311,7 @@ async fn jsonl_loop(mut jsonl_rx: mpsc::UnboundedReceiver<String>) {
 }
 
 fn jsonl_log(jsonl_tx: &mpsc::UnboundedSender<String>, dir: &str, raw_line: &str) {
-    // Re-parse to embed under {ts, dir, msg}; fall back to raw string.
+    // 重新解析以嵌入到 {ts, dir, msg} 下；失败时退回原始字符串。
     let msg: Value = serde_json::from_str(raw_line).unwrap_or(Value::String(raw_line.into()));
     let entry = serde_json::json!({
         "ts": chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
@@ -321,7 +321,7 @@ fn jsonl_log(jsonl_tx: &mpsc::UnboundedSender<String>, dir: &str, raw_line: &str
     let _ = jsonl_tx.send(entry.to_string());
 }
 
-/// Parse one inbound line and route it. Extracted for unit testing.
+/// 解析单条入站行并路由。为单元测试而抽取出来。
 async fn dispatch_line(
     line: &str,
     pending: &PendingMap,
@@ -342,7 +342,7 @@ async fn dispatch_line(
     let has_method = msg.get("method").is_some();
 
     if has_id && (has_result || has_error) {
-        // Response to a client request.
+        // 对客户端请求的响应。
         if let Some(id) = msg.get("id").and_then(Value::as_u64) {
             if let Some(tx) = pending.lock().await.remove(&id) {
                 let result = if let Some(err) = msg.get("error") {
@@ -361,10 +361,10 @@ async fn dispatch_line(
             }
         }
     } else if has_id && has_method {
-        // Server-initiated request (e.g. approval).
+        // 服务端主动发起的请求（例如审批）。
         let _ = server_request_tx.send(msg);
     } else if has_method {
-        // Notification.
+        // 通知。
         let _ = notify_tx.send(msg);
     }
 }
@@ -469,14 +469,14 @@ mod tests {
         let (notify_tx, _) = broadcast::channel(16);
         let (server_req_tx, _) = broadcast::channel(16);
 
-        // Should not panic.
+        // 不应 panic。
         dispatch_line("not json at all", &pending, &notify_tx, &server_req_tx).await;
         assert!(pending.lock().await.is_empty());
     }
 
     #[tokio::test]
     async fn request_message_omits_jsonrpc_field() {
-        // Verify serialization shape via the same map construction logic.
+        // 通过相同的 map 构造逻辑验证序列化结构。
         let id: u64 = 1;
         let mut msg = serde_json::Map::new();
         msg.insert("method".into(), Value::String("initialize".into()));

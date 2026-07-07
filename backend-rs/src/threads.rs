@@ -1,12 +1,11 @@
-//! Threads + turns REST endpoints — codex app-server proxies.
+//! Threads + turns REST 端点 — codex app-server 代理。
 //!
-//! Parity with `threads.controller.ts` + `threads.service.ts`.
+//! 与 `threads.controller.ts` + `threads.service.ts` 对齐。
 //!
-//! Simple proxies: list / loaded-list / read / resume / archive / unarchive /
-//! compact / fork / rollback / name-set / interrupt / start-thread.
-//! start-turn / steer: structural input validation (the workspace path-resolution
-//! security boundary for `mention`/`localImage` types is deferred until
-//! FilesService/ChatUploadService land — Phase 3c/4).
+//! 简单代理:list / loaded-list / read / resume / archive / unarchive /
+//! compact / fork / rollback / name-set / interrupt / start-thread。
+//! start-turn / steer:仅做结构化输入校验(`mention`/`localImage` 类型的工作区
+//! 路径解析安全边界暂缓,直到 FilesService/ChatUploadService 落地 — Phase 3c/4)。
 
 use crate::codex::RpcError;
 use crate::error::{AppError, ErrorCode};
@@ -26,7 +25,7 @@ fn bad_request(code: ErrorCode, msg: impl Into<String>) -> AppError {
     AppError::business(code, StatusCode::BAD_REQUEST, msg.into(), None)
 }
 
-// ── POST /threads (create) ───────────────────────────────────────────────────
+// ── POST /threads(创建)───────────────────────────────────────────────────
 
 #[derive(Deserialize)]
 pub struct CreateThreadBody {
@@ -60,7 +59,7 @@ pub async fn create_thread(
     Ok(Json(result))
 }
 
-// ── GET /threads (list) ──────────────────────────────────────────────────────
+// ── GET /threads(列表)─────────────────────────────────────────────────────
 
 #[derive(Deserialize)]
 pub struct ListThreadsQuery {
@@ -106,7 +105,7 @@ pub async fn list_threads(
     if let Some(sk) = q.sort_key {
         params.insert("sortKey".into(), Value::String(sk));
     }
-    // Empty array = all providers (parity with TS controller comment).
+    // 空数组 = 所有 provider(与 TS controller 注释对齐)。
     params.insert("modelProviders".into(), Value::Array(vec![]));
     let result = state
         .codex
@@ -144,7 +143,7 @@ pub async fn list_loaded_threads(
     Ok(Json(result))
 }
 
-// ── GET /threads/:threadId (read) ────────────────────────────────────────────
+// ── GET /threads/:threadId(读取)───────────────────────────────────────────
 
 #[derive(Deserialize)]
 pub struct ReadQuery {
@@ -168,7 +167,7 @@ pub async fn read_thread(
     match result {
         Ok(v) => Ok(Json(v)),
         Err(e) if include_turns && is_not_materialized(&e) => {
-            // Retry without turns; unmaterialized thread has no turns anyway.
+            // 不带 turns 重试;未具现化的线程本来也没有 turns。
             let retry = state
                 .codex
                 .request(
@@ -189,8 +188,8 @@ pub async fn read_thread(
     }
 }
 
-/// Parity with `thread-errors.ts:isNotMaterializedError` — message contains
-/// "not materialized" (case-insensitive).
+/// 与 `thread-errors.ts:isNotMaterializedError` 对齐 — 消息包含
+/// "not materialized"(不区分大小写)。
 fn is_not_materialized(e: &RpcError) -> bool {
     match e {
         RpcError::ServerError { message, .. } => {
@@ -206,7 +205,7 @@ pub async fn resume_thread(
     State(state): State<AppState>,
     Path(thread_id): Path<String>,
 ) -> Result<Json<Value>, AppError> {
-    // NOTE: TS uses a resume-registry to dedupe per generation + cache. Deferred.
+    // 注意:TS 使用 resume-registry 按 generation 去重并缓存。暂缓实现。
     let result = state
         .codex
         .request("thread/resume", Some(json!({ "threadId": thread_id })))
@@ -215,7 +214,7 @@ pub async fn resume_thread(
     Ok(Json(result))
 }
 
-// ── POST /threads/:threadId/turns (start turn) ───────────────────────────────
+// ── POST /threads/:threadId/turns(开始 turn)──────────────────────────────
 
 #[derive(Deserialize)]
 pub struct StartTurnBody {
@@ -298,7 +297,7 @@ pub async fn interrupt_turn(
     Ok(Json(json!({ "ok": true })))
 }
 
-// ── archive / unarchive / compact / fork / rollback / name ───────────────────
+// ── 归档 / 取消归档 / 压缩 / 分叉 / 回滚 / 重命名 ───────────────────
 
 pub async fn archive_thread(
     State(state): State<AppState>,
@@ -404,15 +403,15 @@ pub async fn set_thread_name(
     Ok(StatusCode::NO_CONTENT)
 }
 
-// ── input validation (structural; path resolution deferred) ──────────────────
+// ── 输入校验(结构化;路径解析暂缓)──────────────────────────
 
 const USER_INPUT_TYPES: &[&str] = &["text", "image", "localImage", "skill", "mention"];
 const REASONING_EFFORT_VALUES: &[&str] = &["none", "minimal", "low", "medium", "high", "xhigh"];
 
-/// Validate the discriminated UserInput array. Returns the validated array.
-/// NOTE: `mention`/`localImage` paths are passed through WITHOUT workspace-root
-/// resolution — the security boundary (FilesService.resolveSafePath /
-/// ChatUploadService.resolveStoredUploadPath) is deferred until those land.
+/// 校验可辨识的 UserInput 数组。返回已校验的数组。
+/// 注意:`mention`/`localImage` 路径在未做工作区根路径解析的情况下直接透传 —
+/// 安全边界(FilesService.resolveSafePath /
+/// ChatUploadService.resolveStoredUploadPath)暂缓,直到这些服务落地。
 fn validate_turn_input(input: &Value) -> Result<Value, AppError> {
     let arr = input.as_array().filter(|a| !a.is_empty()).ok_or_else(|| {
         bad_request(
@@ -457,7 +456,7 @@ fn validate_input_item(item: &Value, i: usize) -> Result<Value, AppError> {
         }
         "localImage" => {
             let path = req_string_trimmed(obj, "path", i)?;
-            // resolveStoredUploadPath deferred (ChatUploadService, Phase 4).
+            // resolveStoredUploadPath 暂缓(ChatUploadService,Phase 4)。
             Ok(json!({ "type": "localImage", "path": path }))
         }
         "skill" => {
@@ -468,7 +467,7 @@ fn validate_input_item(item: &Value, i: usize) -> Result<Value, AppError> {
         "mention" => {
             let name = req_string_trimmed(obj, "name", i)?;
             let path = req_string_trimmed(obj, "path", i)?;
-            // resolveSafePath deferred (FilesService, Phase 3c).
+            // resolveSafePath 暂缓(FilesService,Phase 3c)。
             Ok(json!({ "type": "mention", "name": name, "path": path }))
         }
         _ => Err(bad_request_params(

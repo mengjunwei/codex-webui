@@ -1,22 +1,22 @@
-//! Tracing initialization (daily rolling file + stdout) and URL redaction.
+//! tracing 初始化（按天滚动文件 + 标准输出）以及 URL 脱敏。
 //!
-//! Two layers:
-//! - **stdout**: human-readable fmt (good for dev console / `docker logs`)
-//! - **file** (`logs/app.YYYY-MM-DD`): **JSON** fmt, so the `logs` module can
-//!   parse entries into structured `LogEntry` records.
+//! 两个 layer：
+//! - **stdout**：人类可读的格式（适合开发控制台 / `docker logs`）
+//! - **file**（`logs/app.YYYY-MM-DD`）：**JSON** 格式，以便 `logs` 模块
+//!   能将条目解析为结构化的 `LogEntry` 记录。
 //!
-//! Parity note: pino-roll does size-based rotation (10MB × 5 files);
-//! tracing-appender only supports time-based (daily). Phase 0 uses daily;
-//! size-based rotation deferred (logrotate or custom appender). See spec §6.7.
+//! 对齐说明：pino-roll 采用按大小滚动（10MB × 5 个文件）；
+//! tracing-appender 仅支持按时间滚动（每天）。Phase 0 采用按天滚动；
+//! 按大小滚动暂缓（使用 logrotate 或自定义 appender）。参见 spec §6.7。
 
 use tracing_appender::non_blocking::WorkerGuard;
 use tracing_appender::rolling;
 use tracing_subscriber::fmt::format::{self, JsonFields};
 use tracing_subscriber::{filter::EnvFilter, fmt, prelude::*};
 
-/// Initialize tracing: stdout (human-readable) + rolling file (JSON).
-/// Returns `WorkerGuard` — **must be held** until process exit, or the
-/// non-blocking writer's background thread drops and pending log lines are lost.
+/// 初始化 tracing：stdout（人类可读）+ 滚动文件（JSON）。
+/// 返回 `WorkerGuard` —— **必须持有**到进程退出，否则非阻塞写入器的后台线程
+/// 会被丢弃，尚未写出的日志行会丢失。
 pub fn init(level: &str) -> WorkerGuard {
     let file_appender = rolling::daily("logs", "app");
     let (non_blocking, guard) = tracing_appender::non_blocking(file_appender);
@@ -25,9 +25,9 @@ pub fn init(level: &str) -> WorkerGuard {
 
     tracing_subscriber::registry()
         .with(filter)
-        // stdout: human-readable, ANSI colors
+        // stdout：人类可读，带 ANSI 颜色
         .with(fmt::layer().with_writer(std::io::stdout))
-        // file: JSON for structured parsing by the logs module
+        // file：JSON 格式，供 logs 模块做结构化解析
         .with(
             fmt::layer()
                 .with_writer(non_blocking)
@@ -39,8 +39,8 @@ pub fn init(level: &str) -> WorkerGuard {
     guard
 }
 
-/// Strip `access_token=...` query parameters from a URL.
-/// Parity with `app.module.ts:sanitizeUrl` (PINO_REDACT strips `req.query.access_token`).
+/// 从 URL 中剔除 `access_token=...` 查询参数。
+/// 与 `app.module.ts:sanitizeUrl` 对齐（PINO_REDACT 会剔除 `req.query.access_token`）。
 pub fn sanitize_url(url: &str) -> String {
     let mut out = String::with_capacity(url.len());
     let mut first_param = true;
@@ -55,7 +55,7 @@ pub fn sanitize_url(url: &str) -> String {
     if let Some(q) = query {
         for part in q.split('&') {
             if part.starts_with("access_token=") {
-                continue; // redact
+                continue; // 脱敏剔除
             }
             if first_param {
                 out.push('?');

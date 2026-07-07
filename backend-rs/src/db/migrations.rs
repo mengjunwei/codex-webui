@@ -1,13 +1,12 @@
-//! Drizzle SQL migration runner.
+//! Drizzle SQL 迁移执行器。
 //!
-//! Embeds `drizzle/0000..0005.sql` at compile time (`include_str!`).
-//! Statements are split on the `--> statement-breakpoint` marker.
-//! Applied files are tracked in a `schema_migrations` table.
+//! 在编译期通过 `include_str!` 内嵌 `drizzle/0000..0005.sql`。
+//! 语句按 `--> statement-breakpoint` 标记进行拆分。
+//! 已执行的文件记录在 `schema_migrations` 表中。
 //!
-//! **TS-managed DB compatibility**: If a `__drizzle_migrations` table exists
-//! (created by the original NestJS drizzle-kit migrator), we assume the schema
-//! is already up to date and skip execution — we only record all 6 files as
-//! applied so that future incremental migrations (if any) work correctly.
+//! **TS 管理的数据库兼容性**：如果存在 `__drizzle_migrations` 表
+//! （由原始 NestJS drizzle-kit 迁移器创建），则假定 schema 已是最新并跳过执行 ——
+//! 仅将全部 6 个文件记录为已执行，以便将来（若有）的增量迁移能正常工作。
 
 use crate::db::Db;
 use anyhow::Result;
@@ -41,11 +40,11 @@ const MIGRATIONS: &[(&str, &str)] = &[
 
 const BREAKPOINT: &str = "--> statement-breakpoint";
 
-/// Run all pending drizzle migrations. Idempotent; safe to call on every startup.
+/// 执行所有待处理的 drizzle 迁移。幂等操作；可在每次启动时安全调用。
 pub fn run_migrations(db: &Db) -> Result<()> {
     let conn = db.conn.lock().map_err(|e| anyhow::anyhow!("db lock poisoned: {e}"))?;
 
-    // Ensure our tracking table exists.
+    // 确保我们的追踪表存在。
     conn.execute_batch(
         "CREATE TABLE IF NOT EXISTS schema_migrations (
             filename  TEXT PRIMARY KEY,
@@ -53,7 +52,7 @@ pub fn run_migrations(db: &Db) -> Result<()> {
         );",
     )?;
 
-    // Detect a TS-managed database (drizzle-kit's own migration table).
+    // 检测 TS 管理的数据库（drizzle-kit 自有的迁移表）。
     let drizzle_managed: i64 = conn.query_row(
         "SELECT count(*) FROM sqlite_master WHERE type='table' AND name='__drizzle_migrations'",
         [],
@@ -75,7 +74,7 @@ pub fn run_migrations(db: &Db) -> Result<()> {
         return Ok(());
     }
 
-    // Normal path: apply each file in order, skipping already-applied ones.
+    // 常规路径：按顺序执行每个文件，跳过已执行过的。
     for (name, sql) in MIGRATIONS {
         let applied: i64 = conn.query_row(
             "SELECT count(*) FROM schema_migrations WHERE filename = ?1",

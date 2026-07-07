@@ -1,8 +1,8 @@
-//! Runtime setting definitions — ported from `src/settings/settings.definitions.ts`.
+//! 运行时设置定义 —— 移植自 `src/settings/settings.definitions.ts`。
 //!
-//! 12 settings across 4 categories (terminal, files, security, general).
-//! `default_value` is a raw string interpreted by type on read.
-//! `constraints` (min/max/integer) are now modeled + persisted + enforced, matching TS.
+//! 共 12 项设置，横跨 4 个分类（terminal、files、security、general）。
+//! `default_value` 是一个原始字符串，读取时按类型解释。
+//! `constraints`（min/max/integer）现已建模 + 持久化 + 强制校验，与 TS 保持一致。
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum SettingType {
@@ -42,17 +42,17 @@ impl Category {
     }
 }
 
-/// Constraints for a setting (parity with TS `SettingConstraints`).
+/// 设置项的约束（与 TS 的 `SettingConstraints` 对齐）。
 #[derive(Clone, Copy, Debug, Default)]
 pub struct SettingConstraints {
     pub min: Option<f64>,
     pub max: Option<f64>,
-    /// Marks number settings that must be integral.
+    /// 标记必须为整数的 number 类型设置。
     pub integer: bool,
 }
 
 impl SettingConstraints {
-    /// Encode as a JSON string for DB storage (parity with TS `encodeJson(def.constraints)`).
+    /// 编码为 JSON 字符串以便存入数据库（与 TS 的 `encodeJson(def.constraints)` 对齐）。
     pub fn to_json(self) -> serde_json::Value {
         let mut m = serde_json::Map::new();
         if let Some(min) = self.min {
@@ -68,7 +68,7 @@ impl SettingConstraints {
     }
 }
 
-/// Build a `serde_json::Number`, preferring i64 for whole numbers.
+/// 构造一个 `serde_json::Number`，整数优先使用 i64。
 fn num_value(n: f64) -> serde_json::Value {
     if n.fract() == 0.0 && n.is_finite() {
         serde_json::Value::Number(serde_json::Number::from(n as i64))
@@ -79,7 +79,7 @@ fn num_value(n: f64) -> serde_json::Value {
     }
 }
 
-/// const helper for integer-range constraints.
+/// 用于整数范围约束的 const 辅助函数。
 const fn int_range(min: f64, max: f64) -> SettingConstraints {
     SettingConstraints {
         min: Some(min),
@@ -88,7 +88,7 @@ const fn int_range(min: f64, max: f64) -> SettingConstraints {
     }
 }
 
-/// No constraints (for settings without min/max/integer).
+/// 无约束（用于没有 min/max/integer 的设置项）。
 const NO_CONSTRAINTS: SettingConstraints = SettingConstraints {
     min: None,
     max: None,
@@ -100,12 +100,12 @@ pub struct SettingDef {
     pub ty: SettingType,
     pub category: Category,
     pub description: &'static str,
-    pub default_value: &'static str, // raw string, type-interpreted on read
+    pub default_value: &'static str, // 原始字符串，读取时按类型解释
     pub env_key: Option<&'static str>,
     pub constraints: SettingConstraints,
 }
 
-// ── Authoritative definitions (port of SETTINGS_DEFINITIONS) ──────────────────
+// ── 权威定义（移植自 SETTINGS_DEFINITIONS）──────────────────────────
 
 pub const SETTINGS_DEFINITIONS: &[SettingDef] = &[
     SettingDef {

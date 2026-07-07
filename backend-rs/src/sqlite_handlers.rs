@@ -1,9 +1,7 @@
-//! SQLite read endpoints for Phase 2 modules that don't depend on the
-//! codex JSON-RPC client (Phase 1): token-usage, turn-diff, turn-errors,
-//! pending-approvals.
+//! Phase 2 中不依赖 codex JSON-RPC 客户端（Phase 1）的 SQLite 只读端点：
+//! token-usage、turn-diff、turn-errors、pending-approvals。
 //!
-//! Write paths for these modules are event-driven (subscribed to codex
-//! notifications) and will be added in Phase 1.
+//! 这些模块的写入路径是事件驱动的（订阅 codex 通知），将在 Phase 1 中补充。
 
 use crate::error::{AppError, ErrorCode};
 use crate::state::AppState;
@@ -15,7 +13,7 @@ use axum::{
 use rusqlite::OptionalExtension;
 use serde::{Deserialize, Serialize};
 
-// ── token-usage ──────────────────────────────────────────────────────────────
+// ── token 用量 ──────────────────────────────────────────────────────────────
 
 #[derive(Serialize, Clone)]
 pub struct BreakdownDto {
@@ -112,7 +110,7 @@ pub async fn read_token_usage(
     }))
 }
 
-// ── turn-diff ────────────────────────────────────────────────────────────────
+// ── turn 差异 ────────────────────────────────────────────────────────────────
 
 #[derive(Serialize)]
 pub struct TurnDiffDto {
@@ -165,7 +163,7 @@ pub async fn read_turn_diffs(
     }))
 }
 
-// ── turn-errors ──────────────────────────────────────────────────────────────
+// ── turn 错误 ────────────────────────────────────────────────────────────────
 
 #[derive(Serialize)]
 pub struct TurnErrorDto {
@@ -218,7 +216,7 @@ pub async fn read_turn_errors(
     }))
 }
 
-// ── pending-approvals (list) ─────────────────────────────────────────────────
+// ── 待处理审批（列表）─────────────────────────────────────────────────────────
 
 #[derive(Serialize)]
 pub struct PendingServerRequestDto {
@@ -238,8 +236,8 @@ pub struct PendingServerRequestDto {
     pub created_at: i64,
     #[serde(rename = "updatedAt")]
     pub updated_at: i64,
-    // NOTE: resolvedAt + resolvedBy intentionally omitted — parity with
-    // pending-approvals.dto.ts / toDto (TS never serializes them).
+    // 注意：resolvedAt 与 resolvedBy 故意省略 —— 与
+    // pending-approvals.dto.ts / toDto 保持一致（TS 端从不序列化这两个字段）。
 }
 
 #[derive(Serialize)]
@@ -250,7 +248,7 @@ pub struct ListPendingResponse {
 #[derive(Deserialize)]
 pub struct PendingQuery {
     #[serde(rename = "threadIds")]
-    pub thread_ids: Option<String>, // comma-separated
+    pub thread_ids: Option<String>, // 以逗号分隔
 }
 
 pub async fn list_pending(
@@ -330,7 +328,7 @@ fn parse_pending_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<PendingServerReq
     })
 }
 
-// ── POST /pending-approvals/:requestId/respond ───────────────────────────────
+// ── 响应待处理请求：POST /pending-approvals/:requestId/respond ──────────────
 
 #[derive(Deserialize)]
 pub struct RespondPayload {
@@ -347,7 +345,7 @@ pub async fn respond_to_request(
     let generation = state.codex.generation() as i64;
     let now = chrono::Utc::now().timestamp_millis();
 
-    // H5 FIX: explicit result validation (TS checks hasOwnProperty('result')).
+    // H5 修复：显式校验 result（TS 端使用 hasOwnProperty('result') 判断）。
     let result = payload.result.ok_or_else(|| {
         AppError::business(
             ErrorCode::ApprovalsResultRequired,
@@ -357,8 +355,8 @@ pub async fn respond_to_request(
         )
     })?;
 
-    // 1. Lookup (must release the DB lock before awaiting the client below —
-    //    holding a MutexGuard across `.await` makes the future !Send).
+    // 1. 查询（必须在下方 await 客户端之前释放 DB 锁 ——
+    //    跨 `.await` 持有 MutexGuard 会导致 future 变为 !Send）。
     let existing_status = {
         let conn = state
             .db
@@ -394,7 +392,7 @@ pub async fn respond_to_request(
         ));
     }
 
-    // 2. Get client (await with no DB lock held).
+    // 2. 获取客户端（在不持有 DB 锁的情况下 await）。
     let client = state.codex.client().await.ok_or_else(|| {
         AppError::business(
             ErrorCode::ApprovalsServerNotConnected,
@@ -404,7 +402,7 @@ pub async fn respond_to_request(
         )
     })?;
 
-    // 3. CAS update + forward inside a transaction (forward failure rolls back).
+    // 3. 在事务内执行 CAS 更新并转发（转发失败将回滚）。
     {
         let conn = state
             .db
@@ -430,7 +428,7 @@ pub async fn respond_to_request(
             .map_err(|e| AppError::internal(format!("cas update: {e}")))?;
 
         if changes != 1 {
-            // Drop tx (rollback) by not committing.
+            // 不提交事务即可丢弃 tx（回滚）。
             return Err(AppError::business(
                 ErrorCode::ApprovalsAlreadyHandled,
                 StatusCode::CONFLICT,
@@ -439,10 +437,10 @@ pub async fn respond_to_request(
             ));
         }
 
-        // Forward to app-server INSIDE the transaction (tx rolls back on forward failure).
+        // 在事务内转发到 app-server（转发失败时事务回滚）。
         let id_value = parse_request_id_value(&request_id);
         if let Err(e) = client.respond_to_server_request(id_value, result) {
-            // Drop tx without commit → rollback. Status stays pending.
+            // 不提交直接丢弃 tx → 回滚，状态保持 pending。
             return Err(AppError::internal(format!("respond forward: {e}")));
         }
 
@@ -450,7 +448,7 @@ pub async fn respond_to_request(
             .map_err(|e| AppError::internal(format!("tx commit: {e}")))?;
     };
 
-    // 4. Re-query to build the DTO (lock released, tx consumed).
+    // 4. 重新查询以构造 DTO（锁已释放，事务已消耗）。
     let conn = state
         .db
         .conn
@@ -468,8 +466,8 @@ pub async fn respond_to_request(
     Ok(Json(dto))
 }
 
-/// Convert a stored requestId (string) back to a JSON Value that preserves
-/// the original number-vs-string type for the JSON-RPC response correlation.
+/// 将存储的 requestId（字符串）还原为 JSON Value，
+/// 在用于 JSON-RPC 响应关联时保留其原本的数字/字符串类型。
 fn parse_request_id_value(s: &str) -> serde_json::Value {
     if let Ok(n) = s.parse::<u64>() {
         serde_json::Value::Number(n.into())

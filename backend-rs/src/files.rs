@@ -1,16 +1,16 @@
-//! Files subsystem — workspace-root security boundary + core file ops.
+//! 文件子系统 —— 工作区根目录安全边界 + 核心文件操作。
 //!
-//! Parity with `src/files/files.service.ts` + `files.controller.ts` (subset).
+//! 与 `src/files/files.service.ts` + `files.controller.ts`（子集）保持对齐。
 //!
-//! Security: every path is resolved to a real path (no symlink escapes) and
-//! validated to be under a configured workspace root (+ dynamic roots + home).
+//! 安全性：每个路径都会被解析为真实路径（杜绝符号链接逃逸），并校验其位于
+//! 已配置的工作区根目录之下（含动态根目录与家目录）。
 //!
-//! Phase 3c core: read-tree / read-file (text, ≤5MB) / metadata / delete /
+//! Phase 3c 核心：read-tree / read-file（文本，≤5MB）/ metadata / delete /
 //! list-roots / add-root / create-file / create-dir / write-file / resolveSafePath
-//! (used by threads for mention path validation).
+//! （供 threads 用于 mention 路径校验）。
 //!
-//! Deferred to follow-up: multipart upload, serve-Range (pdf/video streaming),
-//! rename/copy/move, download, archive preview. These currently return 501.
+//! 延后至后续实现：multipart 上传、serve-Range（PDF/视频流式播放）、
+//! rename/copy/move、download、归档预览。这些当前返回 501。
 
 use crate::error::{AppError, ErrorCode};
 use crate::state::AppState;
@@ -48,7 +48,7 @@ fn forbidden(msg: impl Into<String>) -> AppError {
     )
 }
 
-// ── Path resolution + workspace-root enforcement ─────────────────────────────
+// ── 路径解析 + 工作区根目录强制校验 ─────────────────────────────
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ResolvedKind {
@@ -67,8 +67,8 @@ pub struct ResolvedTarget {
     pub mtime_ms: i64,
 }
 
-/// Validate a path: realpath + workspace-root containment check. The single
-/// entry point used by handlers and by threads (mention path resolution).
+/// 校验路径：realpath + 工作区根目录包含性检查。这是被各 handler
+/// 及 threads（mention 路径解析）共用的唯一入口。
 pub async fn resolve_safe_path(
     state: &AppState,
     input: &str,
@@ -86,7 +86,7 @@ async fn resolve(state: &AppState, input: &str) -> Result<ResolvedTarget, AppErr
         return Err(forbidden("path contains NUL byte"));
     }
     let p = PathBuf::from(raw);
-    // Reject obvious traversal escapes before resolving (security: belt + suspenders).
+    // 在解析之前先拒绝明显的目录穿越逃逸（安全加固：双重保险）。
     let canonical = tokio::fs::canonicalize(&p)
         .await
         .map_err(|_| not_found(format!("path not found: {raw}")))?;
@@ -133,8 +133,8 @@ fn is_within(child: &Path, parent: &Path) -> bool {
 
 fn workspace_roots(state: &AppState) -> Vec<String> {
     let mut out: HashSet<String> = HashSet::new();
-    // Home dir — canonicalize to match the verbatim prefix (\\?\) of
-    // canonicalized file paths on Windows (fixes C1 from review).
+    // 家目录 —— 规范化以匹配 Windows 上规范化后文件路径的逐字前缀（\\?\）
+    // （修复评审提出的 C1）。
     if let Ok(home) = std::env::var("USERPROFILE").or_else(|_| std::env::var("HOME")) {
         if !home.is_empty() {
             match std::fs::canonicalize(&home) {
@@ -143,7 +143,7 @@ fn workspace_roots(state: &AppState) -> Vec<String> {
             }
         }
     }
-    // Configured WORKSPACE_ROOTS from settings (fixes H1 from review).
+    // 从设置中读取已配置的 WORKSPACE_ROOTS（修复评审提出的 H1）。
     let reader = crate::settings::SettingsReader::new(&state.db);
     if let Some(roots_str) = reader.get_string("security.workspaceRoots") {
         for root in roots_str.split(',').map(|s| s.trim()).filter(|s| !s.is_empty()) {
@@ -152,16 +152,16 @@ fn workspace_roots(state: &AppState) -> Vec<String> {
             }
         }
     }
-    // Dynamic roots (already canonicalized at add_root time).
+    // 动态根目录（在 add_root 时已规范化）。
     for r in state.dynamic_files_roots.lock().map(|g| g.iter().cloned().collect::<Vec<_>>()).unwrap_or_default() {
         out.insert(r);
     }
     out.into_iter().collect()
 }
 
-// ── Handlers ────────────────────────────────────────────────────────────────
+// ── Handler（处理器）────────────────────────────────────────────────────────
 
-/// GET /api/files/roots → configured + dynamic roots + home dir.
+/// GET /api/files/roots → 已配置根目录 + 动态根目录 + 家目录。
 pub async fn get_roots(State(state): State<AppState>) -> Result<Json<serde_json::Value>, AppError> {
     let roots = state
         .dynamic_files_roots
@@ -203,7 +203,7 @@ pub async fn add_root(
     let canonical = tokio::fs::canonicalize(&p)
         .await
         .map_err(|e| AppError::internal(format!("canonicalize: {e}")))?;
-    // H3 FIX: dynamic root must be within an already-configured root (TS isAllowedPath).
+    // H3 修复：动态根目录必须位于已配置的根目录之内（对齐 TS isAllowedPath）。
     if !within_workspace(&state, &canonical) {
         return Err(forbidden("root must be within an existing workspace root"));
     }
@@ -212,7 +212,7 @@ pub async fn add_root(
     Ok(Json(json!({ "ok": true })))
 }
 
-/// GET /api/files/tree?root=… → one-level directory listing.
+/// GET /api/files/tree?root=… → 单层目录列表。
 #[derive(Deserialize)]
 pub struct TreeQuery {
     pub root: Option<String>,
@@ -271,7 +271,7 @@ pub async fn read_tree(
     Ok(Json(json!({ "entries": entries })))
 }
 
-/// GET /api/files/read?path=… → text content (≤5MB).
+/// GET /api/files/read?path=… → 文本内容（≤5MB）。
 #[derive(Deserialize)]
 pub struct ReadQuery {
     pub path: Option<String>,
@@ -296,8 +296,8 @@ pub async fn read_file(
             None,
         ));
     }
-    // M6 FIX: read as bytes then lossy-convert (TS fs.readFile utf-8 replaces
-    // invalid sequences with U+FFFD; Rust read_to_string would 500 on non-UTF8).
+    // M6 修复：先按字节读取再做 lossy 转换（TS fs.readFile 以 utf-8 读取时
+    // 会用 U+FFFD 替换无效序列；Rust read_to_string 在非 UTF-8 时会直接 500）。
     let raw_bytes = tokio::fs::read(&resolved.resolved)
         .await
         .map_err(|e| AppError::internal(format!("read: {e}")))?;
@@ -310,7 +310,7 @@ pub async fn read_file(
     })))
 }
 
-/// GET /api/files/metadata?path=… → stat.
+/// GET /api/files/metadata?path=… → stat 信息。
 #[derive(Deserialize)]
 pub struct MetaQuery {
     pub path: Option<String>,
@@ -336,7 +336,7 @@ pub async fn get_metadata(
     })))
 }
 
-/// DELETE /api/files/delete?path=…&recursive=… → remove file/symlink/dir.
+/// DELETE /api/files/delete?path=…&recursive=… → 删除文件/符号链接/目录。
 #[derive(Deserialize)]
 pub struct DeleteQuery {
     pub path: Option<String>,
@@ -352,12 +352,12 @@ pub async fn delete_path(
         return Err(bad_request(ErrorCode::FilesPathRequired, "path is required"));
     }
 
-    // H4 FIX: check for symlinks BEFORE canonicalize (which follows links).
-    // A symlink must be removed via remove_file (deletes the link, not target).
+    // H4 修复：在 canonicalize（会跟随链接）之前先检查符号链接。
+    // 符号链接必须通过 remove_file 删除（删除的是链接本身，而非其目标）。
     let sym_meta = tokio::fs::symlink_metadata(raw).await
         .map_err(|_| not_found(&format!("path not found: {raw}")))?;
     if sym_meta.is_symlink() {
-        // Validate the symlink's parent is within workspace.
+        // 校验符号链接的父目录位于工作区之内。
         let parent = std::path::Path::new(raw).parent()
             .ok_or_else(|| bad_request(ErrorCode::FilesNoParentFound, "parent path not found"))?;
         let parent_canon = tokio::fs::canonicalize(parent).await
@@ -370,7 +370,7 @@ pub async fn delete_path(
         return Ok(Json(json!({ "ok": true })));
     }
 
-    // Normal path: resolve (canonicalize) then delete by type.
+    // 普通路径：解析（规范化）后按类型删除。
     let resolved = resolve(&state, raw).await?;
     let recursive = matches!(q.recursive.as_deref(), Some("true") | Some("1"));
     match resolved.kind {
@@ -380,7 +380,7 @@ pub async fn delete_path(
                     .await
                     .map_err(|e| AppError::internal(format!("rmdir: {e}")))?;
             } else {
-                // Refuse if not empty (mirrors TS `dirNotEmpty`).
+                // 非空则拒绝（对齐 TS 的 `dirNotEmpty`）。
                 let mut entries = tokio::fs::read_dir(&resolved.resolved)
                     .await
                     .map_err(|e| AppError::internal(format!("read_dir: {e}")))?;
@@ -409,7 +409,7 @@ pub async fn delete_path(
     Ok(Json(json!({ "ok": true })))
 }
 
-/// POST /api/files/create-file → create empty (or content) file.
+/// POST /api/files/create-file → 创建空文件（或带内容文件）。
 #[derive(Deserialize)]
 pub struct CreateFileBody {
     pub path: Option<String>,
@@ -442,8 +442,8 @@ pub async fn create_file(
             "path already exists (set overwrite=true)",
         ));
     }
-    // HIGH FIX: symlink escape check (same as write_file) — if target exists,
-    // canonicalize and verify within_workspace before writing.
+    // 高优先级修复：符号链接逃逸检查（与 write_file 一致）—— 若目标已存在，
+    // 写入前先规范化并校验是否位于 within_workspace 之内。
     if let Ok(canonical_target) = tokio::fs::canonicalize(&p).await {
         if !within_workspace(&state, &canonical_target) {
             return Err(forbidden("target resolves outside workspace (symlink escape?)"));
@@ -463,7 +463,7 @@ pub async fn create_file(
     })))
 }
 
-/// POST /api/files/create-directory → mkdir (recursive optional).
+/// POST /api/files/create-directory → mkdir（可选递归）。
 #[derive(Deserialize)]
 pub struct CreateDirBody {
     pub path: Option<String>,
@@ -497,8 +497,8 @@ pub async fn create_directory(
             ));
         }
     } else if body.recursive.unwrap_or(false) {
-        // H2 FIX: validate nearest existing ancestor BEFORE creating any dirs.
-        // Resolves ancestor → checks workspace → then create_dir_all is safe.
+        // H2 修复：在创建任何目录之前，先校验最近的已存在祖先目录。
+        // 解析祖先 → 校验工作区 → 之后 create_dir_all 才是安全的。
         let mut ancestor = p.clone();
         while !ancestor.exists() {
             match ancestor.parent() {
@@ -515,7 +515,7 @@ pub async fn create_directory(
         tokio::fs::create_dir_all(&p)
             .await
             .map_err(|e| AppError::internal(format!("mkdir -p: {e}")))?;
-        // Post-validate the created path itself.
+        // 事后校验所创建的路径本身。
         let canonical = tokio::fs::canonicalize(&p)
             .await
             .map_err(|e| AppError::internal(format!("canonicalize: {e}")))?;
@@ -541,8 +541,8 @@ pub async fn create_directory(
     Ok(Json(json!({ "ok": true, "path": raw })))
 }
 
-/// POST /api/files/write → write/overwrite file (optimistic concurrency via
-/// expectedMtime is deferred to a follow-up; parity for the basic path).
+/// POST /api/files/write → 写入/覆盖文件（基于 expectedMtime 的乐观并发控制
+/// 延后至后续实现；基本路径已与 TS 对齐）。
 #[derive(Deserialize)]
 pub struct WriteFileBody {
     pub path: Option<String>,
@@ -569,15 +569,15 @@ pub async fn write_file(
     if !within_workspace(&state, &canonical_parent) {
         return Err(forbidden("parent is outside workspace"));
     }
-    // H1 FIX: if target exists, canonicalize it and verify within workspace
-    // (prevents symlink escape: a symlink in-workspace → target outside).
+    // H1 修复：若目标已存在，则规范化并校验是否位于工作区之内
+    // （防止符号链接逃逸：工作区内的符号链接 → 工作区外的目标）。
     if let Ok(canonical_target) = tokio::fs::canonicalize(&p).await {
         if !within_workspace(&state, &canonical_target) {
             return Err(forbidden("target resolves outside workspace (symlink escape?)"));
         }
     }
     if let Some(expected) = body.expected_mtime {
-        // M3 FIX: ±1000ms tolerance (TS Math.abs(diff) > 1000) + 409 Conflict.
+        // M3 修复：±1000ms 容差（对齐 TS 的 Math.abs(diff) > 1000）+ 409 Conflict。
         if let Ok(meta) = tokio::fs::metadata(&p).await {
             let actual = meta
                 .modified()
@@ -613,12 +613,12 @@ pub async fn write_file(
     })))
 }
 
-// ── serve (inline + Range) / download (attachment) ──────────────────────────
+// ── serve（内联 + Range）/ download（附件下载）──────────────────────────
 
-/// GET /api/files/serve?path=… — inline preview with byte-range support.
-/// Used by <img>/<video>/<pdf> tags AND by OnlyOffice Document Server to fetch
-/// the file. Supports the RFC 6750 `access_token` query fallback (handled by
-/// the auth middleware for this path). Returns 200/206/416.
+/// GET /api/files/serve?path=… —— 支持字节区段的内联预览。
+/// 被 <img>/<video>/<pdf> 标签以及 OnlyOffice Document Server 用于获取文件。
+/// 支持 RFC 6750 `access_token` 查询参数回退（由该路径的鉴权中间件处理）。
+/// 返回 200/206/416。
 pub async fn serve_file(
     State(state): State<AppState>,
     Query(q): Query<ReadQuery>,
@@ -635,13 +635,13 @@ pub async fn serve_file(
         &resolved.resolved,
         &resolved.original,
         resolved.size,
-        true, // inline
+        true, // 内联
         headers,
     )
     .await
 }
 
-/// GET /api/files/download?path=… — attachment download (no Range).
+/// GET /api/files/download?path=… —— 以附件形式下载（不支持 Range）。
 pub async fn download_file(
     State(state): State<AppState>,
     Query(q): Query<ReadQuery>,
@@ -653,8 +653,8 @@ pub async fn download_file(
             "path must be a file",
         ));
     }
-    // M2 FIX: download always uses application/octet-stream (TS files.controller.ts:290)
-    // regardless of the actual file type. Browsers always trigger download.
+    // M2 修复：下载始终使用 application/octet-stream（对齐 TS files.controller.ts:290），
+    // 与实际文件类型无关。浏览器总是会触发下载。
     let filename = resolved.resolved.file_name()
         .map(|n| n.to_string_lossy().to_string())
         .unwrap_or_else(|| "file".into());
@@ -749,8 +749,8 @@ struct ByteRange {
     end: u64,
 }
 
-/// Parse a single RFC 9110 `bytes=start-end` header. Parity with TS
-/// `parseRangeHeader`. Returns None (absent), Range, or Invalid.
+/// 解析单个 RFC 9110 `bytes=start-end` 请求头。与 TS 的
+/// `parseRangeHeader` 对齐。返回 None（缺失）、Range 或 Invalid。
 fn parse_range_header(range_header: Option<&str>, size: u64) -> RangeResult {
     let Some(header) = range_header else {
         return RangeResult::None;
@@ -759,7 +759,7 @@ fn parse_range_header(range_header: Option<&str>, size: u64) -> RangeResult {
     let Some(rest) = header.strip_prefix("bytes=") else {
         return RangeResult::Invalid;
     };
-    // Match `^bytes=(\d*)-(\d*)$`
+    // 匹配 `^bytes=(\d*)-(\d*)$`
     let (raw_start, raw_end) = match rest.split_once('-') {
         Some((s, e)) => (s, e),
         None => return RangeResult::Invalid,
@@ -768,7 +768,7 @@ fn parse_range_header(range_header: Option<&str>, size: u64) -> RangeResult {
         return RangeResult::Invalid;
     }
     if raw_start.is_empty() {
-        // Suffix range: bytes=-N → last N bytes
+        // 后缀区间：bytes=-N → 最后 N 个字节
         let suffix: u64 = match raw_end.parse() {
             Ok(n) if n > 0 => n,
             _ => return RangeResult::Invalid,
@@ -803,7 +803,7 @@ fn parse_range_header(range_header: Option<&str>, size: u64) -> RangeResult {
     })
 }
 
-/// Map a filename to a MIME type by extension. Parity with TS `guessMimeType`.
+/// 按扩展名将文件名映射为 MIME 类型。与 TS 的 `guessMimeType` 对齐。
 fn guess_mime_type(filename: &str) -> String {
     let lower = filename.to_ascii_lowercase();
     if lower.ends_with(".tar.gz") || lower.ends_with(".tgz") {
@@ -821,7 +821,7 @@ fn guess_mime_type(filename: &str) -> String {
 
 fn mime_for_ext(ext: &str) -> &'static str {
     match ext {
-        // images
+        // 图片
         "png" => "image/png",
         "jpg" | "jpeg" => "image/jpeg",
         "gif" => "image/gif",
@@ -830,12 +830,12 @@ fn mime_for_ext(ext: &str) -> &'static str {
         "ico" => "image/x-icon",
         "bmp" => "image/bmp",
         "avif" => "image/avif",
-        // documents
+        // 文档
         "pdf" => "application/pdf",
         "docx" => "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
         "xlsx" => "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         "pptx" => "application/vnd.openxmlformats-officedocument.presentationml.presentation",
-        // text/code
+        // 文本/代码
         "html" => "text/html",
         "css" => "text/css",
         "js" | "mjs" | "cjs" => "text/javascript",
@@ -848,7 +848,7 @@ fn mime_for_ext(ext: &str) -> &'static str {
         "md" => "text/markdown",
         "csv" => "text/csv",
         "yaml" | "yml" => "text/yaml",
-        // media
+        // 媒体
         "mp4" | "m4v" => "video/mp4",
         "webm" => "video/webm",
         "mov" => "video/quicktime",
@@ -858,7 +858,7 @@ fn mime_for_ext(ext: &str) -> &'static str {
         "ogg" | "oga" => "audio/ogg",
         "flac" => "audio/flac",
         "m4a" => "audio/mp4",
-        // archives
+        // 归档
         "zip" => "application/zip",
         "gz" | "tgz" => "application/gzip",
         "tar" => "application/x-tar",
@@ -866,7 +866,7 @@ fn mime_for_ext(ext: &str) -> &'static str {
         "xz" => "application/x-xz",
         "rar" => "application/vnd.rar",
         "7z" => "application/x-7z-compressed",
-        // fonts
+        // 字体
         "woff" => "font/woff",
         "woff2" => "font/woff2",
         "ttf" => "font/ttf",
@@ -875,8 +875,8 @@ fn mime_for_ext(ext: &str) -> &'static str {
     }
 }
 
-/// Build a safe Content-Disposition header. Parity with TS
-/// `buildContentDisposition`.
+/// 构建安全的 Content-Disposition 请求头。与 TS 的
+/// `buildContentDisposition` 对齐。
 fn build_content_disposition(filename: &str, inline: bool) -> String {
     let fallback: String = filename
         .chars()
@@ -905,7 +905,7 @@ fn url_encode(s: &str) -> String {
     out
 }
 
-// ── rename / copy / move ─────────────────────────────────────────────────────
+// ── rename（重命名）/ copy（复制）/ move（移动）────────────────────────────
 
 #[derive(Deserialize)]
 pub struct RenameBody {
@@ -984,7 +984,7 @@ async fn do_relocate(
             "sourcePath and destinationPath are required"));
     }
     let src = resolve(state, src_raw).await?;
-    // Validate dest: canonicalize dest (or its parent if dest doesn't exist yet).
+    // 校验目标：规范化目标（若目标尚不存在，则规范化其父目录）。
     let dst_canonical = match tokio::fs::canonicalize(dst_raw).await {
         Ok(c) => c,
         Err(_) => {
@@ -1038,7 +1038,7 @@ async fn copy_dir_recursive(src: &Path, dst: &Path) -> std::io::Result<()> {
     Ok(())
 }
 
-// ── multipart upload ─────────────────────────────────────────────────────────
+// ── multipart 上传 ─────────────────────────────────────────────────────────
 
 #[derive(Deserialize)]
 pub struct UploadQuery {
@@ -1057,7 +1057,7 @@ pub async fn upload_files(
         return Err(bad_request(ErrorCode::FilesDestRequired, "destinationPath is required"));
     }
     let overwrite = matches!(q.overwrite.as_deref(), Some("true") | Some("1"));
-    // Validate destination dir is within workspace.
+    // 校验目标目录位于工作区之内。
     let dest_canonical = tokio::fs::canonicalize(dest_raw)
         .await
         .map_err(|_| not_found("destination directory not found"))?;
@@ -1072,8 +1072,8 @@ pub async fn upload_files(
     let mut files = Vec::new();
     while let Ok(Some(field)) = multipart.next_field().await {
         let raw_filename = field.file_name().unwrap_or("upload").to_string();
-        // CRITICAL FIX (C2): sanitize filename — strip path components to prevent
-        // path traversal (e.g. "..\\evil.dll" → "evil.dll").
+        // 关键修复（C2）：净化文件名 —— 剥离路径组件以防止
+        // 路径穿越（例如 "..\\evil.dll" → "evil.dll"）。
         let safe_name = std::path::Path::new(&raw_filename)
             .file_name()
             .map(|n| n.to_string_lossy().to_string())
@@ -1086,8 +1086,8 @@ pub async fn upload_files(
             return Err(conflict(ErrorCode::FilesPathExists,
                 format!("{safe_name} already exists (set overwrite=true)")));
         }
-        // HIGH FIX: symlink escape check — if target exists and is a symlink,
-        // canonicalize and verify within_workspace before writing.
+        // 高优先级修复：符号链接逃逸检查 —— 若目标已存在且为符号链接，
+        // 写入前先规范化并校验是否位于 within_workspace 之内。
         if let Ok(canonical_target) = tokio::fs::canonicalize(&file_path).await {
             if !within_workspace(&state, &canonical_target) {
                 return Err(forbidden("target resolves outside workspace (symlink escape?)"));
@@ -1102,7 +1102,7 @@ pub async fn upload_files(
     Ok(Json(json!({ "ok": true, "files": files })))
 }
 
-// ── archive list / entry (zip + tar/gz/bz2/xz) ──────────────────────────────
+// ── 归档列表 / 条目读取（zip + tar/gz/bz2/xz）──────────────────────────────
 
 pub async fn archive_list(
     State(state): State<AppState>,
@@ -1197,8 +1197,8 @@ fn list_archive_entries(path: &Path) -> Result<Vec<serde_json::Value>, String> {
         ArchiveFormat::Tar => list_tar(std::fs::File::open(path).map_err(|e| e.to_string())?),
         ArchiveFormat::TarGz => list_tar(flate2::read::GzDecoder::new(std::fs::File::open(path).map_err(|e| e.to_string())?)),
         ArchiveFormat::TarBz2 | ArchiveFormat::TarXz => {
-            // H5 FIX: bz2/xz need decompression crate; return explicit error
-            // instead of feeding compressed bytes to tar (which yields garbage 500).
+            // H5 修复：bz2/xz 需要额外的解压 crate；返回明确的错误，
+            // 而不是把压缩字节直接喂给 tar（否则会产生乱码并 500）。
             Err("bz2/xz archive listing not yet supported".into())
         }
     }
@@ -1235,7 +1235,7 @@ fn read_archive_entry(path: &Path, entry_name: &str) -> Result<Vec<u8>, String> 
         ArchiveFormat::Tar => read_tar_entry(std::fs::File::open(path).map_err(|e| e.to_string())?, entry_name),
         ArchiveFormat::TarGz => read_tar_entry(flate2::read::GzDecoder::new(std::fs::File::open(path).map_err(|e| e.to_string())?), entry_name),
         ArchiveFormat::TarBz2 | ArchiveFormat::TarXz => {
-            // bz2/xz decoders require additional crates; deferred.
+            // bz2/xz 解码器需要额外的 crate；暂未实现。
             Err("bz2/xz archive entry extraction not yet supported".into())
         }
     }
@@ -1260,7 +1260,7 @@ fn _unused_fs() {
     let _ = std::any::type_name::<fs::File>();
 }
 
-// ── Conflict helper (409 CONFLICT, parity with TS assertNoOverwrite) ─────────
+// ── 冲突辅助函数（409 CONFLICT，对齐 TS assertNoOverwrite）──────────────────
 fn conflict(code: ErrorCode, msg: impl Into<String>) -> AppError {
     AppError::business(code, StatusCode::CONFLICT, msg.into(), None)
 }

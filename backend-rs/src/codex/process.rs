@@ -1,10 +1,9 @@
-//! Codex app-server process lifecycle manager.
+//! Codex app-server 进程生命周期管理器。
 //!
-//! Parity with `src/codex/codex-process-manager.service.ts`. Owns the JSON-RPC
-//! client, performs the initialize handshake, tracks generation across restarts,
-//! auto-restarts on exit (3000ms backoff), and re-broadcasts notifications /
-//! server-requests through manager-level channels that **persist across restarts**
-//! (so subscribers keep receiving events after a restart).
+//! 与 `src/codex/codex-process-manager.service.ts` 保持对齐。持有 JSON-RPC
+//! 客户端，执行 initialize 握手，跨重启跟踪 generation，退出时自动重启
+//! （3000ms 退避），并通过管理器级别的通道重新广播通知/服务端请求，
+//! 这些通道**在重启后依然保持有效**（订阅者在重启后仍可继续收到事件）。
 
 use crate::codex::jsonrpc::{CodexJsonRpcClient, RpcError};
 use crate::codex::types::{default_initialize_params, InitializeResponse};
@@ -29,20 +28,20 @@ pub enum LifecycleEvent {
 pub struct CodexProcessManager {
     codex_bin: String,
     codex_home: Option<String>,
-    /// `(generation, client)` — generation lets the close watcher avoid
-    /// clobbering a newer spawn.
+    /// `(generation, client)` —— generation 让关闭监视器避免
+    /// 覆盖较新的子进程。
     current: Mutex<Option<(u64, Arc<CodexJsonRpcClient>)>>,
     generation: AtomicU64,
     restarting: AtomicBool,
     destroyed: AtomicBool,
-    /// Manager-level notification/server-request channels — persist across restarts.
+    /// 管理器级别的通知/服务端请求通道 —— 跨重启保持有效。
     notify_tx: broadcast::Sender<Value>,
     server_request_tx: broadcast::Sender<Value>,
     lifecycle_tx: broadcast::Sender<LifecycleEvent>,
 }
 
 impl CodexProcessManager {
-    /// Construct without spawning (lazy). Call `start()` to spawn + initialize.
+    /// 构造但不立即启动（懒加载）。调用 `start()` 才会启动 + 初始化。
     pub fn new(codex_bin: String, codex_home: Option<String>) -> Self {
         let (notify_tx, _) = broadcast::channel::<Value>(256);
         let (server_request_tx, _) = broadcast::channel::<Value>(256);
@@ -60,22 +59,22 @@ impl CodexProcessManager {
         }
     }
 
-    /// Subscribe to app-server notifications (persist across restarts).
+    /// 订阅 app-server 通知（跨重启保持有效）。
     pub fn subscribe_notifications(&self) -> broadcast::Receiver<Value> {
         self.notify_tx.subscribe()
     }
 
-    /// Subscribe to server-initiated requests (persist across restarts).
+    /// 订阅服务端主动发起的请求（跨重启保持有效）。
     pub fn subscribe_server_requests(&self) -> broadcast::Receiver<Value> {
         self.server_request_tx.subscribe()
     }
 
-    /// Subscribe to lifecycle events.
+    /// 订阅生命周期事件。
     pub fn subscribe_lifecycle(&self) -> broadcast::Receiver<LifecycleEvent> {
         self.lifecycle_tx.subscribe()
     }
 
-    /// Current JSON-RPC client, or `None` if not connected.
+    /// 当前的 JSON-RPC 客户端，未连接则返回 `None`。
     pub async fn client(&self) -> Option<Arc<CodexJsonRpcClient>> {
         match self.current.lock().await.as_ref() {
             Some((_, c)) => Some(c.clone()),
@@ -83,12 +82,12 @@ impl CodexProcessManager {
         }
     }
 
-    /// Current generation (0 before first successful init).
+    /// 当前 generation（首次成功初始化之前为 0）。
     pub fn generation(&self) -> u64 {
         self.generation.load(Ordering::SeqCst)
     }
 
-    /// Send a JSON-RPC request to the current app-server, or error if unavailable.
+    /// 向当前 app-server 发送 JSON-RPC 请求，不可用则返回错误。
     pub async fn request(&self, method: &str, params: Option<Value>) -> Result<Value, RpcError> {
         match self.client().await {
             Some(c) => c.request(method, params).await,
@@ -96,14 +95,14 @@ impl CodexProcessManager {
         }
     }
 
-    /// Spawn + initialize. On any failure, schedule a restart. Idempotent guard
-    /// via the `restarting` flag is handled by callers / `restart`.
+    /// 启动 + 初始化。任何失败都会调度一次重启。基于 `restarting`
+    /// 标志的幂等保护由调用方 / `restart` 处理。
     pub async fn start(self: Arc<Self>) {
         if self.destroyed.load(Ordering::SeqCst) {
             return;
         }
 
-        // Phase 1: spawn child process + create client (no init yet).
+        // 第一阶段：启动子进程 + 创建客户端（尚未初始化）。
         let client = match self.spawn_child().await {
             Ok(c) => c,
             Err(e) => {
@@ -115,14 +114,14 @@ impl CodexProcessManager {
             }
         };
 
-        // Phase 2: attach forwarders + close watcher BEFORE init (M1 FIX:
-        // close-watcher race — if the child exits during init, the watcher
-        // must already be subscribed to catch it).
+        // 第二阶段：在初始化之前挂载转发器 + 关闭监视器（M1 修复：
+        // 关闭监视器竞态 —— 如果子进程在初始化期间退出，监视器必须
+        // 已经订阅才能捕获到该事件）。
         let new_generation = self.generation.load(Ordering::SeqCst) + 1;
         self.attach_forwarders(&client);
         self.spawn_close_watcher(&client, new_generation);
 
-        // Phase 3: initialize handshake.
+        // 第三阶段：initialize 握手。
         match self.initialize_client(&client).await {
             Ok(init) => {
                 self.generation.fetch_add(1, Ordering::SeqCst);
@@ -142,7 +141,7 @@ impl CodexProcessManager {
             }
             Err(e) => {
                 tracing::error!("failed to initialize codex app-server: {}", e);
-                // Clean up the half-initialized client.
+                // 清理半初始化的客户端。
                 client.destroy().await;
                 if !self.destroyed.load(Ordering::SeqCst) {
                     self.clone().restart().await;
@@ -151,7 +150,7 @@ impl CodexProcessManager {
         }
     }
 
-    /// Spawn the child process and create the JSON-RPC client (no handshake).
+    /// 启动子进程并创建 JSON-RPC 客户端（不执行握手）。
     async fn spawn_child(&self) -> Result<Arc<CodexJsonRpcClient>, RpcError> {
         tracing::info!("spawning {} app-server (stdio)", self.codex_bin);
 
@@ -167,7 +166,7 @@ impl CodexProcessManager {
 
         let mut child = cmd.spawn().map_err(RpcError::Io)?;
 
-        // stderr reader: log app-server diagnostics as warnings.
+        // stderr 读取：将 app-server 的诊断输出作为 warning 记录。
         if let Some(stderr) = child.stderr.take() {
             tokio::spawn(async move {
                 use tokio::io::{AsyncBufReadExt, BufReader};
@@ -182,7 +181,7 @@ impl CodexProcessManager {
         Ok(Arc::new(client))
     }
 
-    /// Perform the initialize handshake on an already-spawned client.
+    /// 在已启动的客户端上执行 initialize 握手。
     async fn initialize_client(&self, client: &Arc<CodexJsonRpcClient>) -> Result<InitializeResponse, RpcError> {
         let params = serde_json::to_value(default_initialize_params())?;
         let init_value = client.request("initialize", Some(params)).await?;
@@ -191,7 +190,7 @@ impl CodexProcessManager {
         Ok(init)
     }
 
-    /// Re-broadcast a fresh client's events into the manager-level channels.
+    /// 将新客户端的事件重新广播到管理器级别的通道中。
     fn attach_forwarders(&self, client: &Arc<CodexJsonRpcClient>) {
         let mut notify_rx = client.subscribe_notifications();
         let mgr_notify = self.notify_tx.clone();
@@ -201,7 +200,7 @@ impl CodexProcessManager {
                     Ok(msg) => {
                         let _ = mgr_notify.send(msg);
                     }
-                    Err(_) => break, // client closed
+                    Err(_) => break, // 客户端已关闭
                 }
             }
         });
@@ -231,7 +230,7 @@ impl CodexProcessManager {
     }
 
     async fn handle_close(self: Arc<Self>, generation: u64) {
-        // Only clear if still the active client for this generation.
+        // 仅当仍是该 generation 对应的活跃客户端时才清除。
         let stale = {
             let mut current = self.current.lock().await;
             let stale = matches!(current.as_ref(), Some((g, _)) if *g == generation);
@@ -241,9 +240,9 @@ impl CodexProcessManager {
             stale
         };
 
-        // Parity with TS: only emit Unavailable when this close is for the
-        // active client (not a stale/duplicate close, and not destroy — which
-        // already nulled `current` before the watcher wakes).
+        // 与 TS 版本对齐：仅当此次关闭针对的是当前活跃客户端时，
+        // 才发出 Unavailable（不是陈旧/重复的关闭，也不是 destroy ——
+        // 后者会在监视器唤醒前已将 `current` 置空）。
         if stale {
             let _ = self.lifecycle_tx.send(LifecycleEvent::Unavailable {
                 generation,
@@ -268,12 +267,12 @@ impl CodexProcessManager {
         sleep(Duration::from_millis(RESTART_DELAY_MS)).await;
         self.restarting.store(false, Ordering::SeqCst);
         if !self.destroyed.load(Ordering::SeqCst) {
-            // Boxed to break the start ↔ restart async recursion.
+            // 装箱以打破 start ↔ restart 的异步递归。
             Box::pin(self.start()).await;
         }
     }
 
-    /// Stop the manager: destroy the client and prevent restarts.
+    /// 停止管理器：销毁客户端并阻止重启。
     pub async fn destroy(&self) {
         self.destroyed.store(true, Ordering::SeqCst);
         if let Some((_, client)) = self.current.lock().await.take() {
@@ -282,14 +281,14 @@ impl CodexProcessManager {
     }
 }
 
-/// Build the Command for spawning codex.
+/// 构造用于启动 codex 的 Command。
 ///
-/// On Windows, npm-installed CLIs ship as `.cmd`/`.bat` shims. Spawning those
-/// via `cmd.exe /c` does NOT inherit stdio pipes to the inner node grandchild
-/// process (stdout closes immediately). Instead, for npm shims we resolve the
-/// underlying `node + codex.js` and spawn `node` directly — node inherits the
-/// pipes with no grandchild. Non-npm `.cmd`/`.bat` fall back to `cmd.exe /c`.
-/// Real `.exe` binaries and non-Windows platforms spawn directly.
+/// 在 Windows 上，npm 安装的 CLI 以 `.cmd`/`.bat` 垫片形式发布。通过
+/// `cmd.exe /c` 启动这些垫片不会将 stdio 管道继承到内部的 node 孙进程
+/// （stdout 会立即关闭）。因此，对于 npm 垫片，我们解析出底层的
+/// `node + codex.js` 并直接启动 `node` —— node 直接继承管道，没有孙进程。
+/// 非 npm 的 `.cmd`/`.bat` 退回到 `cmd.exe /c`。真正的 `.exe` 可执行文件
+/// 以及非 Windows 平台直接启动。
 #[cfg(windows)]
 fn build_codex_command(bin: &str) -> Command {
     let lower = bin.to_ascii_lowercase();
@@ -305,8 +304,8 @@ fn build_codex_command(bin: &str) -> Command {
     }
 }
 
-/// Resolve an npm `.cmd` shim to a direct `node <script>` Command.
-/// Looks for the standard npm layout `<cmd_dir>/node_modules/@openai/codex/bin/codex.js`.
+/// 将 npm 的 `.cmd` 垫片解析为直接调用 `node <script>` 的 Command。
+/// 查找标准 npm 目录布局 `<cmd_dir>/node_modules/@openai/codex/bin/codex.js`。
 #[cfg(windows)]
 fn resolve_node_script(cmd_path: &str) -> Option<Command> {
     let dir = std::path::Path::new(cmd_path).parent()?;

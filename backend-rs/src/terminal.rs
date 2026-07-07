@@ -1,9 +1,9 @@
-//! Terminal service — shared PTY sessions with wezterm VT state reconnect.
+//! 终端服务 —— 共享 PTY 会话，支持基于 wezterm VT 状态的重连。
 //!
-//! Parity with `src/terminal/terminal.service.ts` + `terminal.gateway.ts`.
-//! Uses wezterm-term for full VT100/VT220 emulation (cursor position,
-//! alternate screen, colors, scrollback). Reconnect serializes the screen
-//! state for xterm.js rendering — no raw byte replay.
+//! 与 `src/terminal/terminal.service.ts` 及 `terminal.gateway.ts` 保持对齐。
+//! 使用 wezterm-term 实现完整的 VT100/VT220 模拟（光标位置、备用屏幕、
+//! 颜色、回滚缓冲）。重连时会将屏幕状态序列化以供 xterm.js 渲染 ——
+//! 不再进行原始字节重放。
 
 use crate::error::{AppError, ErrorCode};
 use crate::settings::SettingsReader;
@@ -16,7 +16,7 @@ use wezterm_term::{Terminal, TerminalConfiguration, TerminalSize};
 use wezterm_term::color::ColorPalette;
 use tokio::sync::broadcast;
 
-// ── Public types (parity with terminal.types.ts) ─────────────────────────────
+// ── 公共类型（与 terminal.types.ts 保持对齐） ─────────────────────────────
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "lowercase")]
@@ -58,7 +58,7 @@ pub struct TerminalClosedEvent {
     pub socket_ids: Vec<String>,
 }
 
-// ── Minimal TerminalConfiguration ───────────────────────────────────────────
+// ── 最小化的 TerminalConfiguration ───────────────────────────────────────────
 
 #[derive(Debug)]
 struct MinimalConfig {
@@ -74,10 +74,10 @@ impl TerminalConfiguration for MinimalConfig {
     }
 }
 
-// config::impl_downcast is private; use manual downcast via Any.
-// MinimalConfig is a concrete type, no downcasting needed at runtime.
+// config::impl_downcast 是私有的；这里通过 Any 手动做 downcast。
+// MinimalConfig 是具体类型，运行时无需 downcast。
 
-// ── Internal session ────────────────────────────────────────────────────────
+// ── 内部会话 ────────────────────────────────────────────────────────
 
 struct Session {
     id: String,
@@ -92,18 +92,18 @@ struct Session {
     cols: u16,
     rows: u16,
     created_at: String,
-    /// wezterm VT terminal model for screen state, resize, and reconnect serialization.
+    /// wezterm VT 终端模型，用于保存屏幕状态、resize 以及重连序列化。
     vt_terminal: Mutex<Terminal>,
-    /// Interior-mutable writer for PTY stdin.
+    /// 用于写入 PTY stdin 的内部可变 writer。
     writer: Mutex<Option<Box<dyn std::io::Write + Send>>>,
-    /// PTY master for resize (SIGWINCH).
+    /// 用于 resize 的 PTY master（SIGWINCH）。
     master: Option<Box<dyn portable_pty::MasterPty + Send>>,
     child: Mutex<Option<Box<dyn portable_pty::Child + Send>>>,
     _reader_task: Option<tokio::task::JoinHandle<()>>,
     grace_handle: Option<tokio::task::AbortHandle>,
 }
 
-// ── Config ──────────────────────────────────────────────────────────────────
+// ── 配置 ──────────────────────────────────────────────────────────────────
 
 #[derive(Clone, Debug)]
 pub struct TerminalConfig {
@@ -124,7 +124,7 @@ impl TerminalConfig {
     }
 }
 
-// ── Terminal service ────────────────────────────────────────────────────────
+// ── 终端服务 ────────────────────────────────────────────────────────
 
 pub struct TerminalService {
     sessions: Arc<Mutex<HashMap<String, Session>>>,
@@ -157,7 +157,7 @@ impl TerminalService {
         json!({ "maxSessions": c.max_sessions, "graceMs": c.grace_ms, "scrollback": c.scrollback, "defaultCwd": c.default_cwd })
     }
 
-    /// List terminals for a context.
+    /// 列出某个 context 下的终端。
     pub fn list(&self, context_key: &str) -> Vec<TerminalMetadata> {
         self.sessions.lock().unwrap().values()
             .filter(|s| s.context_key == context_key)
@@ -165,7 +165,7 @@ impl TerminalService {
             .collect()
     }
 
-    /// Open a new PTY session and attach the socket.
+    /// 打开一个新的 PTY 会话并挂载 socket。
     pub fn open(&self, socket_id: &str, context_key: &str,
         cwd: Option<&str>, cols: Option<u16>, rows: Option<u16>, title: Option<&str>,
     ) -> Result<TerminalMetadata, AppError> {
@@ -175,7 +175,7 @@ impl TerminalService {
         let default_cwd = cfg.default_cwd.clone();
         drop(cfg);
 
-        {   // max_sessions check
+        {   // max_sessions 上限检查
             let sessions = self.sessions.lock().unwrap();
             if sessions.len() >= max {
                 return Err(bad_request(ErrorCode::TerminalMaxSessionsReached,
@@ -188,7 +188,7 @@ impl TerminalService {
         let shell = resolve_shell();
         let cwd = cwd.map(String::from).or(default_cwd).unwrap_or_else(home_dir);
 
-        // Validate cwd exists and is a directory.
+        // 校验 cwd 存在且是一个目录。
         let cwd_canonical = std::fs::canonicalize(&cwd).map_err(|_| {
             bad_request(ErrorCode::TerminalCwdNotDirectory, format!("cwd does not exist: {cwd}"))
         })?;
@@ -219,7 +219,7 @@ impl TerminalService {
             .map_err(|e| AppError::internal(format!("clone_reader: {e}")))?;
         let master = pair.master;
 
-        // Create wezterm Terminal with config scrollback.
+        // 使用配置中的 scrollback 创建 wezterm Terminal。
         let vt_term = Terminal::new(
             TerminalSize { rows: rows as usize, cols: cols as usize, pixel_width: 0, pixel_height: 0, dpi: 0 },
             Arc::new(MinimalConfig { scrollback }) as Arc<dyn TerminalConfiguration + Send + Sync>,
@@ -228,7 +228,7 @@ impl TerminalService {
             Box::new(std::io::sink()),
         );
 
-        // PTY output → feed VT terminal + ring buffer + broadcast raw bytes.
+        // PTY 输出 → 喂给 VT 终端 + 环形缓冲 + 广播原始字节。
         let session_id = id.clone();
         let (output_tx, exit_tx, sessions_ref) = (self.output_tx.clone(), self.exit_tx.clone(), self.sessions.clone());
         let reader_task = {
@@ -243,16 +243,16 @@ impl TerminalService {
                     match std::io::Read::read(&mut reader, &mut buf) {
                         Ok(0) => break,
                         Ok(n) => {
-                            // Broadcast raw bytes for live streaming to xterm.js.
-                            // Note: from_utf8_lossy may corrupt multi-byte sequences split across
-                            // read chunks. This is acceptable for the live streaming path (xterm.js
-                            // renders incrementally); VT screen state (for reconnect/download) uses
-                            // the raw bytes fed to advance_bytes — correct.
+                            // 广播原始字节，用于向 xterm.js 实时推流。
+                            // 注意：from_utf8_lossy 可能损坏跨读取块被拆分的
+                            // 多字节序列。这对实时推流路径可以接受（xterm.js
+                            // 会增量渲染）；VT 屏幕状态（用于重连/下载）使用
+                            // 喂给 advance_bytes 的原始字节 —— 是正确的。
                             let data = String::from_utf8_lossy(&buf[..n]).to_string();
                             let socket_ids: Vec<String> = {
                                 let mut sessions = sessions_c.lock().unwrap();
                                 if let Some(s) = sessions.get_mut(&sid) {
-                                    // Feed VT terminal with raw bytes (correct UTF-8 handling).
+                                    // 用原始字节喂给 VT 终端（正确的 UTF-8 处理）。
                                     s.vt_terminal.lock().unwrap().advance_bytes(&buf[..n]);
                                     s.attached.iter().cloned().collect()
                                 } else { vec![] }
@@ -264,7 +264,7 @@ impl TerminalService {
                         Err(_) => break,
                     }
                 }
-                // PTY exited.
+                // PTY 已退出。
                 let (meta, socket_ids) = {
                     let mut sessions = sessions_c.lock().unwrap();
                     if let Some(s) = sessions.get_mut(&sid) {
@@ -300,7 +300,7 @@ impl TerminalService {
         Ok(meta)
     }
 
-    /// Attach a socket and return VT screen state for reconnect.
+    /// 挂载 socket 并返回 VT 屏幕状态以供重连。
     pub fn reconnect(&self, socket_id: &str, context_key: &str, terminal_id: &str)
         -> Result<(TerminalMetadata, Vec<String>), AppError>
     {
@@ -311,12 +311,12 @@ impl TerminalService {
         s.attached.insert(socket_id.to_string());
         if let Some(h) = s.grace_handle.take() { h.abort(); }
         let meta = Self::meta(s);
-        // Serialize VT screen: scrollback + visible lines via wezterm Terminal.
+        // 序列化 VT 屏幕：通过 wezterm Terminal 获取回滚 + 可见行。
         let state = serialize_terminal_screen(&s.vt_terminal.lock().unwrap());
         Ok((meta, vec![state]))
     }
 
-    /// Detach a socket from one or all terminals.
+    /// 从一个或全部终端上解绑 socket。
     pub fn detach(&self, socket_id: &str, terminal_id: Option<&str>) {
         let grace_ms = self.config.lock().unwrap().grace_ms;
         let sessions_arc = self.sessions.clone();
@@ -357,7 +357,7 @@ impl TerminalService {
         }
     }
 
-    /// Write input to a terminal PTY.
+    /// 向某个终端的 PTY 写入输入。
     pub fn write_input(&self, socket_id: &str, context_key: &str, terminal_id: &str, data: &str)
         -> Result<(), AppError>
     {
@@ -381,7 +381,7 @@ impl TerminalService {
         Ok(())
     }
 
-    /// Resize a terminal (updates stored dims + PTY SIGWINCH + VT terminal).
+    /// 调整终端尺寸（更新存储的尺寸 + PTY SIGWINCH + VT 终端）。
     pub fn resize(&self, socket_id: &str, context_key: &str, terminal_id: &str, cols: u16, rows: u16)
         -> Result<TerminalMetadata, AppError>
     {
@@ -398,7 +398,7 @@ impl TerminalService {
             if let Some(ref mut master) = s.master {
                 let _ = master.resize(PtySize { rows: next_rows, cols: next_cols, pixel_width: 0, pixel_height: 0 });
             }
-            // Resize VT terminal model.
+            // 调整 VT 终端模型尺寸。
             s.vt_terminal.lock().unwrap().resize(TerminalSize {
                 rows: next_rows as usize, cols: next_cols as usize,
                 pixel_width: 0, pixel_height: 0, dpi: 0,
@@ -407,7 +407,7 @@ impl TerminalService {
         Ok(Self::meta(s))
     }
 
-    /// Close a terminal explicitly.
+    /// 显式关闭某个终端。
     pub fn close(&self, _socket_id: &str, context_key: &str, terminal_id: &str)
         -> Result<(), AppError>
     {
@@ -430,7 +430,7 @@ impl TerminalService {
         Ok(())
     }
 
-    /// Plain-text snapshot of the VT screen (download / copy all).
+    /// VT 屏幕的纯文本快照（用于下载 / 全部复制）。
     pub fn download(&self, socket_id: &str, context_key: &str, terminal_id: &str)
         -> Result<(String, String), AppError>
     {
@@ -454,11 +454,11 @@ impl TerminalService {
     }
 }
 
-// ── VT screen serialization ─────────────────────────────────────────────────
+// ── VT 屏幕序列化 ─────────────────────────────────────────────────
 
-/// Serialize the wezterm terminal's screen (scrollback + visible lines) into
-/// a single string. Uses scrollback_rows() + lines_in_phys_range() (non-test
-/// public API in original wezterm-term).
+/// 将 wezterm 终端的屏幕（回滚 + 可见行）序列化为单个字符串。
+/// 使用 scrollback_rows() + lines_in_phys_range()（原始 wezterm-term 中
+/// 非测试的公开 API）。
 fn serialize_terminal_screen(term: &Terminal) -> String {
     let screen = term.screen();
     let total = screen.scrollback_rows();
@@ -472,7 +472,7 @@ fn serialize_terminal_screen(term: &Terminal) -> String {
     out
 }
 
-// ── Helpers ─────────────────────────────────────────────────────────────────
+// ── 辅助函数 ─────────────────────────────────────────────────────────────────
 
 fn resolve_shell() -> String {
     if cfg!(windows) {

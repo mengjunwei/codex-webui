@@ -1,9 +1,9 @@
-//! Thin REST proxies → codex app-server JSON-RPC.
+//! 轻量 REST 代理 → codex app-server JSON-RPC。
 //!
-//! Parity with the 6 TS proxy modules (account/apps/models/mcp-servers/skills/
-//! plugins). Each handler validates input, builds the JSON-RPC params, forwards
-//! via `state.codex.request(method, params)`, and passes the raw result through.
-//! 204 endpoints (logout, login/cancel, mcp reload) return No Content.
+//! 与 6 个 TS 代理模块对齐(account/apps/models/mcp-servers/skills/
+//! plugins)。每个处理器校验输入、构建 JSON-RPC 参数、通过
+//! `state.codex.request(method, params)` 转发,并将原始结果透传。
+//! 返回 204 的端点(logout、login/cancel、mcp reload)返回 No Content。
 
 use crate::codex::RpcError;
 use crate::error::{AppError, ErrorCode};
@@ -16,7 +16,7 @@ use axum::{
 use serde::Deserialize;
 use serde_json::{json, Value};
 
-/// Map a codex RPC error to a 500 AppError (TS propagates codex errors → 500).
+/// 将 codex RPC 错误映射为 500 AppError(TS 会透传 codex 错误 → 500)。
 fn map_rpc(e: RpcError) -> AppError {
     AppError::internal(format!("codex: {e}"))
 }
@@ -25,7 +25,7 @@ fn bad_request(code: ErrorCode, msg: impl Into<String>) -> AppError {
     AppError::business(code, StatusCode::BAD_REQUEST, msg.into(), None)
 }
 
-// ── shared query/body parsers ────────────────────────────────────────────────
+// ── 共享的 query/body 解析器 ────────────────────────────────────────────────
 
 fn parse_limit(value: Option<&str>) -> Result<Option<i64>, AppError> {
     match value.map(|s| s.trim()).filter(|s| !s.is_empty()) {
@@ -72,7 +72,7 @@ pub async fn account_read(State(state): State<AppState>) -> Result<Json<Value>, 
         .request("account/read", Some(json!({ "refreshToken": false })))
         .await
         .map_err(map_rpc)?;
-    // provider metadata needs CodexStatusService (Phase 3); stubbed null for now.
+    // provider 元数据需要 CodexStatusService(Phase 3);目前暂以 null 占位。
     let mut merged = account;
     if let Value::Object(ref mut m) = merged {
         m.insert("provider".into(), Value::Null);
@@ -251,7 +251,7 @@ pub async fn models_list(
     if let Some(s) = q.limit.as_deref().map(|s| s.trim()).filter(|s| !s.is_empty()) {
         match s.parse::<i64>() {
             Ok(n) => { params.insert("limit".into(), Value::Number(n.into())); }
-            Err(_) => {} // TS: Number(bad) = NaN → undefined; omit
+            Err(_) => {} // TS:Number(bad) = NaN → undefined;省略
         }
     }
     let result = state
@@ -405,7 +405,7 @@ pub async fn skills_config_write(
     State(state): State<AppState>,
     Json(body): Json<SkillConfigBody>,
 ) -> Result<Json<Value>, AppError> {
-    // `enabled` is required bool (serde enforces type); path preferred over name.
+    // `enabled` 为必填布尔值(serde 强制类型校验);path 优先于 name。
     let path = body.path.as_deref().map(|s| s.trim()).unwrap_or("");
     let (key, val) = if !path.is_empty() {
         ("path", path.to_string())

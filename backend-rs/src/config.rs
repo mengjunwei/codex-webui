@@ -1,9 +1,9 @@
-//! Process-level configuration: env vars + db_path resolution.
+//! 进程级配置：环境变量 + db_path 解析。
 //!
-//! Parity with `src/database/database.service.ts:resolveDatabasePath`
-//! and `.env.example`. db_path priority: `WEBUI_DB_PATH` (trimmed, non-empty)
-//! > `CODEX_HOME/codex-webui.sqlite` > `~/.codex/codex-webui.sqlite`.
-//! `WEBUI_API_KEY` is required; absent/empty fails startup.
+//! 与 `src/database/database.service.ts:resolveDatabasePath`
+//! 以及 `.env.example` 保持对齐。db_path 优先级：`WEBUI_DB_PATH`（去除首尾空格后非空）
+//! > `CODEX_HOME/codex-webui.sqlite` > `~/.codex/codex-webui.sqlite`。
+//! `WEBUI_API_KEY` 为必填项；缺失或为空时启动失败。
 
 use anyhow::{anyhow, Result};
 use std::env;
@@ -73,8 +73,8 @@ fn resolve_db_path(explicit: Option<String>, codex_home: Option<&str>) -> String
 }
 
 fn dirs_or_home() -> PathBuf {
-    // Mirror Node's os.homedir(): USERPROFILE first on Windows, HOME elsewhere.
-    // Critical for this Windows dev box where Git Bash exports HOME as a POSIX path.
+    // 对齐 Node 的 os.homedir()：Windows 上优先用 USERPROFILE，其他平台用 HOME。
+    // 对于这台 Windows 开发机至关重要，因为 Git Bash 会把 HOME 导出为 POSIX 路径。
     #[cfg(windows)]
     {
         if let Some(p) = std::env::var("USERPROFILE").ok().map(|s| s.trim().to_string()).filter(|s| !s.is_empty()) {
@@ -86,7 +86,7 @@ fn dirs_or_home() -> PathBuf {
     }
     #[cfg(windows)]
     {
-        // Last-resort Windows fallback: HOMEDRIVE + HOMEPATH.
+        // Windows 上的兜底方案：HOMEDRIVE + HOMEPATH。
         let drive = std::env::var("HOMEDRIVE").unwrap_or_default();
         let path = std::env::var("HOMEPATH").unwrap_or_default();
         if !drive.is_empty() && !path.is_empty() {
@@ -101,7 +101,7 @@ mod tests {
     use super::*;
     use std::sync::Mutex;
 
-    // env::set_var/remove_var are unsafe since Rust 1.86; serialize test access.
+    // 自 Rust 1.86 起 env::set_var/remove_var 是 unsafe 操作；串行化测试访问。
     static ENV_LOCK: Mutex<()> = Mutex::new(());
 
     const VARS: &[&str] = &[

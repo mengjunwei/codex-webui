@@ -1,14 +1,14 @@
-//! Event-driven DB write paths.
+//! 事件驱动的 DB 写入路径。
 //!
-//! Subscribes to the CodexProcessManager's notification / server-request /
-//! lifecycle broadcasts and persists data — parity with the TS services:
-//! - token-usage: `thread/tokenUsage/updated` → upsert token_usage_snapshots
-//! - turn-diff: `turn/diff/updated` (buffer) + `turn/completed` (flush) → turn_diffs
-//! - turn-errors: `error` (willRetry=false) + `turn/completed` (status=failed) → turn_errors
-//! - pending-approvals: server-request → record; `serverRequest/resolved` → mark;
-//!   lifecycle Restarting/Unavailable → expire generation; startup → expire all.
+//! 订阅 CodexProcessManager 的 notification / server-request /
+//! lifecycle 广播并持久化数据 —— 与 TS 服务对齐：
+//! - token-usage：`thread/tokenUsage/updated` → upsert token_usage_snapshots
+//! - turn-diff：`turn/diff/updated`（缓冲）+ `turn/completed`（刷写）→ turn_diffs
+//! - turn-errors：`error`（willRetry=false）+ `turn/completed`（status=failed）→ turn_errors
+//! - pending-approvals：server-request → 记录；`serverRequest/resolved` → 标记；
+//!   lifecycle Restarting/Unavailable → 按代次过期；启动 → 全部过期。
 //!
-//! Each subscriber is a detached tokio task. Call `spawn_all` once at startup.
+//! 每个订阅者都是一个独立的 tokio 任务。在启动时调用一次 `spawn_all` 即可。
 
 use crate::codex::{CodexProcessManager, LifecycleEvent};
 use crate::db::Db;
@@ -18,8 +18,8 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::broadcast::error::RecvError;
 
-/// Spawn all event subscribers. Also expires stale pending requests on boot
-/// (parity with PendingApprovalsService.onModuleInit).
+/// 启动所有事件订阅者。同时会在启动时过期陈旧的待处理请求
+/// （与 PendingApprovalsService.onModuleInit 对齐）。
 pub fn spawn_all(db: Arc<Db>, codex: Arc<CodexProcessManager>) {
     if let Err(e) = expire_all_pending(&db, "WebUI restarted") {
         tracing::warn!("startup expire-all-pending failed: {e}");
@@ -27,13 +27,13 @@ pub fn spawn_all(db: Arc<Db>, codex: Arc<CodexProcessManager>) {
     spawn_token_usage(db.clone(), codex.clone());
     spawn_turn_diff(db.clone(), codex.clone());
     spawn_turn_errors(db.clone(), codex.clone());
-    // M1 FIX: pending_record moved to realtime.rs to merge with WS emit
-    // (was separate subscribers → TOCTOU: emit could arrive before DB record).
+    // M1 修复：pending_record 已移至 realtime.rs，与 WS emit 合并处理
+    // （原来是分开的订阅者 → 存在 TOCTOU：emit 可能在 DB 记录之前到达）。
     spawn_pending_resolved(db.clone(), codex.clone());
     spawn_pending_expire(db.clone(), codex.clone());
 }
 
-// ── token-usage ──────────────────────────────────────────────────────────────
+// ── token 用量 ──────────────────────────────────────────────────────────────
 
 fn spawn_token_usage(db: Arc<Db>, codex: Arc<CodexProcessManager>) {
     let mut rx = codex.subscribe_notifications();
@@ -119,12 +119,12 @@ fn upsert_token_usage(db: &Db, thread_id: &str, turn_id: &str, usage: &Value) ->
     Ok(())
 }
 
-// ── turn-diff (in-memory buffer + flush on turn/completed) ───────────────────
+// ── turn 差异（内存缓冲 + turn/completed 时刷写）───────────────────────────────
 
 fn spawn_turn_diff(db: Arc<Db>, codex: Arc<CodexProcessManager>) {
     let mut rx = codex.subscribe_notifications();
     tokio::spawn(async move {
-        // Buffer owned by this task: turnKey → (threadId, turnId, diff).
+        // 归本任务所有的缓冲区：turnKey → (threadId, turnId, diff)。
         let mut buffer: HashMap<String, (String, String, String)> = HashMap::new();
         loop {
             match rx.recv().await {
@@ -180,7 +180,7 @@ fn persist_turn_diff(db: &Db, thread_id: &str, turn_id: &str, diff: &str) -> Res
     Ok(())
 }
 
-// ── turn-errors ──────────────────────────────────────────────────────────────
+// ── turn 错误 ────────────────────────────────────────────────────────────────
 
 fn spawn_turn_errors(db: Arc<Db>, codex: Arc<CodexProcessManager>) {
     let mut rx = codex.subscribe_notifications();
@@ -194,7 +194,7 @@ fn spawn_turn_errors(db: Arc<Db>, codex: Arc<CodexProcessManager>) {
                     };
                     match method {
                         "error" => {
-                            // Only final errors (willRetry falsy) with threadId+turnId.
+                            // 仅处理带 threadId+turnId 的最终错误（willRetry 为假）。
                             if params.get("willRetry").and_then(Value::as_bool).unwrap_or(false) {
                                 continue;
                             }
@@ -250,11 +250,10 @@ fn upsert_turn_error(db: &Db, thread_id: &str, turn_id: &str, message: &str) -> 
     Ok(())
 }
 
-// ── pending-approvals: record server requests ───────────────────────────────
-// M1 FIX: record+emit is now done in realtime.rs::spawn_server_request_record_and_emit
-// to guarantee DB record completes before WS delivery (prevents TOCTOU where
-// client responds to a request that hasn't been recorded yet → 404).
-// record_server_request is called from there.
+// ── 待处理审批：记录 server 请求 ───────────────────────────────────────────────
+// M1 修复：记录+emit 现在在 realtime.rs::spawn_server_request_record_and_emit 中完成，
+// 以保证 DB 记录在 WS 投递之前完成（防止 TOCTOU：客户端对尚未记录的请求作出响应 → 404）。
+// record_server_request 从那里被调用。
 
 pub fn record_server_request(db: &Db, codex: &CodexProcessManager, req: &Value) -> Result<()> {
     let params = req.get("params");
@@ -264,7 +263,7 @@ pub fn record_server_request(db: &Db, codex: &CodexProcessManager, req: &Value) 
     let id = req.get("id");
     let method = req.get("method").and_then(Value::as_str);
 
-    // Skip if missing threadId / id / method (parity: TS returns null).
+    // 缺少 threadId / id / method 时跳过（对齐：TS 端返回 null）。
     let (Some(thread_id), Some(_), Some(method)) = (thread_id, id, method) else {
         return Ok(());
     };
@@ -305,7 +304,7 @@ pub fn record_server_request(db: &Db, codex: &CodexProcessManager, req: &Value) 
     Ok(())
 }
 
-/// Convert a JSON id Value to its DB string form.
+/// 将 JSON id Value 转换为其 DB 字符串形式。
 fn id_to_string(id: &Value) -> String {
     match id {
         Value::Number(n) => n.to_string(),
@@ -314,7 +313,7 @@ fn id_to_string(id: &Value) -> String {
     }
 }
 
-// ── pending-approvals: serverRequest/resolved → mark resolved ────────────────
+// ── 待处理审批：serverRequest/resolved → 标记为已解决 ───────────────────────────
 
 fn spawn_pending_resolved(db: Arc<Db>, codex: Arc<CodexProcessManager>) {
     let mut rx = codex.subscribe_notifications();
@@ -348,7 +347,7 @@ fn spawn_pending_resolved(db: Arc<Db>, codex: Arc<CodexProcessManager>) {
     });
 }
 
-// ── pending-approvals: expire on lifecycle ───────────────────────────────────
+// ── 待处理审批：在生命周期事件时过期 ───────────────────────────────────────────
 
 fn spawn_pending_expire(db: Arc<Db>, codex: Arc<CodexProcessManager>) {
     let mut rx = codex.subscribe_lifecycle();

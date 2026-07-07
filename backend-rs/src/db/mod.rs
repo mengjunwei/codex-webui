@@ -1,11 +1,11 @@
-//! SQLite connection wrapper.
+//! SQLite 连接封装。
 //!
-//! Parity with `src/database/database.service.ts`: WAL journal mode,
-//! foreign_keys=ON, busy_timeout=5000. Uses a single connection (NestJS
-//! better-sqlite3 is single-connection synchronous). `Mutex<Connection>`
-//! mirrors that behavior; no connection pool needed for this application.
+//! 与 `src/database/database.service.ts` 对齐：WAL 日志模式、
+//! foreign_keys=ON、busy_timeout=5000。使用单连接（NestJS
+//! better-sqlite3 也是单连接同步模型）。`Mutex<Connection>`
+//! 与其行为一致；本应用无需连接池。
 //!
-//! Re-exports `run_migrations` from the migrations submodule.
+//! 重新导出 migrations 子模块中的 `run_migrations`。
 
 pub mod migrations;
 pub use migrations::run_migrations;
@@ -19,8 +19,8 @@ pub struct Db {
 }
 
 impl Db {
-    /// Open (or create) the SQLite database at `path`, set pragmas,
-    /// and ensure the parent directory exists.
+    /// 打开（或创建）位于 `path` 的 SQLite 数据库，设置 pragma，
+    /// 并确保父目录存在。
     pub fn open(path: &str) -> Result<Self> {
         if let Some(parent) = std::path::Path::new(path).parent() {
             std::fs::create_dir_all(parent)?;

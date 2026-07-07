@@ -1,13 +1,12 @@
-//! Realtime WebSocket gateway — Socket.IO namespace `/ws`.
+//! Realtime WebSocket 网关 — Socket.IO 命名空间 `/ws`。
 //!
-//! Parity with `src/threads/threads.gateway.ts` + the (stub) files gateway.
+//! 与 `src/threads/threads.gateway.ts` 及(占位)files 网关对齐。
 //!
-//! - On connect: validate JWT/API key from the auth payload `{token}` (mirrors
-//!   ApiKeyGuard ws branch); reject if invalid.
-//! - `thread.subscribe` / `thread.unsubscribe` → join/leave rooms `thread:<id>`.
-//! - `fs.subscribe` / `fs.unsubscribe` → ack `{ok:true}` (no-op parity; chokidar removed).
-//! - Emit tasks forward codex notifications (`codex.notification`), server requests
-//!   (`codex.serverRequest`), and lifecycle events (`codex.lifecycle`) to the right rooms.
+//! - 连接时:从 auth 负载 `{token}` 中校验 JWT/API key(对应 ApiKeyGuard 的 ws 分支);无效则拒绝。
+//! - `thread.subscribe` / `thread.unsubscribe` → 加入/离开房间 `thread:<id>`。
+//! - `fs.subscribe` / `fs.unsubscribe` → 回应 `{ok:true}`(空操作对齐;chokidar 已移除)。
+//! - emit 任务将 codex 通知(`codex.notification`)、server 请求
+//!   (`codex.serverRequest`)和生命周期事件(`codex.lifecycle`)转发到对应房间。
 
 use crate::auth::AuthService;
 use crate::codex::{CodexProcessManager, LifecycleEvent};
@@ -18,7 +17,7 @@ use socketioxide::SocketIo;
 use std::sync::Arc;
 use tokio::sync::broadcast::error::RecvError;
 
-/// Shared realtime state injected into socketioxide handlers.
+/// 注入到 socketioxide 处理器中的共享 realtime 状态。
 #[derive(Clone)]
 pub struct RealtimeState {
     pub auth: Arc<AuthService>,
@@ -26,8 +25,8 @@ pub struct RealtimeState {
     pub terminal: Arc<TerminalService>,
 }
 
-/// Build the Socket.IO layer + handle, wiring the `/ws` namespace.
-/// The returned `SocketIo` is used to spawn the emit-forwarding tasks.
+/// 构建 Socket.IO 层与句柄,挂接 `/ws` 命名空间。
+/// 返回的 `SocketIo` 用于派生 emit 转发任务。
 pub fn build(rt_state: RealtimeState) -> (socketioxide::layer::SocketIoLayer, SocketIo) {
     let (layer, io) = SocketIo::builder()
         .with_state(rt_state)
@@ -36,8 +35,8 @@ pub fn build(rt_state: RealtimeState) -> (socketioxide::layer::SocketIoLayer, So
     (layer, io)
 }
 
-/// Per-connection handler: auth + register message handlers.
-/// `Data<Value>` extracts the connection auth payload (the client sends `{token}`).
+/// 单连接处理器:鉴权并注册消息处理器。
+/// `Data<Value>` 提取连接 auth 负载(客户端发送 `{token}`)。
 fn on_connect(
     s: SocketRef,
     State(state): State<RealtimeState>,
@@ -57,9 +56,9 @@ fn on_connect(
     }
     tracing::debug!(socket = %s.id, "client connected");
 
-    // CRITICAL FIX: socketioxide 0.15 does NOT auto-join sockets to a self-SID
-    // room (unlike JS socket.io). Without this, per-socket emits (terminal output/
-    // exit/closed) target an empty room and are silently dropped.
+    // 关键修复:socketioxide 0.15 不会自动把 socket 加入到以自身 SID 命名的房间
+    // (与 JS socket.io 不同)。否则针对单 socket 的 emit(终端输出/退出/关闭)
+    // 会指向一个空房间并被静默丢弃。
     let _ = s.join(s.id.to_string());
 
     s.on("thread.subscribe", on_thread_subscribe);
@@ -67,7 +66,7 @@ fn on_connect(
     s.on("fs.subscribe", on_ack);
     s.on("fs.unsubscribe", on_ack);
     s.on("codex.serverResponse", on_server_response);
-    // ── terminal events ──
+    // ── terminal 事件 ──
     s.on("terminal.config", on_term_config);
     s.on("terminal.list", on_term_list);
     s.on("terminal.open", on_term_open);
@@ -75,7 +74,7 @@ fn on_connect(
     s.on("terminal.input", on_term_input);
     s.on("terminal.resize", on_term_resize);
     s.on("terminal.detach", on_term_detach);
-    // Detach from all terminals on disconnect.
+    // 断开连接时从所有终端分离。
     let term = state.terminal.clone();
     let sid = s.id.clone();
     s.on_disconnect(move || {
@@ -113,13 +112,13 @@ fn on_thread_unsubscribe(s: SocketRef, SocketData(data): SocketData<Value>) {
     tracing::debug!(socket = %s.id, room = %room, "unsubscribed");
 }
 
-/// files gateway stub: acknowledge with `{ok:true}` (chokidar watcher removed in TS).
+/// files 网关占位:以 `{ok:true}` 回应(TS 中已移除 chokidar 监视器)。
 fn on_ack(_: SocketRef, ack: AckSender) {
     let _ = ack.send(&json!({ "ok": true }));
 }
 
-/// Legacy WS approval-response path. The authoritative path is the REST endpoint
-/// (CAS + forward); this is kept for backward compatibility (detailed wiring deferred).
+/// 旧版 WS 审批响应路径。权威路径为 REST 端点
+/// (CAS + 转发);此处保留用于向后兼容(详细接线暂缓)。
 fn on_server_response(s: SocketRef, SocketData(data): SocketData<Value>) {
     tracing::info!(
         socket = %s.id,
@@ -128,7 +127,7 @@ fn on_server_response(s: SocketRef, SocketData(data): SocketData<Value>) {
     );
 }
 
-// ── Terminal handlers ────────────────────────────────────────────────────────
+// ── Terminal 处理器 ────────────────────────────────────────────────────────
 
 fn on_term_config(_s: SocketRef, State(state): State<RealtimeState>, ack: AckSender) {
     let _ = ack.send(&json!({ "ok": true, "config": state.terminal.get_config_json() }));
@@ -195,11 +194,11 @@ fn strip_bearer(s: &str) -> &str {
     s.strip_prefix("Bearer ").unwrap_or(s).trim()
 }
 
-// ── emit-forwarding tasks ────────────────────────────────────────────────────
+// ── emit 转发任务 ────────────────────────────────────────────────────
 
-/// Spawn tasks that forward codex + terminal events to Socket.IO clients.
-/// M1 FIX: pending-record is merged with WS emit to prevent TOCTOU (DB record
-/// must complete before WS delivery so respond endpoint can find the row).
+/// 派生任务,将 codex + terminal 事件转发给 Socket.IO 客户端。
+/// M1 修复:pending-record 与 WS emit 合并,以防止 TOCTOU(DB 记录
+/// 必须在 WS 投递之前完成,以便 respond 端点能找到该行)。
 pub fn spawn_emit_tasks(io: SocketIo, codex: Arc<CodexProcessManager>, terminal: Arc<TerminalService>, db: Arc<crate::db::Db>) {
     spawn_notification_emit(io.clone(), codex.clone());
     spawn_server_request_record_and_emit(io.clone(), codex.clone(), db);
@@ -237,21 +236,21 @@ fn spawn_notification_emit(io: SocketIo, codex: Arc<CodexProcessManager>) {
     });
 }
 
-/// M1 FIX: merged record + emit — DB record completes before WS delivery.
+/// M1 修复:记录与 emit 合并 — DB 记录在 WS 投递之前完成。
 fn spawn_server_request_record_and_emit(io: SocketIo, codex: Arc<CodexProcessManager>, db: Arc<crate::db::Db>) {
     let mut rx = codex.subscribe_server_requests();
     tokio::spawn(async move {
         loop {
             match rx.recv().await {
                 Ok(req) => {
-                    // Phase 1: record to DB (must complete before WS emit).
-                    // MEDIUM-1 FIX: if DB record fails, skip emit entirely
-                    // (prevents phantom requests that can't be responded to).
+                    // 阶段 1:记录到 DB(必须在 WS emit 之前完成)。
+                    // MEDIUM-1 修复:若 DB 记录失败,则完全跳过 emit
+                    // (防止出现无法响应的幽灵请求)。
                     if let Err(e) = crate::event_subscribers::record_server_request(&db, &codex, &req) {
                         tracing::error!("record server request failed, skipping emit: {e}");
                         continue;
                     }
-                    // Phase 2: emit to WS.
+                    // 阶段 2:emit 到 WS。
                     let thread_id = req
                         .get("params")
                         .and_then(|p| p.get("threadId"))
@@ -309,7 +308,7 @@ fn spawn_lifecycle_emit(io: SocketIo, codex: Arc<CodexProcessManager>) {
     });
 }
 
-// ── terminal emit tasks ──────────────────────────────────────────────────────
+// ── terminal emit 任务 ──────────────────────────────────────────────────────
 
 fn spawn_terminal_output_emit(io: SocketIo, terminal: Arc<TerminalService>) {
     let mut rx = terminal.subscribe_output();

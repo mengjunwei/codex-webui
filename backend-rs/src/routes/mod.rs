@@ -1,4 +1,4 @@
-//! Route handlers and router construction.
+//! 路由处理器与路由构建。
 
 pub mod auth;
 pub mod health;
@@ -12,7 +12,7 @@ use axum::{
 use tower_http::services::{ServeDir, ServeFile};
 use utoipa::OpenApi;
 
-/// OpenAPI document (basic spec; per-endpoint annotations can be added later).
+/// OpenAPI 文档(基础规格;各端点的注解可后续补充)。
 #[derive(OpenApi)]
 #[openapi(
     info(
@@ -23,18 +23,18 @@ use utoipa::OpenApi;
 )]
 struct ApiDoc;
 
-/// Serve the OpenAPI JSON spec at /api/docs-json (public; for SDK generation).
+/// 在 /api/docs-json 提供 OpenAPI JSON 规格(公开;用于 SDK 生成)。
 async fn openapi_json() -> Json<utoipa::openapi::OpenApi> {
     Json(ApiDoc::openapi())
 }
 
-/// Build the application router.
+/// 构建应用路由。
 ///
-/// Layout (parity with NestJS globalPrefix 'api'):
-/// - `POST /api/auth/login`   — public (JWT login)
-/// - `POST /api/onlyoffice/callback` — public (OO save callback)
-/// - `GET  /api/docs-json`    — public (OpenAPI spec)
-/// - Everything else under `/api/*` — protected by require_auth
+/// 布局(与 NestJS globalPrefix 'api' 对齐):
+/// - `POST /api/auth/login`   — 公开(JWT 登录)
+/// - `POST /api/onlyoffice/callback` — 公开(OO 保存回调)
+/// - `GET  /api/docs-json`    — 公开(OpenAPI 规格)
+/// - `/api/*` 下的其余路由 — 受 require_auth 保护
 pub fn build_router(state: AppState) -> Router {
     use crate::chat as chat_mod;
     use crate::codex_status_config as csc;
@@ -45,53 +45,53 @@ pub fn build_router(state: AppState) -> Router {
     use crate::sqlite_handlers as sq;
     use crate::threads as th;
 
-    // Protected API sub-router.
+    // 受保护的 API 子路由。
     let api = Router::new()
-        // ── Phase 0 probe (also serves as GET /api/status parity with AppController) ──
+        // ── Phase 0 探针(同时作为 GET /api/status,与 AppController 对齐)──
         .route("/_ping", get(health::ping))
         .route("/status", get(health::ping))
-        // ── chat upload (protected; multipart) ──
+        // ── chat 上传(受保护;multipart)──
         .route("/chat/upload", post(chat_mod::upload_attachment))
-        // ── settings CRUD ──
+        // ── settings 增删改查(CRUD)──
         .route("/settings", get(s::list).patch(s::update_batch))
         .route("/settings/:key", get(s::get_one).patch(s::update_one).delete(s::delete_one))
-        // ── auth logout (protected, parity with TS) ──
+        // ── auth 登出(受保护,与 TS 对齐)──
         .route("/auth/logout", post(auth::logout))
-        // ── thread-scoped reads ──
+        // ── 线程维度读取 ──
         .route("/threads/:threadId/token-usage", get(sq::read_token_usage))
         .route("/threads/:threadId/turn-diffs", get(sq::read_turn_diffs))
         .route("/threads/:threadId/turn-errors", get(sq::read_turn_errors))
-        // ── pending-approvals (read + respond) ──
+        // ── 待审批(读取 + 响应)──
         .route("/pending-approvals", get(sq::list_pending))
         .route(
             "/pending-approvals/:requestId/respond",
             post(sq::respond_to_request),
         )
-        // ── logs ──
+        // ── 日志 ──
         .route("/logs", get(crate::logs::list_logs))
         .route("/logs/export", get(crate::logs::export_diagnostics))
-        // ── account (codex proxy) ──
+        // ── account(codex 代理)──
         .route("/account", get(px::account_read))
         .route("/account/login", post(px::account_login))
         .route("/account/login/cancel", post(px::account_login_cancel))
         .route("/account/logout", post(px::account_logout))
         .route("/account/rate-limits", get(px::account_rate_limits))
-        // ── apps / models (codex proxy) ──
+        // ── apps / models(codex 代理)──
         .route("/apps", get(px::apps_list))
         .route("/models", get(px::models_list))
-        // ── mcp-servers (codex proxy) ──
+        // ── mcp-servers(codex 代理)──
         .route("/mcp-servers", get(px::mcp_servers_list))
         .route("/mcp-servers/reload", post(px::mcp_servers_reload))
         .route("/mcp-servers/oauth/login", post(px::mcp_servers_oauth_login))
-        // ── skills (codex proxy) ──
+        // ── skills(codex 代理)──
         .route("/skills", get(px::skills_list))
         .route("/skills/config", post(px::skills_config_write))
-        // ── plugins (codex proxy) ──
+        // ── plugins(codex 代理)──
         .route("/plugins", get(px::plugins_list))
         .route("/plugins/detail", get(px::plugins_detail))
         .route("/plugins/install", post(px::plugins_install))
         .route("/plugins/uninstall", post(px::plugins_uninstall))
-        // ── threads + turns (codex proxy) ──
+        // ── threads + turns(codex 代理)──
         .route("/threads", post(th::create_thread).get(th::list_threads))
         .route("/threads/loaded", get(th::list_loaded_threads))
         .route("/threads/:threadId", get(th::read_thread))
@@ -105,7 +105,7 @@ pub fn build_router(state: AppState) -> Router {
         .route("/threads/:threadId/fork", post(th::fork_thread))
         .route("/threads/:threadId/rollback", post(th::rollback_thread))
         .route("/threads/:threadId/name", axum::routing::patch(th::set_thread_name))
-        // ── codex status + config ──
+        // ── codex 状态 + 配置 ──
         .route("/codex/status", get(csc::status))
         .route("/codex/approval-policy", post(csc::update_approval_policy))
         .route("/codex/sandbox-mode", post(csc::update_sandbox_mode))
@@ -114,7 +114,7 @@ pub fn build_router(state: AppState) -> Router {
             get(csc::read_config).patch(csc::update_config),
         )
         .route("/codex/config/raw", get(csc::read_raw_config).put(csc::update_raw_config))
-        // ── files (core ops; upload/serve/rename/copy/move deferred) ──
+        // ── files(核心操作;upload/serve/rename/copy/move 暂缓)──
         .route("/files/roots", get(fl::get_roots).post(fl::add_root))
         .route("/files/tree", get(fl::read_tree))
         .route("/files/read", get(fl::read_file))
@@ -131,17 +131,17 @@ pub fn build_router(state: AppState) -> Router {
         .route("/files/upload", post(fl::upload_files))
         .route("/files/archive/list", get(fl::archive_list))
         .route("/files/archive/entry", get(fl::archive_entry))
-        // ── onlyoffice config (protected) ──
+        // ── onlyoffice 配置(受保护)──
         .route("/onlyoffice/config", get(oo::get_config))
         .layer(axum::middleware::from_fn_with_state(
             state.clone(),
             require_auth,
         ));
 
-    // Static file serving for the React frontend (SPA).
-    // Serves `public/` directory; falls back to `public/index.html` for
-    // client-side routing. In development (no public/ dir), the fallback
-    // returns 404 which is fine (frontend runs on :5173 with a proxy).
+    // 为 React 前端(SPA)提供静态文件服务。
+    // 服务 `public/` 目录;对于客户端路由,回退到 `public/index.html`。
+    // 开发环境下(无 public/ 目录),回退返回 404 也无妨
+    // (前端运行在 :5173 并通过代理)。
     let static_files = ServeDir::new("public")
         .fallback(ServeFile::new("public/index.html"));
 
