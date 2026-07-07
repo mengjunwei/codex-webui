@@ -76,12 +76,44 @@ static SENSITIVE_KEY_RE: Lazy<Regex> =
 pub async fn status(State(state): State<AppState>) -> Result<Json<Value>, AppError> {
     let generation = state.codex.generation();
     let connected = state.codex.client().await.is_some();
-    // Simplified: full account/config/provider/model aggregation deferred.
+    let ready = generation > 0;
+    let now = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
+
+    // Full shape parity with TS CodexStatusResponse. Probes that require extra
+    // app-server calls are marked ok=true with minimal data; the frontend's
+    // primary consumer (codex-status-banner.tsx) reads runtime.status.
     Ok(Json(json!({
-        "ready": generation > 0,
-        "generation": generation,
-        "connected": connected,
-        "initialized": generation > 0,
+        "appServer": {
+            "ok": ready,
+            "connected": connected,
+            "initialized": ready,
+        },
+        "initialize": {
+            "ok": ready,
+            "data": null,
+        },
+        "account": { "ok": ready },
+        "config": { "ok": ready },
+        "provider": {
+            "ok": true,
+            "id": null,
+            "name": null,
+            "baseUrlMasked": null,
+            "envKey": null,
+            "envPresent": null,
+        },
+        "models": {
+            "ok": ready,
+            "listable": ready,
+            "defaultModel": null,
+            "count": 0,
+        },
+        "runtime": {
+            "status": if ready { "ready" } else { "unavailable" },
+            "reasons": [],
+            "checkedAt": now,
+            "cacheTtlMs": 0,
+        }
     })))
 }
 
