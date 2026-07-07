@@ -61,6 +61,10 @@ async fn main() -> anyhow::Result<()> {
     // 动态工作区根目录（POST /api/files/roots 注册）；终端 cwd 沙箱与文件路由共用。
     let dynamic_files_roots = Arc::new(Mutex::new(HashSet::new()));
 
+    // 线程 resume 注册表 + 活跃线程订阅表（codex 重启后 auto-resume 仍被订阅的线程）。
+    let resume_registry = Arc::new(ThreadResumeRegistry::new());
+    let active_threads = codex_webui::realtime::ActiveThreadRegistry::new();
+
     // 实时 Socket.IO 网关（`/ws` 命名空间）+ emit 转发任务。
     let rt_state = codex_webui::realtime::RealtimeState {
         auth: auth.clone(),
@@ -68,16 +72,19 @@ async fn main() -> anyhow::Result<()> {
         terminal: terminal.clone(),
         db: db.clone(),
         dynamic_files_roots: dynamic_files_roots.clone(),
+        active_threads: active_threads.clone(),
     };
     let (ws_layer, io) = codex_webui::realtime::build(rt_state);
-    codex_webui::realtime::spawn_emit_tasks(io, codex.clone(), terminal.clone(), db.clone());
+    codex_webui::realtime::spawn_emit_tasks(
+        io,
+        codex.clone(),
+        terminal.clone(),
+        db.clone(),
+        active_threads.clone(),
+        resume_registry.clone(),
+    );
 
-    // 就绪状态聚合服务（/codex/status、/account.provider、/logs/export 共享其缓存）。
-    let status_service = Arc::new(codex_webui::codex_status::CodexStatusService::new(codex.clone()));
-
-    // 线程 resume 注册表：codex 重启（generation 变化）时清空缓存（按 generation 去重，
-    // 对齐 TS resumeRegistry 在 appServerReady 时重建）。
-    let resume_registry = Arc::new(ThreadResumeRegistry::new());
+    // codex 重启（generation 变化）时清空 resume 缓存（按 generation 去重）。
     {
         let lc_codex = codex.clone();
         let lc_registry = resume_registry.clone();
@@ -90,6 +97,9 @@ async fn main() -> anyhow::Result<()> {
             }
         });
     }
+
+    // 就绪状态聚合服务（/codex/status、/account.provider、/logs/export 共享其缓存）。
+    let status_service = Arc::new(codex_webui::codex_status::CodexStatusService::new(codex.clone()));
 
     // 共享状态。
     let state = AppState {

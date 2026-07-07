@@ -36,6 +36,7 @@ utoipa = "5"
 url = "2"
 uuid = { version = "1", features = ["v4"] }
 zip = "2"
+sevenz-rust2 = "0.21"
 
 [dev-dependencies]
 tower = { version = "0.5", features = ["util"] }

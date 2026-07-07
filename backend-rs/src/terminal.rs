@@ -183,6 +183,8 @@ impl TerminalService {
 
     /// 列出某个 context 下的终端。
     pub fn list(&self, context_key: &str) -> Vec<TerminalMetadata> {
+        // 规整 contextKey(trim)，使 "global " 等末尾空白与存储值匹配。
+        let context_key = context_key.trim();
         self.sessions.lock().unwrap().values()
             .filter(|s| s.context_key == context_key)
             .map(|s| Self::meta(s))
@@ -193,6 +195,7 @@ impl TerminalService {
     pub fn open(&self, socket_id: &str, context_key: &str,
         cwd: Option<&str>, cols: Option<u16>, rows: Option<u16>, title: Option<&str>,
     ) -> Result<TerminalMetadata, AppError> {
+        let context_key = normalize_context_key(context_key)?;
         let cfg = self.config.lock().unwrap();
         let max = cfg.max_sessions;
         let scrollback = cfg.scrollback;
@@ -343,6 +346,7 @@ impl TerminalService {
     pub fn reconnect(&self, socket_id: &str, context_key: &str, terminal_id: &str)
         -> Result<(TerminalMetadata, Vec<String>), AppError>
     {
+        let context_key = normalize_context_key(context_key)?;
         let mut sessions = self.sessions.lock().unwrap();
         let s = sessions.get_mut(terminal_id)
             .ok_or_else(|| not_found("terminal not found"))?;
@@ -428,6 +432,7 @@ impl TerminalService {
     pub fn write_input(&self, socket_id: &str, context_key: &str, terminal_id: &str, data: &str)
         -> Result<(), AppError>
     {
+        let context_key = normalize_context_key(context_key)?;
         let max_input = 1024 * 1024;
         if data.len() > max_input {
             return Err(bad_request(ErrorCode::TerminalInputTooLarge, "Terminal input is too large".to_string()));
@@ -452,6 +457,7 @@ impl TerminalService {
     pub fn resize(&self, socket_id: &str, context_key: &str, terminal_id: &str, cols: u16, rows: u16)
         -> Result<TerminalMetadata, AppError>
     {
+        let context_key = normalize_context_key(context_key)?;
         let mut sessions = self.sessions.lock().unwrap();
         let s = sessions.get_mut(terminal_id)
             .ok_or_else(|| not_found("terminal not found"))?;
@@ -483,6 +489,7 @@ impl TerminalService {
     pub fn rename(&self, socket_id: &str, context_key: &str, terminal_id: &str, title: &str)
         -> Result<TerminalMetadata, AppError>
     {
+        let context_key = normalize_context_key(context_key)?;
         let mut sessions = self.sessions.lock().unwrap();
         let s = sessions.get_mut(terminal_id)
             .ok_or_else(|| not_found("terminal not found"))?;
@@ -501,6 +508,7 @@ impl TerminalService {
     pub fn close(&self, _socket_id: &str, context_key: &str, terminal_id: &str)
         -> Result<(), AppError>
     {
+        let context_key = normalize_context_key(context_key)?;
         let mut sessions = self.sessions.lock().unwrap();
         let s = sessions.get_mut(terminal_id).ok_or_else(|| not_found("terminal not found"))?;
         if s.context_key != context_key { return Err(context_mismatch()); }
@@ -524,6 +532,7 @@ impl TerminalService {
     pub fn download(&self, socket_id: &str, context_key: &str, terminal_id: &str)
         -> Result<(String, String), AppError>
     {
+        let context_key = normalize_context_key(context_key)?;
         let sessions = self.sessions.lock().unwrap();
         let s = sessions.get(terminal_id).ok_or_else(|| not_found("terminal not found"))?;
         if s.context_key != context_key { return Err(context_mismatch()); }
@@ -545,6 +554,19 @@ impl TerminalService {
 }
 
 // ── VT 屏幕序列化 ─────────────────────────────────────────────────
+
+/// 规整 contextKey:trim 后必须为 `global` 或 `thread:<id>`(对齐 TS normalizeContextKey)。
+fn normalize_context_key(raw: &str) -> Result<String, AppError> {
+    let value = raw.trim();
+    if value == "global" || (value.starts_with("thread:") && value.len() > "thread:".len()) {
+        Ok(value.to_string())
+    } else {
+        Err(bad_request(
+            ErrorCode::TerminalInvalidContext,
+            "contextKey must be global or thread:<id>".to_string(),
+        ))
+    }
+}
 
 /// 将 wezterm 终端的屏幕（回滚 + 可见行）序列化为单个字符串。
 /// 使用 scrollback_rows() + lines_in_phys_range()（原始 wezterm-term 中

@@ -64,17 +64,6 @@ pub struct UpdatePayload {
 }
 
 #[derive(Deserialize)]
-pub struct BatchUpdatePayload {
-    pub updates: Vec<UpdateEntry>,
-}
-
-#[derive(Deserialize)]
-pub struct UpdateEntry {
-    pub key: String,
-    pub value: Option<serde_json::Value>,
-}
-
-#[derive(Deserialize)]
 pub struct ListQuery {
     pub category: Option<String>,
 }
@@ -134,34 +123,73 @@ pub async fn get_one(
 
 pub async fn update_batch(
     State(state): State<AppState>,
-    Json(payload): Json<BatchUpdatePayload>,
+    Json(body): Json<serde_json::Value>,
 ) -> Result<Json<serde_json::Value>, AppError> {
-    // M7 修复：检测重复 key（TS 会抛出 settings.duplicate_key）。
+    // 显式校验 updates（对齐 TS settings.controller.ts；避免依赖 serde 的泛型 400）。
+    let updates = body
+        .get("updates")
+        .and_then(serde_json::Value::as_array)
+        .ok_or_else(|| {
+            AppError::business(
+                ErrorCode::SettingsUpdatesRequired,
+                StatusCode::BAD_REQUEST,
+                "updates is required and must be an array".into(),
+                None,
+            )
+        })?;
+    // 每个条目必须是对象 + 非空字符串 key（value 可选）。
+    let mut parsed: Vec<(String, Option<serde_json::Value>)> = Vec::with_capacity(updates.len());
+    for (idx, entry) in updates.iter().enumerate() {
+        let obj = entry.as_object().ok_or_else(|| {
+            AppError::business(
+                ErrorCode::SettingsKeyRequired,
+                StatusCode::BAD_REQUEST,
+                format!("updates[{idx}] must be an object"),
+                None,
+            )
+        })?;
+        let key = obj
+            .get("key")
+            .and_then(serde_json::Value::as_str)
+            .map(|s| s.trim())
+            .filter(|s| !s.is_empty())
+            .ok_or_else(|| {
+                AppError::business(
+                    ErrorCode::SettingsKeyRequired,
+                    StatusCode::BAD_REQUEST,
+                    format!("updates[{idx}].key is required"),
+                    None,
+                )
+            })?;
+        parsed.push((key.to_string(), obj.get("value").cloned()));
+    }
+
+    // M7：检测重复 key（TS 抛出 settings.duplicate_key）。
     let mut seen = std::collections::HashSet::new();
-    for entry in &payload.updates {
-        if !seen.insert(&entry.key) {
+    for (key, _) in &parsed {
+        if !seen.insert(key.clone()) {
             return Err(AppError::business(
                 ErrorCode::SettingsDuplicateKey,
                 StatusCode::BAD_REQUEST,
-                format!("Duplicate setting key: {}", entry.key),
+                format!("Duplicate setting key: {key}"),
                 None,
             ));
         }
     }
 
     // 先校验所有条目。
-    let mut prepared: Vec<(String, Option<String>)> = Vec::with_capacity(payload.updates.len());
-    for entry in &payload.updates {
-        let def = find_def(&entry.key).ok_or_else(|| {
+    let mut prepared: Vec<(String, Option<String>)> = Vec::with_capacity(parsed.len());
+    for (key, value) in &parsed {
+        let def = find_def(key).ok_or_else(|| {
             AppError::business(
                 ErrorCode::SettingsNotFound,
                 StatusCode::NOT_FOUND,
-                format!("Unknown setting key: {}", entry.key),
+                format!("Unknown setting key: {key}"),
                 None,
             )
         })?;
-        let serialized = match &entry.value {
-            Some(v) => Some(validate_and_serialize(def, v).map_err(|msg| {
+        let serialized = match value {
+            Some(v) if !v.is_null() => Some(validate_and_serialize(def, v).map_err(|msg| {
                 AppError::business(
                     ErrorCode::SettingsInvalidValue,
                     StatusCode::BAD_REQUEST,
@@ -169,9 +197,9 @@ pub async fn update_batch(
                     None,
                 )
             })?),
-            None => None, // 重置回 env/default
+            _ => None, // 缺失或显式 null → 重置回 env/default
         };
-        prepared.push((entry.key.clone(), serialized));
+        prepared.push((key.clone(), serialized));
     }
 
     // 持久化（用作用域隔离，以便在下方回读之前释放连接锁，

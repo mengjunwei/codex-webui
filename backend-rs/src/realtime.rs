@@ -13,12 +13,82 @@ use crate::codex::{CodexProcessManager, LifecycleEvent};
 use crate::db::Db;
 use crate::error::AppError;
 use crate::terminal::{TerminalMetadataEvent, TerminalService};
+use crate::threads::ThreadResumeRegistry;
 use serde_json::{json, Value};
 use socketioxide::extract::{AckSender, Data as SocketData, SocketRef, State};
 use socketioxide::SocketIo;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
 use tokio::sync::broadcast::error::RecvError;
+
+/// 活跃线程注册表:跟踪 socket↔thread 订阅,供 codex 重启后只恢复仍被订阅的线程
+/// (对齐 TS ActiveThreadRegistryService)。
+pub struct ActiveThreadRegistry {
+    socket_threads: Mutex<HashMap<String, HashSet<String>>>,
+    thread_sockets: Mutex<HashMap<String, HashSet<String>>>,
+}
+
+impl ActiveThreadRegistry {
+    pub fn new() -> Arc<Self> {
+        Arc::new(Self {
+            socket_threads: Mutex::new(HashMap::new()),
+            thread_sockets: Mutex::new(HashMap::new()),
+        })
+    }
+
+    pub fn subscribe(&self, socket_id: &str, thread_id: &str) {
+        self.socket_threads
+            .lock()
+            .unwrap()
+            .entry(socket_id.to_string())
+            .or_default()
+            .insert(thread_id.to_string());
+        self.thread_sockets
+            .lock()
+            .unwrap()
+            .entry(thread_id.to_string())
+            .or_default()
+            .insert(socket_id.to_string());
+    }
+
+    pub fn unsubscribe(&self, socket_id: &str, thread_id: &str) {
+        {
+            let mut st = self.socket_threads.lock().unwrap();
+            if let Some(set) = st.get_mut(socket_id) {
+                set.remove(thread_id);
+                if set.is_empty() {
+                    st.remove(socket_id);
+                }
+            }
+        }
+        let mut ts = self.thread_sockets.lock().unwrap();
+        if let Some(set) = ts.get_mut(thread_id) {
+            set.remove(socket_id);
+            if set.is_empty() {
+                ts.remove(thread_id);
+            }
+        }
+    }
+
+    /// 断开连接时移除该 socket 的全部订阅。
+    pub fn remove_socket(&self, socket_id: &str) {
+        let thread_ids: Vec<String> = self
+            .socket_threads
+            .lock()
+            .unwrap()
+            .get(socket_id)
+            .map(|s| s.iter().cloned().collect())
+            .unwrap_or_default();
+        for tid in &thread_ids {
+            self.unsubscribe(socket_id, tid);
+        }
+    }
+
+    /// 当前仍至少有一个订阅者的线程 id。
+    pub fn snapshot(&self) -> Vec<String> {
+        self.thread_sockets.lock().unwrap().keys().cloned().collect()
+    }
+}
 
 /// 注入到 socketioxide 处理器中的共享 realtime 状态。
 #[derive(Clone)]
@@ -29,6 +99,8 @@ pub struct RealtimeState {
     /// 用于终端 cwd 沙箱校验（工作区根目录）。
     pub db: Arc<Db>,
     pub dynamic_files_roots: Arc<Mutex<HashSet<String>>>,
+    /// socket↔thread 订阅(用于 codex 重启后 auto-resume)。
+    pub active_threads: Arc<ActiveThreadRegistry>,
 }
 
 /// 构建 Socket.IO 层与句柄,挂接 `/ws` 命名空间。
@@ -53,7 +125,16 @@ fn on_connect(
         .and_then(Value::as_str)
         .map(|t| t.trim())
         .filter(|t| !t.is_empty())
-        .map(|t| strip_bearer(t).to_string());
+        .map(|t| strip_bearer(t).to_string())
+        .or_else(|| {
+            // 回退到 Authorization 请求头（对齐 TS handshake.headers.authorization）。
+            s.req_parts()
+                .headers
+                .get("authorization")
+                .and_then(|h| h.to_str().ok())
+                .map(|h| strip_bearer(h).trim().to_string())
+                .filter(|t| !t.is_empty())
+        });
     let result = state.auth.authenticate_token(token.as_deref(), Some(s.id.as_str()));
     if !result.ok {
         tracing::warn!(socket = %s.id, "rejected unauthenticated socket");
@@ -83,15 +164,17 @@ fn on_connect(
     s.on("terminal.detach", on_term_detach);
     s.on("terminal.download", on_term_download);
     s.on("terminal.close", on_term_close);
-    // 断开连接时从所有终端分离。
+    // 断开连接时从所有终端分离 + 清理线程订阅。
     let term = state.terminal.clone();
+    let active = state.active_threads.clone();
     let sid = s.id.clone();
     s.on_disconnect(move || {
+        active.remove_socket(sid.as_str());
         term.detach(sid.as_str(), None);
     });
 }
 
-fn on_thread_subscribe(s: SocketRef, SocketData(data): SocketData<Value>) {
+fn on_thread_subscribe(s: SocketRef, State(state): State<RealtimeState>, SocketData(data): SocketData<Value>) {
     let thread_id = data
         .get("threadId")
         .and_then(Value::as_str)
@@ -103,10 +186,11 @@ fn on_thread_subscribe(s: SocketRef, SocketData(data): SocketData<Value>) {
     }
     let room = format!("thread:{thread_id}");
     let _ = s.join(room.clone());
+    state.active_threads.subscribe(s.id.as_str(), &thread_id);
     tracing::debug!(socket = %s.id, room = %room, "subscribed");
 }
 
-fn on_thread_unsubscribe(s: SocketRef, SocketData(data): SocketData<Value>) {
+fn on_thread_unsubscribe(s: SocketRef, State(state): State<RealtimeState>, SocketData(data): SocketData<Value>) {
     let thread_id = data
         .get("threadId")
         .and_then(Value::as_str)
@@ -118,6 +202,7 @@ fn on_thread_unsubscribe(s: SocketRef, SocketData(data): SocketData<Value>) {
     }
     let room = format!("thread:{thread_id}");
     let _ = s.leave(room.clone());
+    state.active_threads.unsubscribe(s.id.as_str(), &thread_id);
     tracing::debug!(socket = %s.id, room = %room, "unsubscribed");
 }
 
@@ -264,10 +349,10 @@ fn ack_term_err(s: &SocketRef, ack: AckSender, e: AppError) {
 /// 派生任务,将 codex + terminal 事件转发给 Socket.IO 客户端。
 /// M1 修复:pending-record 与 WS emit 合并,以防止 TOCTOU(DB 记录
 /// 必须在 WS 投递之前完成,以便 respond 端点能找到该行)。
-pub fn spawn_emit_tasks(io: SocketIo, codex: Arc<CodexProcessManager>, terminal: Arc<TerminalService>, db: Arc<crate::db::Db>) {
+pub fn spawn_emit_tasks(io: SocketIo, codex: Arc<CodexProcessManager>, terminal: Arc<TerminalService>, db: Arc<crate::db::Db>, active: Arc<ActiveThreadRegistry>, resume_registry: Arc<ThreadResumeRegistry>) {
     spawn_notification_emit(io.clone(), codex.clone());
     spawn_server_request_record_and_emit(io.clone(), codex.clone(), db);
-    spawn_lifecycle_emit(io.clone(), codex);
+    spawn_lifecycle_emit(io.clone(), codex.clone(), active, resume_registry);
     spawn_terminal_output_emit(io.clone(), terminal.clone());
     spawn_terminal_exit_emit(io.clone(), terminal.clone());
     spawn_terminal_closed_emit(io.clone(), terminal.clone());
@@ -344,26 +429,72 @@ fn spawn_server_request_record_and_emit(io: SocketIo, codex: Arc<CodexProcessMan
     });
 }
 
-fn spawn_lifecycle_emit(io: SocketIo, codex: Arc<CodexProcessManager>) {
+fn spawn_lifecycle_emit(
+    io: SocketIo,
+    codex: Arc<CodexProcessManager>,
+    active: Arc<ActiveThreadRegistry>,
+    resume_registry: Arc<ThreadResumeRegistry>,
+) {
     let mut rx = codex.subscribe_lifecycle();
     tokio::spawn(async move {
         loop {
             match rx.recv().await {
                 Ok(event) => {
-                    let payload = match &event {
-                        LifecycleEvent::Restarting { generation, delay_ms } => json!({
-                            "type": "appServerRestarting", "generation": generation, "delayMs": delay_ms
-                        }),
-                        LifecycleEvent::Ready { generation, restarted } => json!({
-                            "type": "appServerReady", "generation": generation, "restarted": restarted
-                        }),
-                        LifecycleEvent::Unavailable { generation, message } => json!({
-                            "type": "appServerUnavailable", "generation": generation, "message": message
-                        }),
+                    let (payload, do_resume, generation) = match &event {
+                        LifecycleEvent::Restarting { generation, delay_ms } => (
+                            json!({ "type": "appServerRestarting", "generation": generation, "delayMs": delay_ms }),
+                            false,
+                            *generation,
+                        ),
+                        LifecycleEvent::Ready { generation, restarted } => (
+                            json!({ "type": "appServerReady", "generation": generation, "restarted": restarted }),
+                            *restarted,
+                            *generation,
+                        ),
+                        LifecycleEvent::Unavailable { generation, message } => (
+                            json!({ "type": "appServerUnavailable", "generation": generation, "message": message }),
+                            false,
+                            *generation,
+                        ),
                     };
                     if let Some(ns) = io.of("/ws") {
                         if let Err(e) = ns.broadcast().emit("codex.lifecycle", &payload) {
                             tracing::warn!("emit codex.lifecycle failed: {e}");
+                        }
+                    }
+                    // codex 重启后:auto-resume 仍被订阅的线程(对齐 TS AutoResumeService)。
+                    if do_resume {
+                        let threads = active.snapshot();
+                        let mut resumed: Vec<String> = Vec::new();
+                        let mut failed: Vec<String> = Vec::new();
+                        for tid in &threads {
+                            match codex
+                                .request(
+                                    "thread/resume",
+                                    Some(json!({ "threadId": tid, "persistExtendedHistory": true })),
+                                )
+                                .await
+                            {
+                                Ok(r) => {
+                                    resume_registry.mark_resumed(tid, r);
+                                    resumed.push(tid.clone());
+                                }
+                                Err(e) => {
+                                    tracing::warn!(thread = %tid, "auto-resume failed: {e}");
+                                    failed.push(tid.clone());
+                                }
+                            }
+                        }
+                        let done = json!({
+                            "type": "autoResumeCompleted",
+                            "generation": generation,
+                            "resumedThreadIds": resumed,
+                            "failedThreadIds": failed,
+                        });
+                        if let Some(ns) = io.of("/ws") {
+                            if let Err(e) = ns.broadcast().emit("codex.lifecycle", &done) {
+                                tracing::warn!("emit autoResumeCompleted failed: {e}");
+                            }
                         }
                     }
                 }

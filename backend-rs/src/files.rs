@@ -1358,7 +1358,7 @@ pub async fn archive_list(
     let entries = tokio::task::spawn_blocking(move || list_archive_entries(&path))
         .await
         .map_err(|e| AppError::internal(format!("archive task: {e}")))?
-        .map_err(|e| AppError::internal(format!("archive list: {e}")))?;
+        .map_err(map_list_error)?;
     // 扁平条目 → 嵌套目录树（对齐 TS ArchiveService.buildTree）。
     let tree = build_archive_tree(entries);
     Ok(Json(json!({ "path": resolved.original, "entries": tree })))
@@ -1417,7 +1417,7 @@ pub struct ArchiveEntryQuery {
     pub entry: Option<String>,
 }
 
-enum ArchiveFormat { Zip, Tar, TarGz, TarBz2, TarXz }
+enum ArchiveFormat { Zip, Tar, TarGz, TarBz2, TarXz, SevenZip }
 
 fn detect_format(path: &Path) -> Option<ArchiveFormat> {
     let name = path.file_name()?.to_str()?.to_lowercase();
@@ -1426,6 +1426,7 @@ fn detect_format(path: &Path) -> Option<ArchiveFormat> {
     else if name.ends_with(".tar.gz") || name.ends_with(".tgz") { Some(ArchiveFormat::TarGz) }
     else if name.ends_with(".tar.bz2") || name.ends_with(".tbz2") { Some(ArchiveFormat::TarBz2) }
     else if name.ends_with(".tar.xz") || name.ends_with(".txz") { Some(ArchiveFormat::TarXz) }
+    else if name.ends_with(".7z") { Some(ArchiveFormat::SevenZip) }
     else { None }
 }
 
@@ -1440,25 +1441,69 @@ const MAX_ARCHIVE_TOTAL_BYTES: u64 = 1 << 30; // 1 GB
 /// 单个归档条目解压后的字节上限（对齐 TS MAX_ARCHIVE_ENTRY_BYTES，防 zip-bomb OOM）。
 const MAX_ARCHIVE_ENTRY_BYTES: u64 = 50 * 1024 * 1024; // 50 MB
 
-fn list_archive_entries(path: &Path) -> Result<Vec<serde_json::Value>, String> {
-    let fmt = detect_format(path).ok_or("unsupported archive format")?;
+/// 归档列表错误（区分 HTTP 状态码：413 vs 400 vs 500，对齐 TS）。
+enum ArchiveListError {
+    UnsupportedFormat,
+    TooManyEntries,
+    TotalSizeTooLarge,
+    UnsafeEntryPath,
+    Other(String),
+}
+
+fn map_list_error(e: ArchiveListError) -> AppError {
+    use ArchiveListError::*;
+    match e {
+        TotalSizeTooLarge => AppError::business(
+            ErrorCode::ArchiveTotalSizeTooLarge,
+            StatusCode::PAYLOAD_TOO_LARGE,
+            "Archive exceeds the 1 GB uncompressed preview limit".into(),
+            None,
+        ),
+        UnsupportedFormat => AppError::business(
+            ErrorCode::ArchiveUnsupportedFormat,
+            StatusCode::BAD_REQUEST,
+            "Unsupported archive format".into(),
+            None,
+        ),
+        TooManyEntries => AppError::business(
+            ErrorCode::ArchiveTooManyEntries,
+            StatusCode::BAD_REQUEST,
+            "Archive exceeds the 20,000 entry limit".into(),
+            None,
+        ),
+        UnsafeEntryPath => AppError::business(
+            ErrorCode::ArchiveUnsafeEntryPath,
+            StatusCode::BAD_REQUEST,
+            "Archive contains an unsafe entry path".into(),
+            None,
+        ),
+        Other(s) => AppError::internal(format!("archive list: {s}")),
+    }
+}
+
+fn list_archive_entries(path: &Path) -> Result<Vec<serde_json::Value>, ArchiveListError> {
+    use ArchiveListError::*;
+    let fmt = detect_format(path).ok_or(UnsupportedFormat)?;
     match fmt {
         ArchiveFormat::Zip => {
-            let file = std::fs::File::open(path).map_err(|e| e.to_string())?;
-            let mut archive = zip::ZipArchive::new(file).map_err(|e| e.to_string())?;
+            let file = std::fs::File::open(path).map_err(|e| Other(e.to_string()))?;
+            let mut archive = zip::ZipArchive::new(file).map_err(|e| Other(e.to_string()))?;
+            if archive.len() > MAX_ARCHIVE_ENTRIES {
+                return Err(TooManyEntries);
+            }
             let mut entries = Vec::new();
             let mut total_size: u64 = 0;
-            let len = archive.len().min(MAX_ARCHIVE_ENTRIES);
-            for i in 0..len {
-                let entry = archive.by_index(i).map_err(|e| e.to_string())?;
+            for i in 0..archive.len() {
+                let entry = archive.by_index(i).map_err(|e| Other(e.to_string()))?;
                 let name = entry.name().to_string();
                 if !is_safe_entry_name(&name) {
-                    continue; // 跳过 zip-slip 条目
+                    // 整体拒绝（对齐 TS validateArchiveEntries），而非静默跳过。
+                    return Err(UnsafeEntryPath);
                 }
                 let entry_size = entry.size();
                 total_size += entry_size;
                 if total_size > MAX_ARCHIVE_TOTAL_BYTES {
-                    return Err("archive total uncompressed size exceeds limit (1GB)".into());
+                    return Err(TotalSizeTooLarge);
                 }
                 let is_dir = entry.is_dir();
                 entries.push(json!({
@@ -1468,40 +1513,37 @@ fn list_archive_entries(path: &Path) -> Result<Vec<serde_json::Value>, String> {
                     "size": if is_dir { serde_json::Value::Null } else { serde_json::json!(entry_size) },
                 }));
             }
-            if archive.len() > MAX_ARCHIVE_ENTRIES {
-                return Err("archive has too many entries (>20000)".into());
-            }
             Ok(entries)
         }
-        ArchiveFormat::Tar => list_tar(std::fs::File::open(path).map_err(|e| e.to_string())?),
+        ArchiveFormat::Tar => list_tar(std::fs::File::open(path).map_err(|e| Other(e.to_string()))?),
         ArchiveFormat::TarGz => list_tar(flate2::read::GzDecoder::new(
-            std::fs::File::open(path).map_err(|e| e.to_string())?,
+            std::fs::File::open(path).map_err(|e| Other(e.to_string()))?,
         )),
-        ArchiveFormat::TarBz2 | ArchiveFormat::TarXz => {
-            Err("bz2/xz archive listing not yet supported".into())
-        }
+        ArchiveFormat::SevenZip => list_sevenzip(path),
+        ArchiveFormat::TarBz2 | ArchiveFormat::TarXz => Err(UnsupportedFormat),
     }
 }
 
-fn list_tar<R: std::io::Read>(reader: R) -> Result<Vec<serde_json::Value>, String> {
+fn list_tar<R: std::io::Read>(reader: R) -> Result<Vec<serde_json::Value>, ArchiveListError> {
+    use ArchiveListError::*;
     let mut archive = tar::Archive::new(reader);
     let mut entries = Vec::new();
     let mut total_size: u64 = 0;
     let mut count = 0usize;
-    for entry in archive.entries().map_err(|e| e.to_string())? {
-        let entry = entry.map_err(|e| e.to_string())?;
-        let path = entry.path().map_err(|e| e.to_string())?.to_string_lossy().to_string();
+    for entry in archive.entries().map_err(|e| Other(e.to_string()))? {
+        let entry = entry.map_err(|e| Other(e.to_string()))?;
+        let path = entry.path().map_err(|e| Other(e.to_string()))?.to_string_lossy().to_string();
         if !is_safe_entry_name(&path) {
-            continue; // 跳过 zip-slip 条目
+            return Err(UnsafeEntryPath);
         }
         count += 1;
         if count > MAX_ARCHIVE_ENTRIES {
-            return Err("archive has too many entries (>20000)".into());
+            return Err(TooManyEntries);
         }
         let entry_size = entry.size();
         total_size += entry_size;
         if total_size > MAX_ARCHIVE_TOTAL_BYTES {
-            return Err("archive total uncompressed size exceeds limit (1GB)".into());
+            return Err(TotalSizeTooLarge);
         }
         let is_dir = entry.header().entry_type().is_dir();
         entries.push(json!({
@@ -1510,6 +1552,49 @@ fn list_tar<R: std::io::Read>(reader: R) -> Result<Vec<serde_json::Value>, Strin
             "type": if is_dir { "directory" } else { "file" },
             "size": if is_dir { serde_json::Value::Null } else { serde_json::json!(entry_size) },
         }));
+    }
+    Ok(entries)
+}
+
+fn list_sevenzip(path: &Path) -> Result<Vec<serde_json::Value>, ArchiveListError> {
+    use ArchiveListError::*;
+    let mut reader = sevenz_rust2::ArchiveReader::open(path, sevenz_rust2::Password::empty())
+        .map_err(|e| Other(e.to_string()))?;
+    let mut entries: Vec<serde_json::Value> = Vec::new();
+    let mut total_size: u64 = 0;
+    let mut err: Option<ArchiveListError> = None;
+    reader
+        .for_each_entries(|entry, _stream| {
+            if err.is_some() {
+                return Ok(false);
+            }
+            let name = entry.name().to_string();
+            if !is_safe_entry_name(&name) {
+                err = Some(UnsafeEntryPath);
+                return Ok(false);
+            }
+            if entries.len() >= MAX_ARCHIVE_ENTRIES {
+                err = Some(TooManyEntries);
+                return Ok(false);
+            }
+            let size = entry.size();
+            total_size += size;
+            if total_size > MAX_ARCHIVE_TOTAL_BYTES {
+                err = Some(TotalSizeTooLarge);
+                return Ok(false);
+            }
+            let is_dir = entry.is_directory();
+            entries.push(json!({
+                "name": name.rsplit('/').next().unwrap_or(&name),
+                "path": name,
+                "type": if is_dir { "directory" } else { "file" },
+                "size": if is_dir { serde_json::Value::Null } else { serde_json::json!(size) },
+            }));
+            Ok(true)
+        })
+        .map_err(|e| Other(e.to_string()))?;
+    if let Some(e) = err {
+        return Err(e);
     }
     Ok(entries)
 }
@@ -1532,6 +1617,25 @@ fn read_archive_entry(path: &Path, entry_name: &str) -> Result<Vec<u8>, ArchiveR
         }
         ArchiveFormat::Tar => read_tar_entry(std::fs::File::open(path).map_err(|e| Other(e.to_string()))?, entry_name),
         ArchiveFormat::TarGz => read_tar_entry(flate2::read::GzDecoder::new(std::fs::File::open(path).map_err(|e| Other(e.to_string()))?), entry_name),
+        ArchiveFormat::SevenZip => {
+            let mut reader = sevenz_rust2::ArchiveReader::open(path, sevenz_rust2::Password::empty())
+                .map_err(|e| Other(e.to_string()))?;
+            let mut result: Result<Vec<u8>, ArchiveReadError> =
+                Err(Other(format!("entry not found: {entry_name}")));
+            reader
+                .for_each_entries(|entry, stream| {
+                    if result.is_ok() {
+                        return Ok(false);
+                    }
+                    if entry.name() == entry_name {
+                        result = read_limited(stream);
+                        return Ok(false);
+                    }
+                    Ok(true)
+                })
+                .map_err(|e| Other(e.to_string()))?;
+            result
+        }
         ArchiveFormat::TarBz2 | ArchiveFormat::TarXz => {
             // bz2/xz 解码器需要额外的 crate；暂未实现。
             Err(Other("bz2/xz archive entry extraction not yet supported".into()))
