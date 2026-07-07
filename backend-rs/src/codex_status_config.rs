@@ -18,8 +18,8 @@ use crate::state::AppState;
 use axum::{
     extract::State,
     http::StatusCode,
-    Json,
 };
+use crate::error::Json;
 use once_cell::sync::Lazy;
 use regex::Regex;
 use serde::Deserialize;

@@ -11,8 +11,8 @@ use crate::state::AppState;
 use axum::{
     extract::{Query, State},
     http::{HeaderMap, StatusCode},
-    Json,
 };
+use crate::error::Json;
 use jsonwebtoken::{decode, encode, Algorithm, DecodingKey, EncodingKey, Header, Validation};
 use serde::Deserialize;
 use serde_json::{json, Value};

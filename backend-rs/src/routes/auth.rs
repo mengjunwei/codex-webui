@@ -5,7 +5,8 @@
 use crate::auth::{LoginRequest, LoginResponse};
 use crate::error::{AppError, ErrorCode};
 use crate::state::AppState;
-use axum::{extract::State, http::StatusCode, Json};
+use axum::{extract::State, http::StatusCode};
+use crate::error::Json;
 
 pub async fn login(
     State(state): State<AppState>,

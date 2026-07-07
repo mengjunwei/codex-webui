@@ -16,8 +16,8 @@ use crate::state::AppState;
 use axum::{
     extract::{Path, State},
     http::StatusCode,
-    Json,
 };
+use crate::error::Json;
 use serde::{Deserialize, Serialize};
 
 // ── DTO ─────────────────────────────────────────────────────────────────────

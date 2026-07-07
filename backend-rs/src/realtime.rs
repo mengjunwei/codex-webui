@@ -473,24 +473,22 @@ fn spawn_lifecycle_emit(
                         let mut resumed: Vec<String> = Vec::new();
                         let mut failed: Vec<String> = Vec::new();
                         for tid in &threads {
-                            // 去重：若该线程在本 generation 已被 resume 过（REST 端 resume_thread
-                            // 已缓存结果），跳过，避免对非幂等的 thread/resume 重复调用
-                            // （对齐 TS AutoResumeService.resumeOnce → ensureResumed 的 resumed 集合）。
-                            if resume_registry.get_cached(tid).is_some() {
-                                resumed.push(tid.clone());
-                                continue;
-                            }
-                            match codex
-                                .request(
-                                    "thread/resume",
-                                    Some(json!({ "threadId": tid, "persistExtendedHistory": true })),
-                                )
+                            // ensure_resumed：缓存命中 / 并发 in-flight 去重，避免对非幂等的
+                            // thread/resume 重复调用（对齐 TS resumeRegistry.ensureResumed）。
+                            let codex_c = codex.clone();
+                            match resume_registry
+                                .ensure_resumed(tid, move |t| async move {
+                                    codex_c
+                                        .request(
+                                            "thread/resume",
+                                            Some(json!({ "threadId": t, "persistExtendedHistory": true })),
+                                        )
+                                        .await
+                                        .map_err(|e| AppError::internal(format!("codex: {e}")))
+                                })
                                 .await
                             {
-                                Ok(r) => {
-                                    resume_registry.mark_resumed(tid, r);
-                                    resumed.push(tid.clone());
-                                }
+                                Ok(_) => resumed.push(tid.clone()),
                                 Err(e) => {
                                     tracing::warn!(thread = %tid, "auto-resume failed: {e}");
                                     failed.push(tid.clone());

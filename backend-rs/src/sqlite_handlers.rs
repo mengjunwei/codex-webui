@@ -8,8 +8,8 @@ use crate::state::AppState;
 use axum::{
     extract::{Path, Query, State},
     http::StatusCode,
-    Json,
 };
+use crate::error::Json;
 use rusqlite::OptionalExtension;
 use serde::{Deserialize, Serialize};
 

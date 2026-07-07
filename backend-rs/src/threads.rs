@@ -14,8 +14,8 @@ use crate::state::AppState;
 use axum::{
     extract::{Path, Query, State},
     http::StatusCode,
-    Json,
 };
+use crate::error::Json;
 use serde::Deserialize;
 use serde_json::{json, Value};
 
@@ -210,20 +210,25 @@ pub async fn resume_thread(
     State(state): State<AppState>,
     Path(thread_id): Path<String>,
 ) -> Result<(StatusCode, Json<Value>), AppError> {
-    // H6：若本 generation 已 resume 过该线程，命中缓存（不再重发非幂等的 thread/resume，
-    // 对齐 TS resumeRegistry.ensureResumed）。但为避免返回陈旧的 turns，命中时走
-    // readAsResume：重新 thread/read 取最新 thread 合并进缓存（对齐 TS readAsResume）。
-    if let Some(cached) = state.resume_registry.get_cached(&thread_id) {
-        let merged = read_as_resume(&state, &thread_id, cached).await;
-        return Ok((StatusCode::CREATED, Json(merged)));
+    // ensure_resumed：缓存命中 / 并发 in-flight 去重（对齐 TS ensureResumed），
+    // 避免并发或重复请求对非幂等的 thread/resume 多次调用。
+    let codex = state.codex.clone();
+    let (result, from_cache) = state
+        .resume_registry
+        .ensure_resumed(&thread_id, move |tid| async move {
+            codex
+                .request("thread/resume", Some(json!({ "threadId": tid, "persistExtendedHistory": true })))
+                .await
+                .map_err(map_rpc)
+        })
+        .await?;
+    // 缓存命中（已 resume 过）→ readAsResume 重读最新 thread；新 RPC 则直接返回。
+    if from_cache {
+        let merged = read_as_resume(&state, &thread_id, result).await;
+        Ok((StatusCode::CREATED, Json(merged)))
+    } else {
+        Ok((StatusCode::CREATED, Json(result)))
     }
-    let result = state
-        .codex
-        .request("thread/resume", Some(json!({ "threadId": thread_id, "persistExtendedHistory": true })))
-        .await
-        .map_err(map_rpc)?;
-    state.resume_registry.mark_resumed(&thread_id, result.clone());
-    Ok((StatusCode::CREATED, Json(result)))
 }
 
 /// readAsResume（对齐 TS `readAsResume`）：缓存命中时，重新 `thread/read` 取最新
@@ -477,6 +482,9 @@ const REASONING_EFFORT_VALUES: &[&str] = &["none", "minimal", "low", "medium", "
 pub struct ThreadResumeRegistry {
     generation: std::sync::Mutex<u64>,
     entries: std::sync::Mutex<std::collections::HashMap<String, serde_json::Value>>,
+    /// per-key in-flight 锁槽：并发 resume 串行化（对齐 TS resumeRegistry.inFlight）。
+    /// HashMap 用 std Mutex（取槽短暂），每个槽是 tokio Mutex（跨 RPC await 持有）。
+    inflight: std::sync::Mutex<std::collections::HashMap<String, std::sync::Arc<tokio::sync::Mutex<()>>>>,
 }
 
 impl ThreadResumeRegistry {
@@ -511,7 +519,45 @@ impl ThreadResumeRegistry {
         if *g != new_generation {
             *g = new_generation;
             self.entries.lock().unwrap().clear();
+            // codex 重启：清理旧 generation 的 in-flight 锁槽。
+            self.inflight.lock().unwrap().clear();
         }
+    }
+
+    /// ensure_resumed：缓存命中直接返回；否则在 per-key 锁内串行化并发 resume，
+    /// 锁内重检缓存（前一个 in-flight 可能已完成），仍未命中才执行 RPC 并写缓存。
+    /// 返回 `(响应, 是否来自缓存)`。对齐 TS `resumeRegistry` 的 inFlight + resumed 去重，
+    /// 避免对非幂等的 `thread/resume` 并发重复调用。
+    pub async fn ensure_resumed<F, Fut>(
+        &self,
+        thread_id: &str,
+        f: F,
+    ) -> Result<(serde_json::Value, bool), AppError>
+    where
+        F: FnOnce(String) -> Fut,
+        Fut: std::future::Future<Output = Result<serde_json::Value, AppError>>,
+    {
+        // 快路径：缓存命中
+        if let Some(v) = self.get_cached(thread_id) {
+            return Ok((v, true));
+        }
+        // per-key 锁槽（std Mutex 短暂持有，仅取/建 tokio Mutex）
+        let key = thread_id.to_string();
+        let lock = {
+            let mut guards = self.inflight.lock().unwrap();
+            guards
+                .entry(key.clone())
+                .or_insert_with(|| std::sync::Arc::new(tokio::sync::Mutex::new(())))
+                .clone()
+        };
+        let _guard = lock.lock().await;
+        // 锁内重检：前一个 in-flight 可能已完成并写入缓存
+        if let Some(v) = self.get_cached(thread_id) {
+            return Ok((v, true));
+        }
+        let result = f(key.clone()).await?;
+        self.mark_resumed(&key, result.clone());
+        Ok((result, false))
     }
 }
 

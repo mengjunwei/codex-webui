@@ -10,11 +10,13 @@
 //! 500→http.internal_error；其他 ≥500→http.internal_error；其他→http.request_failed
 //! （附带 `params: { status }`）。
 
+use async_trait::async_trait;
 use axum::{
     http::StatusCode,
     response::{IntoResponse, Response},
-    Json,
 };
+use serde::de::DeserializeOwned;
+use serde::Serialize;
 use serde_json::{json, Value};
 use std::collections::BTreeMap;
 
@@ -450,7 +452,7 @@ impl IntoResponse for AppError {
             body["params"] = json!(p);
         }
 
-        (status, Json(body)).into_response()
+        (status, axum::Json(body)).into_response()
     }
 }
 
@@ -473,5 +475,42 @@ impl std::fmt::Display for AppError {
             Self::Status { status } => write!(f, "HTTP {}", status),
             Self::Internal(msg) => write!(f, "internal: {msg}"),
         }
+    }
+}
+
+// ── JSON 提取器（rejection → AppError 统一）──────────────────────────────────
+
+/// JSON 请求提取器 + 响应封装。行为等价于 `axum::Json`，但把反序列化失败 /
+/// Content-Type 缺失的 rejection **统一映射为 `AppError(400, validation.field_invalid)`**，
+/// 对齐 TS `ValidationPipe`（默认 axum 会返回 415/422 且响应体无 `errorCode`，
+/// 前端 i18n 无法识别）。handler 改用 `crate::error::Json` 即自动生效。
+pub struct Json<T>(pub T);
+
+#[async_trait]
+impl<T, S> axum::extract::FromRequest<S> for Json<T>
+where
+    T: DeserializeOwned,
+    S: Send + Sync,
+{
+    type Rejection = AppError;
+    async fn from_request(
+        req: axum::extract::Request,
+        state: &S,
+    ) -> Result<Self, Self::Rejection> {
+        match axum::Json::<T>::from_request(req, state).await {
+            Ok(axum::Json(value)) => Ok(Json(value)),
+            Err(_) => Err(AppError::business(
+                ErrorCode::ValidationFieldInvalid,
+                StatusCode::BAD_REQUEST,
+                "Invalid JSON request body".into(),
+                None,
+            )),
+        }
+    }
+}
+
+impl<T: Serialize> IntoResponse for Json<T> {
+    fn into_response(self) -> Response {
+        axum::Json(self.0).into_response()
     }
 }

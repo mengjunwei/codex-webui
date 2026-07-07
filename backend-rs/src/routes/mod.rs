@@ -10,8 +10,9 @@ use axum::{
     middleware::{from_fn, Next},
     response::Response,
     routing::{get, post},
-    Json, Router,
+    Router,
 };
+use crate::error::Json;
 use tower_http::services::{ServeDir, ServeFile};
 use utoipa::OpenApi;
 
