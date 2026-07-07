@@ -12,8 +12,10 @@ use serde::Serialize;
 use serde_json::{json, Value};
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
-use wezterm_term::{Terminal, TerminalConfiguration, TerminalSize};
-use wezterm_term::color::ColorPalette;
+use wezterm_term::color::{ColorAttribute, ColorPalette};
+use wezterm_term::{
+    CellAttributes, Intensity, Terminal, TerminalConfiguration, TerminalSize, Underline,
+};
 use tokio::sync::broadcast;
 
 // ── 公共类型（与 terminal.types.ts 保持对齐） ─────────────────────────────
@@ -553,7 +555,7 @@ impl TerminalService {
         let s = sessions.get(terminal_id).ok_or_else(|| not_found("terminal not found"))?;
         if s.context_key != context_key { return Err(context_mismatch()); }
         if !s.attached.contains(socket_id) { return Err(not_attached()); }
-        let content = serialize_terminal_screen(&s.vt_terminal.lock().unwrap());
+        let content = serialize_terminal_plain(&s.vt_terminal.lock().unwrap());
         let safe_title = s.title.chars().map(|c| if c.is_alphanumeric() || "._-".contains(c) { c } else { '-' }).collect::<String>();
         let ts = chrono::Utc::now().format("%Y-%m-%dT%H-%M-%S").to_string();
         Ok((format!("{safe_title}-{ts}.txt"), content))
@@ -584,10 +586,123 @@ fn normalize_context_key(raw: &str) -> Result<String, AppError> {
     }
 }
 
-/// 将 wezterm 终端的屏幕（回滚 + 可见行）序列化为单个字符串。
-/// 使用 scrollback_rows() + lines_in_phys_range()（原始 wezterm-term 中
-/// 非测试的公开 API）。
+/// 单个 cell 的渲染属性快照，用于检测相邻 cell 间属性变化并输出增量 SGR。
+/// ColorAttribute / Intensity / Underline 均为 Copy，可直接比较与复制。
+#[derive(Clone, Copy, PartialEq, Eq)]
+struct AttrState {
+    foreground: ColorAttribute,
+    background: ColorAttribute,
+    intensity: Intensity,
+    underline: Underline,
+    italic: bool,
+    reverse: bool,
+}
+
+impl AttrState {
+    /// 默认属性状态（对应 SGR RESET `\x1b[0m` 之后的状态）。
+    fn default_state() -> Self {
+        Self {
+            foreground: ColorAttribute::Default,
+            background: ColorAttribute::Default,
+            intensity: Intensity::Normal,
+            underline: Underline::None,
+            italic: false,
+            reverse: false,
+        }
+    }
+
+    /// 从 CellAttributes 提取当前 cell 的属性快照。
+    fn from_attrs(attrs: &CellAttributes) -> Self {
+        Self {
+            foreground: attrs.foreground(),
+            background: attrs.background(),
+            intensity: attrs.intensity(),
+            underline: attrs.underline(),
+            italic: attrs.italic(),
+            reverse: attrs.reverse(),
+        }
+    }
+
+    /// 输出从默认状态到当前状态所需的完整 SGR 序列。
+    /// 采用“基于默认的完整 SGR”而非精细 diff：实现简单，且 xterm.js 在每行
+    /// RESET 之后能正确叠加这些设置序列。
+    fn sgr_from_default(&self) -> String {
+        let mut s = String::new();
+        // 前景色
+        match self.foreground {
+            ColorAttribute::Default => s.push_str("\x1b[39m"),
+            ColorAttribute::PaletteIndex(n) => {
+                s.push_str(&format!("\x1b[38;5;{n}m"));
+            }
+            ColorAttribute::TrueColorWithDefaultFallback(c)
+            | ColorAttribute::TrueColorWithPaletteFallback(c, _) => {
+                // TrueColor 取 r/g/b，忽略 fallback 调色板索引。
+                let (r, g, b, _) = c.as_rgba_u8();
+                s.push_str(&format!("\x1b[38;2;{r};{g};{b}m"));
+            }
+        }
+        // 背景色
+        match self.background {
+            ColorAttribute::Default => s.push_str("\x1b[49m"),
+            ColorAttribute::PaletteIndex(n) => {
+                s.push_str(&format!("\x1b[48;5;{n}m"));
+            }
+            ColorAttribute::TrueColorWithDefaultFallback(c)
+            | ColorAttribute::TrueColorWithPaletteFallback(c, _) => {
+                let (r, g, b, _) = c.as_rgba_u8();
+                s.push_str(&format!("\x1b[48;2;{r};{g};{b}m"));
+            }
+        }
+        // 粗细 / 亮度
+        match self.intensity {
+            Intensity::Bold => s.push_str("\x1b[1m"),
+            Intensity::Half => s.push_str("\x1b[2m"),
+            Intensity::Normal => s.push_str("\x1b[22m"),
+        }
+        // 斜体
+        s.push_str(if self.italic { "\x1b[3m" } else { "\x1b[23m" });
+        // 下划线：Double 用 21，其它非 None（Curly/Dotted/Dashed）统一按单下划线 4 输出
+        match self.underline {
+            Underline::None => s.push_str("\x1b[24m"),
+            Underline::Double => s.push_str("\x1b[21m"),
+            _ => s.push_str("\x1b[4m"),
+        }
+        // 反显
+        s.push_str(if self.reverse { "\x1b[7m" } else { "\x1b[27m" });
+        s
+    }
+}
+
+/// 将 wezterm 终端的屏幕（回滚 + 可见行）序列化为带 SGR 颜色与样式的 VT 序列字符串。
+/// 重连时 xterm.js 通过 `term.write(state)` 即可恢复彩色画面，而非丢失颜色的纯文本。
+/// 使用 scrollback_rows() + lines_in_phys_range()（原始 wezterm-term 中非测试的公开 API）
+/// 配合 Line::visible_cells() 逐 cell 遍历，按属性变化输出增量 SGR。
 fn serialize_terminal_screen(term: &Terminal) -> String {
+    let screen = term.screen();
+    let total = screen.scrollback_rows();
+    let lines = screen.lines_in_phys_range(0..total);
+    let mut out = String::new();
+    for line in &lines {
+        // 每行开头 RESET，确保后续 SGR 基于默认状态叠加。
+        out.push_str("\x1b[0m");
+        let mut prev = AttrState::default_state();
+        for cell in line.visible_cells() {
+            let cur = AttrState::from_attrs(cell.attrs());
+            // 仅在属性变化时输出该 cell 的完整 SGR，减少冗余序列。
+            if cur != prev {
+                out.push_str(&cur.sgr_from_default());
+                prev = cur;
+            }
+            out.push_str(cell.str());
+        }
+        // 行尾 RESET + CRLF：\r\n 确保光标回到行首再换行，避免 xterm.js 画面错位。
+        out.push_str("\x1b[0m\r\n");
+    }
+    out
+}
+
+/// VT 屏幕的纯文本快照（不含 SGR 转义），用于下载 / 全部复制为 .txt。
+fn serialize_terminal_plain(term: &Terminal) -> String {
     let screen = term.screen();
     let total = screen.scrollback_rows();
     let lines = screen.lines_in_phys_range(0..total);

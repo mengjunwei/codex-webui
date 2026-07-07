@@ -143,8 +143,8 @@ account · apps · models · mcp-servers · skills · plugins · token-usage · 
 
 ### Phase 5 — 终端
 - `portable-pty` 会话、多 tab、按 context 分组（`global` / `thread:<id>`）、多 socket 附着。
-- **重连策略**：使用 `wezterm-term` VT 模型——PTY 输出实时 `advance_bytes` 喂入 VT；重连 / 下载时序列化 VT 屏幕（回滚 + 可见行）为**纯文本快照**回放。scrollback 容量取自 settings。
-- terminal gateway：复刻 WS 事件集（`terminal.reconnect` 返回 `{terminal, state}`、attach / input / resize / 输出流等）。`terminal.reconnect.state` 为 VT 屏幕纯文本快照字符串（类型仍为 string，前端 `term.write` 回放）。
+- **重连策略**：使用 `wezterm-term` VT 模型——PTY 输出实时 `advance_bytes` 喂入 VT；重连 / 下载时序列化 VT 屏幕（回滚 + 可见行），遍历 cell `attrs` 输出 SGR 转义序列（颜色 / bold / italic / underline / reverse），前端 `term.write` 可恢复彩色 + 样式画面。scrollback 容量取自 settings。
+- terminal gateway：复刻 WS 事件集（`terminal.reconnect` 返回 `{terminal, state}`、attach / input / resize / 输出流等）。`terminal.reconnect.state` 为带 SGR 的 VT 序列化字符串（类型仍为 string，前端 `term.write` 回放恢复彩色；不还原光标位置 / alternate-screen）。
 
 ### Phase 6 — 静态服务 / OpenAPI / 校验 / 切换
 - 静态前端：用 **`rust-embed` / `include_dir`** 把构建产物（`web/` → `public/`）嵌入二进制（目标 B 单二进制），tower-http ServeDir 在嵌入资源上提供，**排除 `/api`**，`fallthrough` 对齐。
@@ -176,10 +176,11 @@ account · apps · models · mcp-servers · skills · plugins · token-usage · 
 - codex 通知路由：从 notification.params 取 `threadId`，有则 `to(room)`，无则广播——与 TS `handleCodexNotification` 完全一致。
 - 审批（服务端请求）：首个响应的客户端胜出，结果回传 app-server；REST 响应走持久化 CAS 语义（pending-approvals）。
 
-### 6.5 终端：wezterm-term VT 重连
-- **决策**：终端功能完整保留（多 tab、PTY 流、共享会话）。重连采用 `wezterm-term` VT 模型：PTY 输出实时驱动 VT，重连 / 下载时序列化 VT 屏幕（回滚 + 可见行）为**纯文本快照**回放。
-- **取舍（相较 TS xterm `SerializeAddon`）**：Rust 版序列化输出为纯文本（`line.as_str() + trim_end`），**不含 SGR 颜色 / 光标位置 / alternate-screen 等控制序列**——即重连回放为黑白纯文本，颜色与全屏 TUI 状态不保真。以 wezterm-term 依赖 + 每输出 VT 解析算力，换取结构化的屏幕 / scrollback 模型与 resize 同步。
-- **依赖**：`wezterm-term`（git 依赖）。若后续要降低构建复杂度或提升颜色保真，可改为 ring buffer 回放原始字节（保留 SGR）或完整 VT 序列化。
+### 6.5 终端：wezterm-term VT 重连（带 SGR 颜色序列化）
+- **决策**：终端功能完整保留（多 tab、PTY 流、共享会话）。重连采用 `wezterm-term` VT 模型：PTY 输出实时驱动 VT，重连 / 下载时序列化 VT 屏幕（回滚 + 可见行）。
+- **保真度**：序列化遍历每个 cell 的 `attrs`（foreground / background / intensity / underline / italic / reverse），在样式变化处输出 SGR 转义序列（truecolor `\x1b[38;2;r;g;b m` / 256 色 `38;5;n` / bold `1` / italic `3` / underline `4` / reverse `7` 等）。重连时 xterm.js `term.write(state)` 可恢复**彩色 + 样式**的画面（对齐 TS xterm `SerializeAddon` 的可观测行为）。
+- **不还原**：光标精确位置、alternate-screen buffer 切换、blink 等次要状态——重连后光标位于末尾；全屏 TUI（vim / htop）的 alternate-screen 仍需用户触发重绘（非目标，用户已知悉）。
+- **依赖**：`wezterm-term`（VT 模型）+ `portable-pty`（PTY / 进程管理，不同职责，不可由 wezterm-term 替代）。
 
 ### 6.6 进程生命周期与 generation
 - 完整复刻 `generation` 机制：app-server 每次重启 generation+1，generation-scoped 缓存（如 pending-approvals 的 `(generation, requestId)` 主键）必须正确。
