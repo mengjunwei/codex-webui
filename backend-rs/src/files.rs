@@ -296,9 +296,12 @@ pub async fn read_file(
             None,
         ));
     }
-    let content = tokio::fs::read_to_string(&resolved.resolved)
+    // M6 FIX: read as bytes then lossy-convert (TS fs.readFile utf-8 replaces
+    // invalid sequences with U+FFFD; Rust read_to_string would 500 on non-UTF8).
+    let raw_bytes = tokio::fs::read(&resolved.resolved)
         .await
         .map_err(|e| AppError::internal(format!("read: {e}")))?;
+    let content = String::from_utf8_lossy(&raw_bytes).to_string();
     Ok(Json(json!({
         "path": resolved.original,
         "content": content,
@@ -566,8 +569,8 @@ pub async fn write_file(
             return Err(forbidden("target resolves outside workspace (symlink escape?)"));
         }
     }
-    if let Some(_expected) = body.expected_mtime {
-        // Optional optimistic-concurrency check (parity placeholder).
+    if let Some(expected) = body.expected_mtime {
+        // M3 FIX: ±1000ms tolerance (TS Math.abs(diff) > 1000) + 409 Conflict.
         if let Ok(meta) = tokio::fs::metadata(&p).await {
             let actual = meta
                 .modified()
@@ -575,8 +578,8 @@ pub async fn write_file(
                 .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
                 .map(|d| d.as_millis() as i64)
                 .unwrap_or(0);
-            if actual != _expected {
-                return Err(bad_request(
+            if (actual - expected).abs() > 1000 {
+                return Err(conflict(
                     ErrorCode::FilesModifiedSinceRead,
                     "file has been modified since read (expectedMtime mismatch)",
                 ));
