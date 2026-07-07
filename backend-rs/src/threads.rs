@@ -228,7 +228,7 @@ pub async fn start_turn(
     Path(thread_id): Path<String>,
     Json(body): Json<StartTurnBody>,
 ) -> Result<Json<Value>, AppError> {
-    let input = validate_turn_input(&body.input)?;
+    let input = validate_turn_input(&body.input, &state).await?;
     let mut params = serde_json::Map::new();
     params.insert("threadId".into(), Value::String(thread_id));
     params.insert("input".into(), input);
@@ -269,7 +269,7 @@ pub async fn steer_turn(
     Path((thread_id, turn_id)): Path<(String, String)>,
     Json(body): Json<StartTurnBody>,
 ) -> Result<Json<Value>, AppError> {
-    let input = validate_turn_input(&body.input)?;
+    let input = validate_turn_input(&body.input, &state).await?;
     let params = json!({
         "threadId": thread_id,
         "expectedTurnId": turn_id,
@@ -412,7 +412,9 @@ const REASONING_EFFORT_VALUES: &[&str] = &["none", "minimal", "low", "medium", "
 /// 注意:`mention`/`localImage` 路径在未做工作区根路径解析的情况下直接透传 —
 /// 安全边界(FilesService.resolveSafePath /
 /// ChatUploadService.resolveStoredUploadPath)暂缓,直到这些服务落地。
-fn validate_turn_input(input: &Value) -> Result<Value, AppError> {
+/// H5 修复：校验 discriminated UserInput 数组。返回已校验的数组。
+/// H4 修复：mention / localImage 路径现在通过 `files::resolve_safe_path` 校验。
+async fn validate_turn_input(input: &Value, state: &AppState) -> Result<Value, AppError> {
     let arr = input.as_array().filter(|a| !a.is_empty()).ok_or_else(|| {
         bad_request(
             ErrorCode::ThreadsInvalidInput,
@@ -421,12 +423,12 @@ fn validate_turn_input(input: &Value) -> Result<Value, AppError> {
     })?;
     let mut out = Vec::with_capacity(arr.len());
     for (i, item) in arr.iter().enumerate() {
-        out.push(validate_input_item(item, i)?);
+        out.push(validate_input_item(item, i, state).await?);
     }
     Ok(Value::Array(out))
 }
 
-fn validate_input_item(item: &Value, i: usize) -> Result<Value, AppError> {
+async fn validate_input_item(item: &Value, i: usize, state: &AppState) -> Result<Value, AppError> {
     let obj = item.as_object().ok_or_else(|| {
         bad_request_params(
             ErrorCode::ThreadsInvalidInputItem,
@@ -441,7 +443,37 @@ fn validate_input_item(item: &Value, i: usize) -> Result<Value, AppError> {
     match ty {
         "text" => {
             let text = req_string(obj, "text", i)?;
-            Ok(json!({ "type": "text", "text": text }))
+            // H5：校验 text_elements（byteRange + placeholder 结构校验）。
+            if let Some(elements) = obj.get("text_elements") {
+                if let Some(arr) = elements.as_array() {
+                    let text_byte_len = text.as_bytes().len();
+                    for (ei, elem) in arr.iter().enumerate() {
+                        let elem_obj = elem.as_object().ok_or_else(|| {
+                            bad_request_params(
+                                ErrorCode::ThreadsInvalidInputField,
+                                format!("input[{i}].text_elements[{ei}] must be an object"),
+                                i,
+                            )
+                        })?;
+                        if let Some(br) = elem_obj.get("byteRange") {
+                            let start = br.get("start").and_then(Value::as_i64);
+                            let end = br.get("end").and_then(Value::as_i64);
+                            match (start, end) {
+                                (Some(s), Some(e))
+                                    if s >= 0 && e >= s && (e as usize) <= text_byte_len => {}
+                                _ => {
+                                    return Err(bad_request_params(
+                                        ErrorCode::ThreadsInvalidInputField,
+                                        format!("input[{i}].text_elements[{ei}].byteRange is invalid"),
+                                        i,
+                                    ));
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            Ok(json!({ "type": "text", "text": text, "text_elements": obj.get("text_elements").cloned().unwrap_or(Value::Array(vec![])) }))
         }
         "image" => {
             let url = req_string_trimmed(obj, "url", i)?;
@@ -456,7 +488,21 @@ fn validate_input_item(item: &Value, i: usize) -> Result<Value, AppError> {
         }
         "localImage" => {
             let path = req_string_trimmed(obj, "path", i)?;
-            // resolveStoredUploadPath 暂缓(ChatUploadService,Phase 4)。
+            // H4 修复：验证路径存在且在工作区内（对齐 ChatUploadService.resolveStoredUploadPath）。
+            crate::files::resolve_safe_path(state, &path)
+                .await
+                .map_err(|e| {
+                    AppError::business(
+                        ErrorCode::ChatImageOutsideRoot,
+                        StatusCode::BAD_REQUEST,
+                        format!("localImage path validation failed: {e}"),
+                        Some({
+                            let mut p = std::collections::BTreeMap::new();
+                            p.insert("index".to_string(), serde_json::Value::Number(i.into()));
+                            p
+                        }),
+                    )
+                })?;
             Ok(json!({ "type": "localImage", "path": path }))
         }
         "skill" => {
@@ -467,7 +513,22 @@ fn validate_input_item(item: &Value, i: usize) -> Result<Value, AppError> {
         "mention" => {
             let name = req_string_trimmed(obj, "name", i)?;
             let path = req_string_trimmed(obj, "path", i)?;
-            // resolveSafePath 暂缓(FilesService,Phase 3c)。
+            // H4 修复：验证 mention 路径存在且在工作区内（对齐
+            // FilesService.resolveSafePath，受 workspace-root 安全约束保护）。
+            crate::files::resolve_safe_path(state, &path)
+                .await
+                .map_err(|e| {
+                    AppError::business(
+                        ErrorCode::FilesPathOutsideWorkspace,
+                        StatusCode::BAD_REQUEST,
+                        format!("mention path validation failed: {e}"),
+                        Some({
+                            let mut p = std::collections::BTreeMap::new();
+                            p.insert("index".to_string(), serde_json::Value::Number(i.into()));
+                            p
+                        }),
+                    )
+                })?;
             Ok(json!({ "type": "mention", "name": name, "path": path }))
         }
         _ => Err(bad_request_params(
