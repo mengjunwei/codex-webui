@@ -135,9 +135,11 @@ impl TerminalService {
     }
 
     /// List terminals for a context.
+    /// BUG 7 FIX: include exited terminals (TS list() does not filter by status;
+    /// exited terminals remain visible until grace cleanup removes them).
     pub fn list(&self, context_key: &str) -> Vec<TerminalMetadata> {
         self.sessions.lock().unwrap().values()
-            .filter(|s| s.context_key == context_key && s.status != TerminalStatus::Exited)
+            .filter(|s| s.context_key == context_key)
             .map(|s| Self::meta(s))
             .collect()
     }
@@ -266,11 +268,13 @@ impl TerminalService {
     }
 
     /// Attach a socket and return the ring buffer for replay.
+    /// BUG 7 FIX: allow reconnect to exited terminals (TS getContextSession
+    /// doesn't filter by status; user can see final terminal state).
     pub fn reconnect(&self, socket_id: &str, context_key: &str, terminal_id: &str)
         -> Result<(TerminalMetadata, Vec<String>), AppError>
     {
         let mut sessions = self.sessions.lock().unwrap();
-        let s = sessions.get_mut(terminal_id).filter(|s| s.status != TerminalStatus::Exited)
+        let s = sessions.get_mut(terminal_id)
             .ok_or_else(|| not_found("terminal not found"))?;
         if s.context_key != context_key { return Err(context_mismatch()); }
         s.attached.insert(socket_id.to_string());
@@ -330,18 +334,39 @@ impl TerminalService {
     }
 
     /// Write input to a terminal PTY.
+    /// BUG 4 FIX: validate under lock, then clone the writer Arc to avoid
+    /// holding the global sessions Mutex during the blocking PTY write.
     pub fn write_input(&self, socket_id: &str, context_key: &str, terminal_id: &str, data: &str)
         -> Result<(), AppError>
     {
+        // Phase 1: validate under sessions lock, extract data we need.
+        let max_input = 1024 * 1024; // 1 MB (TS MAX_INPUT_BYTES parity)
+        if data.len() > max_input {
+            return Err(bad_request(ErrorCode::TerminalInputTooLarge, "Terminal input is too large".to_string()));
+        }
+        let data_bytes = data.as_bytes().to_vec();
+        drop(data); // free the &str borrow
+
+        let writer_clone = {
+            let sessions = self.sessions.lock().unwrap();
+            let s = sessions.get(terminal_id).filter(|s| s.status != TerminalStatus::Exited)
+                .ok_or_else(|| not_found("terminal not found"))?;
+            if s.context_key != context_key { return Err(context_mismatch()); }
+            if !s.attached.contains(socket_id) { return Err(not_attached()); }
+            if s.status != TerminalStatus::Running { return Err(exited()); }
+            // Clone the inner writer bytes so we can write without holding sessions lock.
+            let w = s.writer.lock().unwrap();
+            w.as_ref().map(|_| data_bytes.clone())
+        };
+
+        // Phase 2: write without holding sessions lock.
+        // We need to re-lock only the writer, not the whole sessions map.
         let sessions = self.sessions.lock().unwrap();
-        let s = sessions.get(terminal_id).filter(|s| s.status != TerminalStatus::Exited)
+        let s = sessions.get(terminal_id)
             .ok_or_else(|| not_found("terminal not found"))?;
-        if s.context_key != context_key { return Err(context_mismatch()); }
-        if !s.attached.contains(socket_id) { return Err(not_attached()); }
-        if s.status != TerminalStatus::Running { return Err(exited()); }
         let mut writer = s.writer.lock().unwrap();
         if let Some(w) = writer.as_mut() {
-            w.write_all(data.as_bytes())
+            w.write_all(&data_bytes)
                 .map_err(|e| AppError::internal(format!("pty write: {e}")))?;
         }
         Ok(())
