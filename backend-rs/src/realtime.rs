@@ -211,8 +211,9 @@ fn on_ack(_: SocketRef, ack: AckSender) {
     let _ = ack.send(&json!({ "ok": true }));
 }
 
-/// 旧版 WS 审批响应路径。权威路径为 REST 端点
-/// (CAS + 转发);此处保留用于向后兼容(详细接线暂缓)。
+/// 旧版 WS 审批响应路径(仅记录日志,不再转发)。权威路径为 REST 端点
+/// POST /pending-approvals/:requestId/respond(CAS + 转发,见
+/// sqlite_handlers::respond_to_request);此处保留 socket 事件仅为向后兼容。
 fn on_server_response(s: SocketRef, SocketData(data): SocketData<Value>) {
     tracing::info!(
         socket = %s.id,
@@ -227,10 +228,14 @@ fn on_term_config(_s: SocketRef, State(state): State<RealtimeState>, ack: AckSen
     let _ = ack.send(&json!({ "ok": true, "config": state.terminal.get_config_json() }));
 }
 
-fn on_term_list(_s: SocketRef, State(state): State<RealtimeState>, SocketData(data): SocketData<Value>, ack: AckSender) {
+fn on_term_list(s: SocketRef, State(state): State<RealtimeState>, SocketData(data): SocketData<Value>, ack: AckSender) {
     let ctx = data.get("contextKey").and_then(Value::as_str).unwrap_or("global");
-    let terminals = state.terminal.list(ctx);
-    let _ = ack.send(&json!({ "ok": true, "terminals": terminals, "config": state.terminal.get_config_json() }));
+    match state.terminal.list(ctx) {
+        Ok(terminals) => {
+            let _ = ack.send(&json!({ "ok": true, "terminals": terminals, "config": state.terminal.get_config_json() }));
+        }
+        Err(e) => ack_term_err(&s, ack, e),
+    }
 }
 
 fn on_term_open(s: SocketRef, State(state): State<RealtimeState>, SocketData(data): SocketData<Value>, ack: AckSender) {
@@ -341,7 +346,7 @@ fn strip_bearer(s: &str) -> &str {
 fn ack_term_err(s: &SocketRef, ack: AckSender, e: AppError) {
     let msg = e.to_string();
     let _ = ack.send(&json!({ "ok": false, "error": msg }));
-    let _ = s.emit("terminal.error", &json!({ "message": msg }));
+    let _ = s.emit("terminal.error", &json!({ "error": msg }));
 }
 
 // ── emit 转发任务 ────────────────────────────────────────────────────
@@ -468,6 +473,13 @@ fn spawn_lifecycle_emit(
                         let mut resumed: Vec<String> = Vec::new();
                         let mut failed: Vec<String> = Vec::new();
                         for tid in &threads {
+                            // 去重：若该线程在本 generation 已被 resume 过（REST 端 resume_thread
+                            // 已缓存结果），跳过，避免对非幂等的 thread/resume 重复调用
+                            // （对齐 TS AutoResumeService.resumeOnce → ensureResumed 的 resumed 集合）。
+                            if resume_registry.get_cached(tid).is_some() {
+                                resumed.push(tid.clone());
+                                continue;
+                            }
                             match codex
                                 .request(
                                     "thread/resume",

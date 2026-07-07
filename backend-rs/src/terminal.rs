@@ -182,13 +182,13 @@ impl TerminalService {
     }
 
     /// 列出某个 context 下的终端。
-    pub fn list(&self, context_key: &str) -> Vec<TerminalMetadata> {
-        // 规整 contextKey(trim)，使 "global " 等末尾空白与存储值匹配。
-        let context_key = context_key.trim();
-        self.sessions.lock().unwrap().values()
+    pub fn list(&self, context_key: &str) -> Result<Vec<TerminalMetadata>, AppError> {
+        // 对齐 TS normalizeContextKey：非法 contextKey 抛 terminal.invalid_context。
+        let context_key = normalize_context_key(context_key)?;
+        Ok(self.sessions.lock().unwrap().values()
             .filter(|s| s.context_key == context_key)
             .map(|s| Self::meta(s))
-            .collect()
+            .collect())
     }
 
     /// 打开一个新的 PTY 会话并挂载 socket。
@@ -496,10 +496,13 @@ impl TerminalService {
         if s.context_key != context_key { return Err(context_mismatch()); }
         if !s.attached.contains(socket_id) { return Err(not_attached()); }
         let trimmed = title.trim();
-        if trimmed.is_empty() {
-            return Err(bad_request(ErrorCode::TerminalInvalidContext, "title must not be empty".to_string()));
-        }
-        s.title = trimmed.to_string();
+        // 对齐 TS normalizeTitle：空标题回落到 shell 名；非空则截断到 80 字符。
+        const MAX_TITLE_LENGTH: usize = 80;
+        s.title = if trimmed.is_empty() {
+            s.shell.clone()
+        } else {
+            trimmed.chars().take(MAX_TITLE_LENGTH).collect()
+        };
         self.emit_metadata(s);
         Ok(Self::meta(s))
     }
@@ -512,6 +515,9 @@ impl TerminalService {
         let mut sessions = self.sessions.lock().unwrap();
         let s = sessions.get_mut(terminal_id).ok_or_else(|| not_found("terminal not found"))?;
         if s.context_key != context_key { return Err(context_mismatch()); }
+        // 在清理 attached 之前收集，使 closed 事件能通知所有原共享 socket
+        // （对齐 TS cleanupSession 之前 Array.from(attachedSocketIds)）。
+        let socket_ids: Vec<String> = s.attached.iter().cloned().collect();
         s.status = TerminalStatus::Exited;
         if let Ok(mut child) = s.child.lock() {
             if let Some(ref mut c) = *child { let _ = c.kill(); }
@@ -523,7 +529,7 @@ impl TerminalService {
         sessions.remove(terminal_id);
         drop(sessions);
         let _ = self.closed_tx.send(TerminalClosedEvent {
-            terminal_id: terminal_id.into(), context_key: context_key.into(), socket_ids: vec![],
+            terminal_id: terminal_id.into(), context_key: context_key.into(), socket_ids,
         });
         Ok(())
     }
@@ -611,10 +617,19 @@ fn find_utf8_boundary(bytes: &[u8]) -> usize {
 }
 
 fn resolve_shell() -> String {
-    if cfg!(windows) {
-        std::env::var("COMSPEC").unwrap_or_else(|_| "powershell".into())
+    // 对齐 TS resolveShell：优先 SHELL 环境变量，否则按平台回落
+    // （Windows: powershell.exe；macOS: /bin/zsh；Linux: /bin/bash）。
+    if let Ok(shell) = std::env::var("SHELL") {
+        if !shell.is_empty() {
+            return shell;
+        }
+    }
+    if cfg!(target_os = "windows") {
+        "powershell.exe".to_string()
+    } else if cfg!(target_os = "macos") {
+        "/bin/zsh".to_string()
     } else {
-        std::env::var("SHELL").unwrap_or_else(|_| "/bin/bash".into())
+        "/bin/bash".to_string()
     }
 }
 

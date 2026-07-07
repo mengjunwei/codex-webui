@@ -4,8 +4,9 @@
 //!
 //! 简单代理:list / loaded-list / read / resume / archive / unarchive /
 //! compact / fork / rollback / name-set / interrupt / start-thread。
-//! start-turn / steer:仅做结构化输入校验(`mention`/`localImage` 类型的工作区
-//! 路径解析安全边界暂缓,直到 FilesService/ChatUploadService 落地 — Phase 3c/4)。
+//! start-turn / steer:结构化输入校验 + 工作区路径安全边界(`mention`/`localImage`/
+//! 文本内联 @mention 路径经 `files::resolve_safe_path` 校验,对齐
+//! FilesService.resolveSafePath / ChatUploadService.resolveStoredUploadPath)。
 
 use crate::codex::RpcError;
 use crate::error::{AppError, ErrorCode};
@@ -418,7 +419,7 @@ pub async fn set_thread_name(
     Ok(StatusCode::NO_CONTENT)
 }
 
-// ── 输入校验(结构化;路径解析暂缓)──────────────────────────
+// ── 输入校验(结构化 + 工作区路径安全)──────────────────────
 
 const USER_INPUT_TYPES: &[&str] = &["text", "image", "localImage", "skill", "mention"];
 const REASONING_EFFORT_VALUES: &[&str] = &["none", "minimal", "low", "medium", "high", "xhigh"];
@@ -470,11 +471,11 @@ impl ThreadResumeRegistry {
 }
 
 /// 校验可辨识的 UserInput 数组。返回已校验的数组。
-/// 注意:`mention`/`localImage` 路径在未做工作区根路径解析的情况下直接透传 —
-/// 安全边界(FilesService.resolveSafePath /
-/// ChatUploadService.resolveStoredUploadPath)暂缓,直到这些服务落地。
-/// H5 修复：校验 discriminated UserInput 数组。返回已校验的数组。
-/// H4 修复：mention / localImage 路径现在通过 `files::resolve_safe_path` 校验。
+/// mention/localImage/文本内联 @mention 路径经 `files::resolve_safe_path` 做
+/// 工作区安全边界校验（对齐 FilesService.resolveSafePath /
+/// ChatUploadService.resolveStoredUploadPath）。
+/// H5：校验 discriminated UserInput 数组。
+/// H4：mention / localImage 路径经 resolve_safe_path 校验。
 /// 提取文本中内联的绝对路径 @mention（对齐 TS `validateInlineTextMentions` 的正则
 /// `/(^|\s)@(\/(?:\\ |[^\s])+)/g`）：前导为行首或空白，路径以 `/` 开头，
 /// 其中 `\ ` 转义为真实空格。返回去重后的路径列表（含前导 `/`）。
@@ -644,22 +645,25 @@ async fn validate_input_item(item: &Value, i: usize, state: &AppState) -> Result
             Ok(json!({ "type": "image", "url": url }))
         }
         "localImage" => {
-            let path = req_string_trimmed(obj, "path", i)?;
-            // H4 修复：验证路径存在且在工作区内（对齐 ChatUploadService.resolveStoredUploadPath）。
-            crate::files::resolve_safe_path(state, &path)
-                .await
-                .map_err(|e| {
-                    AppError::business(
-                        ErrorCode::ChatImageOutsideRoot,
-                        StatusCode::BAD_REQUEST,
-                        format!("localImage path validation failed: {e}"),
-                        Some({
-                            let mut p = std::collections::BTreeMap::new();
-                            p.insert("index".to_string(), serde_json::Value::Number(i.into()));
-                            p
-                        }),
-                    )
-                })?;
+            // path 必须是非空字符串（对齐 TS validateLocalImageInput）。
+            let path = match obj
+                .get("path")
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+            {
+                Some(p) => p.to_string(),
+                None => {
+                    return Err(bad_request_params(
+                        ErrorCode::ChatImagePathRequired,
+                        format!("input[{i}].path is required for localImage"),
+                        i,
+                    ));
+                }
+            };
+            // 校验路径位于 chat 上传根目录内（对齐 TS ChatUploadService.resolveStoredUploadPath），
+            // 仅允许引用通过 /chat/upload 上传的图片，而非整个工作区。
+            crate::chat::resolve_stored_upload_path(&path).await?;
             Ok(json!({ "type": "localImage", "path": path }))
         }
         "skill" => {

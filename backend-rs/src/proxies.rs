@@ -6,7 +6,7 @@
 //! 返回 204 的端点(logout、login/cancel、mcp reload)返回 No Content。
 
 use crate::codex::RpcError;
-use crate::error::{AppError, ErrorCode};
+use crate::error::{AppError, ErrorCode, Params};
 use crate::state::AppState;
 use axum::{
     extract::{Query, State},
@@ -25,6 +25,22 @@ fn bad_request(code: ErrorCode, msg: impl Into<String>) -> AppError {
     AppError::business(code, StatusCode::BAD_REQUEST, msg.into(), None)
 }
 
+/// 构造带 i18n 插值参数的业务错误（对齐 TS 错误响应的 params 字段）。
+fn bad_request_params(code: ErrorCode, msg: impl Into<String>, params: Params) -> AppError {
+    AppError::business(code, StatusCode::BAD_REQUEST, msg.into(), Some(params))
+}
+fn one_param(k: &str, v: impl Into<Value>) -> Params {
+    let mut p = Params::new();
+    p.insert(k.into(), v.into());
+    p
+}
+fn two_params(k1: &str, v1: impl Into<Value>, k2: &str, v2: impl Into<Value>) -> Params {
+    let mut p = Params::new();
+    p.insert(k1.into(), v1.into());
+    p.insert(k2.into(), v2.into());
+    p
+}
+
 // ── 共享的 query/body 解析器 ────────────────────────────────────────────────
 
 fn parse_limit(value: Option<&str>) -> Result<Option<i64>, AppError> {
@@ -32,9 +48,10 @@ fn parse_limit(value: Option<&str>) -> Result<Option<i64>, AppError> {
         None => Ok(None),
         Some(s) => match s.parse::<i64>() {
             Ok(n) if n >= 1 && n <= 100 => Ok(Some(n)),
-            _ => Err(bad_request(
+            _ => Err(bad_request_params(
                 ErrorCode::ValidationFieldInvalid,
                 "limit must be an integer between 1 and 100",
+                one_param("field", "limit"),
             )),
         },
     }
@@ -45,9 +62,10 @@ fn parse_optional_bool_query(value: Option<&str>, field: &str) -> Result<Option<
         None => Ok(None),
         Some("true") => Ok(Some(true)),
         Some("false") => Ok(Some(false)),
-        _ => Err(bad_request(
+        _ => Err(bad_request_params(
             ErrorCode::ValidationTypeMismatch,
             format!("{field} must be a boolean"),
+            two_params("field", field, "type", "boolean"),
         )),
     }
 }
@@ -55,9 +73,10 @@ fn parse_optional_bool_query(value: Option<&str>, field: &str) -> Result<Option<
 fn parse_optional_bool_json(value: &Value, field: &str) -> Result<Option<bool>, AppError> {
     match value {
         Value::Null | Value::Bool(_) => Ok(value.as_bool()),
-        _ => Err(bad_request(
+        _ => Err(bad_request_params(
             ErrorCode::ValidationTypeMismatch,
             format!("{field} must be a boolean"),
+            two_params("field", field, "type", "boolean"),
         )),
     }
 }
@@ -329,9 +348,10 @@ pub async fn mcp_servers_oauth_login(
 ) -> Result<Json<Value>, AppError> {
     let name = body.name.as_deref().map(|s| s.trim()).unwrap_or("");
     if name.is_empty() {
-        return Err(bad_request(
+        return Err(bad_request_params(
             ErrorCode::ValidationFieldRequired,
             "name is required",
+            one_param("field", "name"),
         ));
     }
     let mut params = serde_json::Map::new();
@@ -351,9 +371,10 @@ pub async fn mcp_servers_oauth_login(
     }
     if let Some(t) = body.timeout_secs {
         if !(1..=600).contains(&t) {
-            return Err(bad_request(
+            return Err(bad_request_params(
                 ErrorCode::McpTimeoutTooLarge,
                 "timeoutSecs must be an integer between 1 and 600",
+                one_param("max", 600),
             ));
         }
         params.insert("timeoutSecs".into(), Value::Number(t.into()));

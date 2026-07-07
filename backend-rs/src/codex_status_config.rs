@@ -2,9 +2,9 @@
 //!
 //! 与 `codex-status.controller.ts` + `codex-config.controller.ts` 对齐。
 //!
-//! - GET  /codex/status          — 聚合就绪状态(简化:generation/
-//!   connected/initialized;完整的 account/config/provider/model 探针聚合暂缓)。
-//!   驱动 UI 的 "codex ready" 指示器。
+//! - GET  /codex/status          — 聚合就绪状态(appServer/initialize/account/
+//!   config/provider/models/runtime,由 CodexStatusService 并行探针聚合 + TTL 缓存;
+//!   详见 codex_status.rs)。驱动 UI 的 "codex ready" 指示器。
 //! - POST /codex/approval-policy — config/batchWrite approval_policy(已校验)
 //! - POST /codex/sandbox-mode    — config/batchWrite sandbox_mode(已校验)
 //! - GET  /codex/config          — config/read(includeLayers),敏感信息已脱敏

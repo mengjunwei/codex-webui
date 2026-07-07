@@ -37,7 +37,12 @@ pub async fn upload_attachment(
             continue; // 跳过非文件 part
         }
         let raw_filename = field.file_name().unwrap_or("upload").to_string();
-        let mime_type = field.content_type().unwrap_or("application/octet-stream").to_string();
+        let mime_type = field
+            .content_type()
+            .map(|s| s.trim())
+            .filter(|s| !s.is_empty())
+            .unwrap_or("application/octet-stream")
+            .to_string();
 
         // 校验文件名。
         let filename = raw_filename.trim();
@@ -65,7 +70,7 @@ pub async fn upload_attachment(
         if data.len() as u64 > max_bytes {
             let _ = tokio::fs::remove_file(&tmp_path).await;
             return Err(AppError::business(
-                ErrorCode::FilesFileTooLarge,
+                ErrorCode::FilesUploadTooLarge,
                 StatusCode::PAYLOAD_TOO_LARGE,
                 format!("Uploaded file exceeds maximum size ({max_bytes} bytes)"),
                 None,
@@ -140,6 +145,44 @@ fn ensure_upload_root() -> Result<PathBuf, AppError> {
     Ok(upload_root)
 }
 
+/// 校验 localImage 路径必须位于 chat 上传根目录 `{CODEX_HOME}/webui-uploads/` 之内
+/// （对齐 TS `ChatUploadService.resolveStoredUploadPath`）：解析符号链接逃逸，
+/// 确保真实路径在上传根内、且为普通文件。返回规范化后的路径。
+/// 失败映射到 chat.* 错误码（image_path_absolute / upload_not_found /
+/// image_outside_root / image_not_file）。
+pub(crate) async fn resolve_stored_upload_path(path: &str) -> Result<PathBuf, AppError> {
+    let trimmed = path.trim();
+    if trimmed.is_empty() {
+        return Err(bad_request(ErrorCode::ChatImagePathRequired, "image path is required"));
+    }
+    let parsed = std::path::Path::new(trimmed);
+    if !parsed.is_absolute() {
+        return Err(bad_request(ErrorCode::ChatImageAbsolutePath, "image path must be absolute"));
+    }
+    let canonical = match tokio::fs::canonicalize(parsed).await {
+        Ok(c) => c,
+        Err(_) => {
+            return Err(AppError::business(
+                ErrorCode::ChatUploadNotFound,
+                StatusCode::NOT_FOUND,
+                "uploaded file not found".into(),
+                None,
+            ));
+        }
+    };
+    let upload_root = ensure_upload_root()?;
+    if !canonical.starts_with(&upload_root) {
+        return Err(bad_request(ErrorCode::ChatImageOutsideRoot, "image path is outside the upload root"));
+    }
+    let meta = tokio::fs::metadata(&canonical)
+        .await
+        .map_err(|e| AppError::internal(format!("stat upload: {e}")))?;
+    if !meta.is_file() {
+        return Err(bad_request(ErrorCode::ChatImageNotFile, "image path is not a file"));
+    }
+    Ok(canonical)
+}
+
 const CHAT_UPLOAD_TTL_SECS: u64 = 24 * 3600;
 const CHAT_UPLOAD_SWEEP_INTERVAL_SECS: u64 = 3600;
 static LAST_SWEEP_SECS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
@@ -178,8 +221,14 @@ fn get_safe_extension(filename: &str) -> String {
     if ext.is_empty() || ext.len() > MAX_EXTENSION_LENGTH {
         return String::new();
     }
-    // 仅允许字母数字组成的扩展名。
-    if !ext.chars().all(|c| c.is_alphanumeric()) {
+    // 对齐 TS 正则 ^\.[A-Za-z0-9][A-Za-z0-9._-]*$：首字符须为字母数字，
+    // 其余可含 . _ -（如 "tar.gz"、"HR_png"）。
+    let mut chars = ext.chars();
+    match chars.next() {
+        Some(c) if c.is_ascii_alphanumeric() => {}
+        _ => return String::new(),
+    }
+    if !chars.all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-')) {
         return String::new();
     }
     format!(".{}", ext.to_ascii_lowercase())

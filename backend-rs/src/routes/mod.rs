@@ -120,7 +120,7 @@ pub fn build_router(state: AppState) -> Router {
             get(csc::read_config).patch(csc::update_config),
         )
         .route("/codex/config/raw", get(csc::read_raw_config).put(csc::update_raw_config))
-        // ── files(核心操作;upload/serve/rename/copy/move 暂缓)──
+        // ── files(完整文件操作:roots/tree/read/metadata/CRUD/serve/download/upload/归档预览)──
         .route("/files/roots", get(fl::get_roots).post(fl::add_root))
         .route("/files/tree", get(fl::read_tree))
         .route("/files/read", get(fl::read_file))

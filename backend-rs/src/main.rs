@@ -21,6 +21,9 @@ async fn main() -> anyhow::Result<()> {
     // 如果存在 .env 则加载（在 Docker / 生产环境中为空操作）。
     let _ = dotenvy::dotenv();
 
+    // 固化进程启动基准点（供 /logs/export 的 uptimeSeconds，对齐 TS process.uptime()）。
+    codex_webui::logs::mark_process_start();
+
     let cfg = Config::from_env()?;
     let _log_guard = logging::init(&cfg.log_level);
 

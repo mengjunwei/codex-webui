@@ -142,8 +142,8 @@ pub async fn export_diagnostics(
             uptime_seconds: uptime_seconds(),
             codex_version: codex_version_async(&state).await,
         },
-        // 运行时就绪状态（来自 CodexStatusService，对齐 TS statusService.getStatus()）。
-        runtime_status: state.status.get_status().await,
+        // 对齐 TS：导出前对 runtimeStatus 递归脱敏（擦除 token/apiKey/cookie 等敏感键与 Bearer）。
+        runtime_status: sanitize_value(state.status.get_status().await),
         logs,
     }))
 }
@@ -346,6 +346,12 @@ fn uptime_seconds() -> u64 {
     start.elapsed().as_secs()
 }
 
+/// 在进程启动早期固化运行时基准点（对齐 TS `process.uptime()`）。
+/// 否则基准点会延迟到首次 /logs/export 才初始化，少算"启动到首次导出"的时长。
+pub fn mark_process_start() {
+    let _ = PROCESS_START.set(Instant::now());
+}
+
 fn platform_name() -> String {
     // 映射为 Node 约定以保持与前端一致：macos→darwin，windows→win32。
     match std::env::consts::OS {
@@ -365,27 +371,32 @@ fn arch_name() -> String {
 }
 
 async fn codex_version_async(state: &AppState) -> String {
-    // H4 修复：放在 spawn_blocking 中执行，避免阻塞 tokio worker 线程
-    // （TS 端使用带 2 秒超时的 execFileAsync）。
+    // 对齐 TS：带 2 秒超时（execFileAsync { timeout: 2_000 }），避免 codex --version
+    // 因任何原因挂起时 /logs/export 请求被无限期阻塞。
     let bin = std::env::var("CODEX_BIN").unwrap_or_else(|_| "codex".into());
     let _ = state;
-    let result = tokio::task::spawn_blocking(move || {
-        std::process::Command::new(bin)
-            .arg("--version")
-            .output()
-            .ok()
-            .and_then(|o| {
-                if o.status.success() {
-                    String::from_utf8(o.stdout).ok().map(|s| s.trim().to_string())
-                } else {
-                    None
-                }
-            })
-            .filter(|s| !s.is_empty())
-    })
+    let result: Option<String> = match tokio::time::timeout(
+        std::time::Duration::from_secs(2),
+        tokio::task::spawn_blocking(move || {
+            std::process::Command::new(bin)
+                .arg("--version")
+                .output()
+                .ok()
+                .and_then(|o| {
+                    if o.status.success() {
+                        String::from_utf8(o.stdout).ok().map(|s| s.trim().to_string())
+                    } else {
+                        None
+                    }
+                })
+                .filter(|s| !s.is_empty())
+        }),
+    )
     .await
-    .ok()
-    .flatten();
+    {
+        Ok(Ok(Some(s))) => Some(s),
+        _ => None,
+    };
     result.unwrap_or_else(|| "unknown".into())
 }
 

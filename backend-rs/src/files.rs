@@ -9,8 +9,8 @@
 //! list-roots / add-root / create-file / create-dir / write-file / resolveSafePath
 //! （供 threads 用于 mention 路径校验）。
 //!
-//! 延后至后续实现：multipart 上传、serve-Range（PDF/视频流式播放）、
-//! rename/copy/move、download、归档预览。这些当前返回 501。
+//! 已实现：multipart 上传、serve-Range（PDF/视频流式播放）、
+//! rename/copy/move、download、归档预览（zip/tar.gz/tar.bz2/7z；rar/xz 见 detect_format）。
 
 use crate::error::{AppError, ErrorCode};
 use crate::state::AppState;
@@ -27,6 +27,7 @@ use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use tokio::fs;
 use tokio::io::{AsyncReadExt, AsyncSeekExt, SeekFrom};
+use tokio_util::io::ReaderStream;
 
 const MAX_READ_SIZE: u64 = 5 * 1024 * 1024;
 const DEFAULT_EXCLUDED_DIRS: &[&str] = &[
@@ -428,9 +429,10 @@ pub async fn read_file(
         ));
     }
     if resolved.size > MAX_READ_SIZE {
+        // 对齐 TS files.service.ts：文本读取超限返回 400（非 413）+ files.file_too_large。
         return Err(AppError::business(
             ErrorCode::FilesFileTooLarge,
-            StatusCode::PAYLOAD_TOO_LARGE,
+            StatusCode::BAD_REQUEST,
             format!("file too large for text read (max {} bytes)", MAX_READ_SIZE),
             None,
         ));
@@ -474,7 +476,10 @@ pub async fn get_metadata(
             .map(|m| format!("0{:o}", m.permissions().mode() & 0o777))
     };
     #[cfg(not(unix))]
-    let permissions: Option<String> = None;
+    // Windows 下也返回字符串（对齐 TS `0${(mode & 0o777).toString(8)}`，DTO 该字段必填）。
+    let permissions = std::fs::metadata(&resolved.resolved)
+        .ok()
+        .map(|m| if m.permissions().readonly() { "0444" } else { "0666" }.to_string());
     Ok(Json(json!({
         "path": resolved.original,
         "name": resolved.resolved.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default(),
@@ -721,13 +726,14 @@ pub async fn write_file(
     State(state): State<AppState>,
     Json(body): Json<WriteFileBody>,
 ) -> Result<Json<serde_json::Value>, AppError> {
+    // 对齐 TS files.controller.ts：content 必须是字符串（contentRequired）。
+    let content = match &body.content {
+        Some(c) => c.clone(),
+        None => return Err(bad_request(ErrorCode::FilesContentRequired, "content is required")),
+    };
     let raw = body.path.as_deref().map(|s| s.trim()).unwrap_or("");
-    let content = body.content.clone().unwrap_or_default();
     if raw.is_empty() {
-        return Err(bad_request(
-            ErrorCode::FilesContentRequired,
-            "path and content are required",
-        ));
+        return Err(bad_request(ErrorCode::FilesPathRequired, "path is required"));
     }
     let p = PathBuf::from(raw);
     let canonical_parent = tokio::fs::canonicalize(p.parent().unwrap_or(&p))
@@ -825,14 +831,15 @@ pub async fn download_file(
     let filename = resolved.resolved.file_name()
         .map(|n| n.to_string_lossy().to_string())
         .unwrap_or_else(|| "file".into());
-    let bytes = tokio::fs::read(&resolved.resolved).await
-        .map_err(|e| AppError::internal(format!("read: {e}")))?;
+    // 流式下载（对齐 TS createReadStream）：避免大文件全量缓冲导致内存峰值/OOM。
+    let file = tokio::fs::File::open(&resolved.resolved).await
+        .map_err(|e| AppError::internal(format!("open: {e}")))?;
     Ok(Response::builder()
         .header(header::CONTENT_TYPE, "application/octet-stream")
         .header(header::CONTENT_LENGTH, resolved.size)
         .header(header::CONTENT_DISPOSITION,
             build_content_disposition(&filename, false).as_str())
-        .body(Body::from(bytes))
+        .body(Body::from_stream(ReaderStream::new(file)))
         .map_err(|e| AppError::internal(format!("response: {e}")))?)
 }
 
@@ -874,12 +881,12 @@ async fn serve_with_range(
             .header(header::CONTENT_RANGE, format!("bytes */{}", size))
             .body(Body::empty())?),
         RangeResult::None => {
-            let bytes = tokio::fs::read(path)
+            let file = tokio::fs::File::open(path)
                 .await
-                .map_err(|e| AppError::internal(format!("read: {e}")))?;
+                .map_err(|e| AppError::internal(format!("open: {e}")))?;
             Ok(resp
                 .header(header::CONTENT_LENGTH, size)
-                .body(Body::from(bytes))?)
+                .body(Body::from_stream(ReaderStream::new(file)))?)
         }
         RangeResult::Range(r) => {
             let length = r.end - r.start + 1;
@@ -889,10 +896,8 @@ async fn serve_with_range(
             file.seek(SeekFrom::Start(r.start))
                 .await
                 .map_err(|e| AppError::internal(format!("seek: {e}")))?;
-            let mut buf = vec![0u8; length as usize];
-            file.read_exact(&mut buf)
-                .await
-                .map_err(|e| AppError::internal(format!("read range: {e}")))?;
+            // 流式发送区间（seek + take(length)），避免大区间全量缓冲。
+            let stream = ReaderStream::new(file.take(length));
             Ok(resp
                 .status(StatusCode::PARTIAL_CONTENT)
                 .header(
@@ -900,7 +905,7 @@ async fn serve_with_range(
                     format!("bytes {}-{}/{}", r.start, r.end, size),
                 )
                 .header(header::CONTENT_LENGTH, length)
-                .body(Body::from(buf))?)
+                .body(Body::from_stream(stream))?)
         }
     }
 }
@@ -1299,14 +1304,20 @@ pub async fn upload_files(
     let mut files = Vec::new();
     while let Ok(Some(field)) = multipart.next_field().await {
         let raw_filename = field.file_name().unwrap_or("upload").to_string();
-        // 保留相对子路径（folder upload），但拒绝穿越/绝对路径组件
-        //（对齐 TS normalizeUploadRelativePath）。
+        // 对齐 TS normalizeUploadRelativePath：含反斜杠 / 绝对路径 → uploadPathInvalid；
+        // 空段或 . / .. → nameInvalid（严格报错，而非静默清洗）。
         let safe_name: String = {
+            if raw_filename.contains('\\') {
+                return Err(bad_request(ErrorCode::FilesUploadPathInvalid, "upload path must not contain backslashes"));
+            }
+            if raw_filename.starts_with('/') {
+                return Err(bad_request(ErrorCode::FilesUploadPathInvalid, "upload path must not be absolute"));
+            }
             let mut parts: Vec<String> = Vec::new();
-            for part in raw_filename.replace('\\', "/").split('/') {
+            for part in raw_filename.split('/') {
                 let p = part.trim();
                 if p.is_empty() || p == "." || p == ".." {
-                    continue;
+                    return Err(bad_request(ErrorCode::FilesNameInvalid, "upload path contains an invalid segment"));
                 }
                 parts.push(p.to_string());
             }
@@ -1341,6 +1352,10 @@ pub async fn upload_files(
         let size = data.len();
         files.push(json!({ "path": file_path.to_string_lossy(), "size": size }));
     }
+    // 对齐 TS：上传至少需要一个文件（uploadFileRequired）。
+    if files.is_empty() {
+        return Err(bad_request(ErrorCode::FilesUploadFileRequired, "at least one file is required"));
+    }
     Ok(Json(json!({ "ok": true, "files": files })))
 }
 
@@ -1367,6 +1382,7 @@ pub async fn archive_list(
 pub async fn archive_entry(
     State(state): State<AppState>,
     Query(q): Query<ArchiveEntryQuery>,
+    headers: HeaderMap,
 ) -> Result<Response, AppError> {
     let resolved = resolve(&state, q.path.as_deref().unwrap_or("")).await?;
     if resolved.kind != ResolvedKind::File {
@@ -1383,7 +1399,7 @@ pub async fn archive_entry(
         .map_err(|e| AppError::internal(format!("archive task: {e}")))?
         .map_err(|e| match e {
             ArchiveReadError::TooLarge => AppError::business(
-                ErrorCode::FilesFileTooLarge,
+                ErrorCode::ArchiveEntryTooLarge,
                 StatusCode::PAYLOAD_TOO_LARGE,
                 format!(
                     "Archive entry exceeds maximum size ({} bytes)",
@@ -1394,21 +1410,43 @@ pub async fn archive_entry(
             ArchiveReadError::Other(s) => AppError::internal(format!("archive read: {s}")),
         })?;
 
+    // 支持 Range（对齐 TS sendRangedStream）：压缩包内的视频/PDF 可拖动播放。
     let mime = guess_mime_type(entry_path);
-    Ok(Response::builder()
+    let filename = std::path::Path::new(entry_path)
+        .file_name()
+        .map(|n| n.to_string_lossy().to_string())
+        .unwrap_or_default();
+    let total = data.len() as u64;
+    let range_header = headers
+        .get(header::RANGE)
+        .and_then(|v| v.to_str().ok())
+        .map(|s| s.to_string());
+
+    let resp = Response::builder()
+        .header(header::ACCEPT_RANGES, "bytes")
         .header(header::CONTENT_TYPE, mime.as_str())
         .header("X-Content-Type-Options", "nosniff")
         .header("Referrer-Policy", "no-referrer")
         .header("Cache-Control", "private, no-store")
-        .header(
-            header::CONTENT_DISPOSITION,
-            build_content_disposition(
-                &std::path::Path::new(entry_path).file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default(),
-                true,
-            ).as_str(),
-        )
-        .body(Body::from(data))
-        .map_err(|e| AppError::internal(format!("response: {e}")))?)
+        .header(header::CONTENT_DISPOSITION, build_content_disposition(&filename, true).as_str());
+
+    Ok(match parse_range_header(range_header.as_deref(), total) {
+        RangeResult::Invalid => resp
+            .status(StatusCode::RANGE_NOT_SATISFIABLE)
+            .header(header::CONTENT_RANGE, format!("bytes */{}", total))
+            .body(Body::empty())?,
+        RangeResult::None => resp
+            .header(header::CONTENT_LENGTH, total)
+            .body(Body::from(data))?,
+        RangeResult::Range(r) => {
+            let length = r.end - r.start + 1;
+            let chunk = data[r.start as usize..=r.end as usize].to_vec();
+            resp.status(StatusCode::PARTIAL_CONTENT)
+                .header(header::CONTENT_RANGE, format!("bytes {}-{}/{}", r.start, r.end, total))
+                .header(header::CONTENT_LENGTH, length)
+                .body(Body::from(chunk))?
+        }
+    })
 }
 
 #[derive(Deserialize)]
