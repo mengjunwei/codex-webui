@@ -11,6 +11,7 @@
 use crate::auth::AuthService;
 use crate::codex::{CodexProcessManager, LifecycleEvent};
 use crate::db::Db;
+use crate::error::AppError;
 use crate::terminal::{TerminalMetadataEvent, TerminalService};
 use serde_json::{json, Value};
 use socketioxide::extract::{AckSender, Data as SocketData, SocketRef, State};
@@ -169,13 +170,13 @@ fn on_term_open(s: SocketRef, State(state): State<RealtimeState>, SocketData(dat
     ) {
         Ok(c) => c,
         Err(e) => {
-            let _ = ack.send(&json!({ "ok": false, "error": e.to_string() }));
+            ack_term_err(&s, ack, e);
             return;
         }
     };
     match state.terminal.open(s.id.as_str(), &ctx, Some(&cwd), cols, rows, title) {
         Ok(meta) => { let _ = ack.send(&json!({ "ok": true, "terminal": meta, "config": state.terminal.get_config_json() })); }
-        Err(e) => { let _ = ack.send(&json!({ "ok": false, "error": e.to_string() })); }
+        Err(e) => { ack_term_err(&s, ack, e); }
     }
 }
 
@@ -185,9 +186,9 @@ fn on_term_reconnect(s: SocketRef, State(state): State<RealtimeState>, SocketDat
     match state.terminal.reconnect(s.id.as_str(), &ctx, &tid) {
         Ok((meta, buffer)) => {
             let state_str: String = buffer.concat();
-            let _ = ack.send(&json!({ "ok": true, "terminal": meta, "state": state_str }));
+            let _ = ack.send(&json!({ "ok": true, "terminal": meta, "state": state_str, "config": state.terminal.get_config_json() }));
         }
-        Err(e) => { let _ = ack.send(&json!({ "ok": false, "error": e.to_string() })); }
+        Err(e) => { ack_term_err(&s, ack, e); }
     }
 }
 
@@ -197,7 +198,7 @@ fn on_term_input(s: SocketRef, State(state): State<RealtimeState>, SocketData(da
     let input = data.get("data").and_then(Value::as_str).unwrap_or("");
     match state.terminal.write_input(s.id.as_str(), &ctx, &tid, input) {
         Ok(()) => { let _ = ack.send(&json!({ "ok": true })); }
-        Err(e) => { let _ = ack.send(&json!({ "ok": false, "error": e.to_string() })); }
+        Err(e) => { ack_term_err(&s, ack, e); }
     }
 }
 
@@ -208,7 +209,7 @@ fn on_term_resize(s: SocketRef, State(state): State<RealtimeState>, SocketData(d
     let rows = data.get("rows").and_then(Value::as_u64).unwrap_or(24) as u16;
     match state.terminal.resize(s.id.as_str(), &ctx, &tid, cols, rows) {
         Ok(meta) => { let _ = ack.send(&json!({ "ok": true, "terminal": meta })); }
-        Err(e) => { let _ = ack.send(&json!({ "ok": false, "error": e.to_string() })); }
+        Err(e) => { ack_term_err(&s, ack, e); }
     }
 }
 
@@ -224,7 +225,7 @@ fn on_term_rename(s: SocketRef, State(state): State<RealtimeState>, SocketData(d
     let title = data.get("title").and_then(Value::as_str).unwrap_or("");
     match state.terminal.rename(s.id.as_str(), &ctx, &tid, title) {
         Ok(meta) => { let _ = ack.send(&json!({ "ok": true, "terminal": meta })); }
-        Err(e) => { let _ = ack.send(&json!({ "ok": false, "error": e.to_string() })); }
+        Err(e) => { ack_term_err(&s, ack, e); }
     }
 }
 
@@ -233,7 +234,7 @@ fn on_term_download(s: SocketRef, State(state): State<RealtimeState>, SocketData
     let tid = data.get("terminalId").and_then(Value::as_str).unwrap_or("").to_string();
     match state.terminal.download(s.id.as_str(), &ctx, &tid) {
         Ok((filename, content)) => { let _ = ack.send(&json!({ "ok": true, "data": { "filename": filename, "content": content } })); }
-        Err(e) => { let _ = ack.send(&json!({ "ok": false, "error": e.to_string() })); }
+        Err(e) => { ack_term_err(&s, ack, e); }
     }
 }
 
@@ -242,12 +243,20 @@ fn on_term_close(s: SocketRef, State(state): State<RealtimeState>, SocketData(da
     let tid = data.get("terminalId").and_then(Value::as_str).unwrap_or("").to_string();
     match state.terminal.close(s.id.as_str(), &ctx, &tid) {
         Ok(()) => { let _ = ack.send(&json!({ "ok": true })); }
-        Err(e) => { let _ = ack.send(&json!({ "ok": false, "error": e.to_string() })); }
+        Err(e) => { ack_term_err(&s, ack, e); }
     }
 }
 
 fn strip_bearer(s: &str) -> &str {
     s.strip_prefix("Bearer ").unwrap_or(s).trim()
+}
+
+/// 终端操作失败：返回 ack 错误并发送 `terminal.error` 事件
+/// （对齐 TS emitError，供前端 snackbar 显示）。
+fn ack_term_err(s: &SocketRef, ack: AckSender, e: AppError) {
+    let msg = e.to_string();
+    let _ = ack.send(&json!({ "ok": false, "error": msg }));
+    let _ = s.emit("terminal.error", &json!({ "message": msg }));
 }
 
 // ── emit 转发任务 ────────────────────────────────────────────────────

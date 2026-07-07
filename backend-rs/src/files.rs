@@ -138,16 +138,6 @@ fn is_workspace_root(state: &AppState, p: &Path) -> bool {
     workspace_roots(state).iter().any(|r| canon_str == *r)
 }
 
-/// C4：判断 child 是否为 ancestor 的子路径（禁止复制/移动到自身或后代）。
-fn is_descendant_of(child: &Path, ancestor: &Path) -> bool {
-    let child_canon = std::fs::canonicalize(child).ok();
-    let anc_canon = std::fs::canonicalize(ancestor).ok();
-    match (child_canon, anc_canon) {
-        (Some(c), Some(a)) => c.starts_with(&a) && c != a,
-        _ => false,
-    }
-}
-
 /// 计算工作区根目录集合（配置根 + 家目录 + 动态根），供路径校验复用。
 /// 从 `workspace_roots(state)` 抽出，以便终端 cwd 沙箱等无 AppState 的调用方复用。
 pub fn compute_workspace_roots(db: &crate::db::Db, dynamic_roots: &HashSet<String>) -> Vec<String> {
@@ -267,11 +257,14 @@ pub fn resolve_terminal_cwd(
 
 /// GET /api/files/roots → 已配置根目录 + 动态根目录 + 家目录。
 pub async fn get_roots(State(state): State<AppState>) -> Result<Json<serde_json::Value>, AppError> {
-    let roots = state
+    // roots = 配置根 ∪ 家目录 ∪ 动态根（对齐 TS rebuildWorkspaceRoots）。
+    let dyn_roots: HashSet<String> = state
         .dynamic_files_roots
         .lock()
-        .map(|g| g.iter().cloned().collect::<Vec<_>>())
+        .map(|g| g.iter().cloned().collect())
         .unwrap_or_default();
+    let mut roots = compute_workspace_roots(&state.db, &dyn_roots);
+    roots.sort();
     Ok(Json(json!({
         "roots": roots,
         "homeDir": state.home_dir(),
@@ -382,14 +375,38 @@ pub async fn read_tree(
             .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
             .map(|d| d.as_millis() as i64)
             .unwrap_or(0);
-        entries.push(json!({
-            "name": name,
-            "path": path.to_string_lossy().to_string(),
-            "type": ty,
-            "size": meta.len(),
-            "mtime": mtime_ms,
-        }));
+        // 目录省略 size/mtime（对齐 TS readDirectory）；文件携带二者。
+        let entry = if meta.is_dir() {
+            json!({
+                "name": name,
+                "path": path.to_string_lossy().to_string(),
+                "type": ty,
+            })
+        } else {
+            json!({
+                "name": name,
+                "path": path.to_string_lossy().to_string(),
+                "type": ty,
+                "size": meta.len(),
+                "mtime": mtime_ms,
+            })
+        };
+        entries.push(entry);
     }
+    // 排序：目录优先，再按名称（对齐 TS readDirectory）。
+    entries.sort_by(|a, b| {
+        let ad = a.get("type").and_then(serde_json::Value::as_str) == Some("directory");
+        let bd = b.get("type").and_then(serde_json::Value::as_str) == Some("directory");
+        match (ad, bd) {
+            (true, false) => std::cmp::Ordering::Less,
+            (false, true) => std::cmp::Ordering::Greater,
+            _ => a
+                .get("name")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or("")
+                .cmp(b.get("name").and_then(serde_json::Value::as_str).unwrap_or("")),
+        }
+    });
     Ok(Json(json!({ "entries": entries })))
 }
 
@@ -449,12 +466,22 @@ pub async fn get_metadata(
         ResolvedKind::Symlink => "symlink",
         ResolvedKind::Other => "other",
     };
+    #[cfg(unix)]
+    let permissions = {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::metadata(&resolved.resolved)
+            .ok()
+            .map(|m| format!("0{:o}", m.permissions().mode() & 0o777))
+    };
+    #[cfg(not(unix))]
+    let permissions: Option<String> = None;
     Ok(Json(json!({
         "path": resolved.original,
         "name": resolved.resolved.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default(),
         "type": kind,
         "size": resolved.size,
         "mtime": resolved.mtime_ms,
+        "permissions": permissions,
     })))
 }
 
@@ -576,9 +603,23 @@ pub async fn create_file(
         }
     }
     let content = body.content.clone().unwrap_or_default();
-    tokio::fs::write(&p, content)
-        .await
-        .map_err(|e| AppError::internal(format!("create file: {e}")))?;
+    if body.overwrite.unwrap_or(false) {
+        tokio::fs::write(&p, content)
+            .await
+            .map_err(|e| AppError::internal(format!("create file: {e}")))?;
+    } else {
+        // 原子独占创建（对齐 TS flag 'wx'），消除 exists()→write 的 TOCTOU。
+        use tokio::io::AsyncWriteExt;
+        let mut f = tokio::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&p)
+            .await
+            .map_err(|e| AppError::internal(format!("create file: {e}")))?;
+        f.write_all(content.as_bytes())
+            .await
+            .map_err(|e| AppError::internal(format!("write: {e}")))?;
+    }
     let meta = tokio::fs::metadata(&p)
         .await
         .map_err(|e| AppError::internal(format!("stat: {e}")))?;
@@ -1125,29 +1166,29 @@ async fn do_relocate(
     if is_move && is_workspace_root(state, &src.resolved) {
         return Err(forbidden("cannot move a workspace root directory"));
     }
-    // 校验目标：规范化目标（若目标尚不存在，则规范化其父目录）。
-    let dst_canonical = match tokio::fs::canonicalize(dst_raw).await {
+    // 解析目标的规范化路径：已存在 → 其本身；不存在 → canonical(parent)+文件名。
+    // 用于工作区校验与自身/后代守卫（不依赖目标必须存在，修复原 is_descendant_of
+    // 对不存在目标返回 false 的 TOCTOU 漏洞）。
+    let dst_canonical: PathBuf = match tokio::fs::canonicalize(dst_raw).await {
         Ok(c) => c,
         Err(_) => {
-            let parent = std::path::Path::new(dst_raw)
-                .parent()
-                .unwrap_or(std::path::Path::new(dst_raw));
+            let parent = Path::new(dst_raw).parent().unwrap_or(Path::new(dst_raw));
             tokio::fs::canonicalize(parent).await
                 .map_err(|_| not_found("destination parent path not found"))?
+                .join(Path::new(dst_raw).file_name().unwrap_or_default())
         }
     };
     if !within_workspace(state, &dst_canonical) {
         return Err(forbidden("destination is outside workspace"));
     }
-    // C4：禁止复制/移动到自身或其子路径（防止数据丢失或无限递归）。
-    let dest_full = if dst_canonical.is_dir() && !dst_raw.ends_with(std::path::MAIN_SEPARATOR) {
-        dst_canonical.join(
-            src.resolved.file_name().unwrap_or_default()
-        )
+    // C4：禁止复制/移动到自身或其子路径（对齐 TS path.relative 词法判断）。
+    // 若目标是已存在目录，实际落点为 dst/src 名。
+    let effective_dest = if dst_canonical.is_dir() {
+        dst_canonical.join(src.resolved.file_name().unwrap_or_default())
     } else {
-        std::path::PathBuf::from(dst_raw)
+        dst_canonical.clone()
     };
-    if is_descendant_of(&dest_full, &src.resolved) {
+    if effective_dest.starts_with(&src.resolved) {
         return Err(forbidden("cannot copy/move a directory into itself or a descendant"));
     }
     let dest = std::path::PathBuf::from(dst_raw);
@@ -1158,7 +1199,19 @@ async fn do_relocate(
     if is_move {
         tokio::fs::rename(&src.resolved, &dest)
             .await
-            .map_err(|e| AppError::internal(format!("move: {e}")))?;
+            .map_err(|e| {
+                // 跨设备移动（EXDEV）→ 400（对齐 TS：提示用 copy+delete，而非 500）。
+                if e.raw_os_error() == Some(18) {
+                    AppError::business(
+                        ErrorCode::FilesOperationFailed,
+                        StatusCode::BAD_REQUEST,
+                        "cannot move across devices; copy then delete instead".into(),
+                        None,
+                    )
+                } else {
+                    AppError::internal(format!("move: {e}"))
+                }
+            })?;
     } else if src.kind == ResolvedKind::Directory {
         copy_dir_recursive(&src.resolved, &dest).await
             .map_err(|e| AppError::internal(format!("copy dir: {e}")))?;
@@ -1167,11 +1220,21 @@ async fn do_relocate(
             .await
             .map_err(|e| AppError::internal(format!("copy file: {e}")))?;
     }
-    Ok(Json(json!({
-        "ok": true,
-        "sourcePath": src.resolved.to_string_lossy(),
-        "destinationPath": dest.to_string_lossy(),
-    })))
+    // move 返回 oldPath/newPath；copy 返回 sourcePath/destinationPath（对齐 TS DTO）。
+    let body = if is_move {
+        json!({
+            "ok": true,
+            "oldPath": src.resolved.to_string_lossy(),
+            "newPath": dest.to_string_lossy(),
+        })
+    } else {
+        json!({
+            "ok": true,
+            "sourcePath": src.resolved.to_string_lossy(),
+            "destinationPath": dest.to_string_lossy(),
+        })
+    };
+    Ok(Json(body))
 }
 
 async fn copy_dir_recursive(src: &Path, dst: &Path) -> std::io::Result<()> {
@@ -1180,8 +1243,20 @@ async fn copy_dir_recursive(src: &Path, dst: &Path) -> std::io::Result<()> {
     while let Some(entry) = entries.next_entry().await? {
         let from = entry.path();
         let to = dst.join(entry.file_name());
-        let meta = entry.file_type().await?;
-        if meta.is_dir() {
+        let ftype = entry.file_type().await?;
+        if ftype.is_symlink() {
+            // 保留符号链接（对齐 TS dereference:false），不复制其目标内容
+            // （否则指向 workspace 外的链接会被实体化，造成信息泄露）。
+            #[cfg(unix)]
+            {
+                let target = tokio::fs::read_link(&from).await?;
+                tokio::fs::symlink(&target, &to).await?;
+            }
+            #[cfg(not(unix))]
+            {
+                tokio::fs::copy(&from, &to).await?;
+            }
+        } else if ftype.is_dir() {
             Box::pin(copy_dir_recursive(&from, &to)).await?;
         } else {
             tokio::fs::copy(&from, &to).await?;
@@ -1224,16 +1299,31 @@ pub async fn upload_files(
     let mut files = Vec::new();
     while let Ok(Some(field)) = multipart.next_field().await {
         let raw_filename = field.file_name().unwrap_or("upload").to_string();
-        // 关键修复（C2）：净化文件名 —— 剥离路径组件以防止
-        // 路径穿越（例如 "..\\evil.dll" → "evil.dll"）。
-        let safe_name = std::path::Path::new(&raw_filename)
-            .file_name()
-            .map(|n| n.to_string_lossy().to_string())
-            .filter(|s| !s.is_empty() && s != "." && s != "..")
-            .unwrap_or_else(|| "upload".to_string());
+        // 保留相对子路径（folder upload），但拒绝穿越/绝对路径组件
+        //（对齐 TS normalizeUploadRelativePath）。
+        let safe_name: String = {
+            let mut parts: Vec<String> = Vec::new();
+            for part in raw_filename.replace('\\', "/").split('/') {
+                let p = part.trim();
+                if p.is_empty() || p == "." || p == ".." {
+                    continue;
+                }
+                parts.push(p.to_string());
+            }
+            if parts.is_empty() {
+                "upload".to_string()
+            } else {
+                parts.join("/")
+            }
+        };
         let data = field.bytes().await
             .map_err(|e| AppError::internal(format!("read multipart field: {e}")))?;
         let file_path = dest_canonical.join(&safe_name);
+        // 保留子路径时需先创建父目录。
+        if let Some(parent) = file_path.parent() {
+            tokio::fs::create_dir_all(parent).await
+                .map_err(|e| AppError::internal(format!("mkdir upload parent: {e}")))?;
+        }
         if file_path.exists() && !overwrite {
             return Err(conflict(ErrorCode::FilesPathExists,
                 format!("{safe_name} already exists (set overwrite=true)")));

@@ -314,50 +314,58 @@ pub async fn list_pending(
         .lock()
         .map_err(|e| AppError::internal(format!("db lock: {e}")))?;
 
-    let requests = match q.thread_ids.as_deref().filter(|s| !s.is_empty()) {
-        Some(ids) => {
-            let v: Vec<String> = ids.split(',').map(|s| s.trim().to_string()).collect();
-            let placeholders = std::iter::repeat("?")
-                .take(v.len())
-                .collect::<Vec<_>>()
-                .join(",");
-            let sql = format!(
+    // 过滤空/纯空白条目；全空时退化为"无过滤"（对齐 TS .filter(Boolean)）。
+    let ids: Vec<String> = q
+        .thread_ids
+        .as_deref()
+        .map(|s| {
+            s.split(',')
+                .map(|x| x.trim().to_string())
+                .filter(|x| !x.is_empty())
+                .collect()
+        })
+        .unwrap_or_default();
+
+    let requests = if ids.is_empty() {
+        let mut stmt = conn
+            .prepare(
                 "SELECT generation, request_id, thread_id, turn_id, item_id, method, \
                  params_json, status, created_at, updated_at, resolved_at \
                  FROM pending_server_requests \
-                 WHERE status = 'pending' AND thread_id IN ({}) \
+                 WHERE status = 'pending' \
                  ORDER BY created_at",
-                placeholders
-            );
-            let v_refs: Vec<&dyn rusqlite::ToSql> =
-                v.iter().map(|s| s as &dyn rusqlite::ToSql).collect();
-            let mut stmt = conn
-                .prepare(&sql)
-                .map_err(|e| AppError::internal(format!("prepare: {e}")))?;
-            let rows: Vec<PendingServerRequestDto> = stmt
-                .query_map(v_refs.as_slice(), parse_pending_row)
-                .map_err(|e| AppError::internal(format!("query: {e}")))?
-                .filter_map(|r| r.ok())
-                .collect();
-            rows
-        }
-        None => {
-            let mut stmt = conn
-                .prepare(
-                    "SELECT generation, request_id, thread_id, turn_id, item_id, method, \
-                     params_json, status, created_at, updated_at, resolved_at \
-                     FROM pending_server_requests \
-                     WHERE status = 'pending' \
-                     ORDER BY created_at",
-                )
-                .map_err(|e| AppError::internal(format!("prepare: {e}")))?;
-            let rows: Vec<PendingServerRequestDto> = stmt
-                .query_map([], parse_pending_row)
-                .map_err(|e| AppError::internal(format!("query: {e}")))?
-                .filter_map(|r| r.ok())
-                .collect();
-            rows
-        }
+            )
+            .map_err(|e| AppError::internal(format!("prepare: {e}")))?;
+        let rows: Vec<PendingServerRequestDto> = stmt
+            .query_map([], parse_pending_row)
+            .map_err(|e| AppError::internal(format!("query: {e}")))?
+            .filter_map(|r| r.ok())
+            .collect();
+        rows
+    } else {
+        let placeholders = std::iter::repeat("?")
+            .take(ids.len())
+            .collect::<Vec<_>>()
+            .join(",");
+        let sql = format!(
+            "SELECT generation, request_id, thread_id, turn_id, item_id, method, \
+             params_json, status, created_at, updated_at, resolved_at \
+             FROM pending_server_requests \
+             WHERE status = 'pending' AND thread_id IN ({}) \
+             ORDER BY created_at",
+            placeholders
+        );
+        let v_refs: Vec<&dyn rusqlite::ToSql> =
+            ids.iter().map(|s| s as &dyn rusqlite::ToSql).collect();
+        let mut stmt = conn
+            .prepare(&sql)
+            .map_err(|e| AppError::internal(format!("prepare: {e}")))?;
+        let rows: Vec<PendingServerRequestDto> = stmt
+            .query_map(v_refs.as_slice(), parse_pending_row)
+            .map_err(|e| AppError::internal(format!("query: {e}")))?
+            .filter_map(|r| r.ok())
+            .collect();
+        rows
     };
 
     Ok(Json(ListPendingResponse { requests }))
@@ -383,30 +391,33 @@ fn parse_pending_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<PendingServerReq
 
 // ── 响应待处理请求：POST /pending-approvals/:requestId/respond ──────────────
 
-#[derive(Deserialize)]
-pub struct RespondPayload {
-    pub result: Option<serde_json::Value>,
-    #[serde(rename = "clientId")]
-    pub client_id: Option<String>,
-}
-
 pub async fn respond_to_request(
     State(state): State<AppState>,
     Path(request_id): Path<String>,
-    Json(payload): Json<RespondPayload>,
+    Json(body): Json<serde_json::Value>,
 ) -> Result<Json<PendingServerRequestDto>, AppError> {
     let generation = state.codex.generation() as i64;
     let now = chrono::Utc::now().timestamp_millis();
 
-    // H5 修复：显式校验 result（TS 端使用 hasOwnProperty('result') 判断）。
-    let result = payload.result.ok_or_else(|| {
-        AppError::business(
+    // H5：显式校验 result 存在性（TS 端使用 hasOwnProperty('result')）。
+    // 注意：{"result": null} 视为存在（转发 null），仅当字段缺失时报 400。
+    let has_result = body
+        .as_object()
+        .map(|o| o.contains_key("result"))
+        .unwrap_or(false);
+    if !has_result {
+        return Err(AppError::business(
             ErrorCode::ApprovalsResultRequired,
             StatusCode::BAD_REQUEST,
             "result is required".into(),
             None,
-        )
-    })?;
+        ));
+    }
+    let result = body.get("result").cloned().unwrap_or(serde_json::Value::Null);
+    let client_id = body
+        .get("clientId")
+        .and_then(serde_json::Value::as_str)
+        .map(|s| s.to_string());
 
     // 1. 查询（必须在下方 await 客户端之前释放 DB 锁 ——
     //    跨 `.await` 持有 MutexGuard 会导致 future 变为 !Send）。
@@ -471,7 +482,7 @@ pub async fn respond_to_request(
                  SET status='resolved', resolved_by=?1, resolved_at=?2, updated_at=?3 \
                  WHERE generation=?4 AND request_id=?5 AND status='pending'",
                 rusqlite::params![
-                    payload.client_id.as_deref(),
+                    client_id.as_deref(),
                     now,
                     now,
                     generation,

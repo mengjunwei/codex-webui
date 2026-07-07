@@ -232,6 +232,10 @@ impl TerminalService {
             .map_err(|e| AppError::internal(format!("openpty: {e}")))?;
         let mut cmd = CommandBuilder::new(&shell);
         cmd.cwd(&cwd);
+        // 设置 TERM（对齐 node-pty 的 name:'xterm-256color'）；服务/Docker 环境下
+        // 父进程可能没有 TERM，否则 vim/htop/彩色 ls 会失效。
+        cmd.env("TERM", "xterm-256color");
+        cmd.env("COLORTERM", "truecolor");
         let child = pair.slave.spawn_command(cmd)
             .map_err(|e| AppError::internal(format!("spawn: {e}")))?;
         drop(pair.slave);
@@ -376,11 +380,16 @@ impl TerminalService {
                     tokio::time::sleep(std::time::Duration::from_millis(grace_ms)).await;
                     let mut sessions = sessions_c.lock().unwrap();
                     if let Some(session) = sessions.get_mut(&sid) {
-                        if session.attached.is_empty() && session.status == TerminalStatus::Running {
-                            session.status = TerminalStatus::Exited;
-                            if let Ok(mut child) = session.child.lock() {
-                                if let Some(ref mut c) = *child { let _ = c.kill(); }
-                                child.take();
+                        // TS：只要无附着 socket 即移除（无论 Running/Exited）。
+                        // 修复：PTY 在 grace 窗口内退出时，status 已被 reader_task 置为
+                        // Exited，原 Running 守卫会漏掉这种情况导致 session 泄漏。
+                        if session.attached.is_empty() {
+                            if session.status == TerminalStatus::Running {
+                                if let Ok(mut child) = session.child.lock() {
+                                    if let Some(ref mut c) = *child { let _ = c.kill(); }
+                                    child.take();
+                                }
+                                session.status = TerminalStatus::Exited;
                             }
                             if let Ok(mut writer) = session.writer.lock() { writer.take(); }
                             session.master.take();
@@ -444,7 +453,7 @@ impl TerminalService {
         -> Result<TerminalMetadata, AppError>
     {
         let mut sessions = self.sessions.lock().unwrap();
-        let s = sessions.get_mut(terminal_id).filter(|s| s.status != TerminalStatus::Exited)
+        let s = sessions.get_mut(terminal_id)
             .ok_or_else(|| not_found("terminal not found"))?;
         if s.context_key != context_key { return Err(context_mismatch()); }
         if !s.attached.contains(socket_id) { return Err(not_attached()); }
@@ -453,8 +462,11 @@ impl TerminalService {
         if next_cols != s.cols || next_rows != s.rows {
             s.cols = next_cols;
             s.rows = next_rows;
-            if let Some(ref mut master) = s.master {
-                let _ = master.resize(PtySize { rows: next_rows, cols: next_cols, pixel_width: 0, pixel_height: 0 });
+            // 已退出的终端仅更新存储尺寸 + VT 模型，跳过 PTY resize（对齐 TS）。
+            if s.status == TerminalStatus::Running {
+                if let Some(ref mut master) = s.master {
+                    let _ = master.resize(PtySize { rows: next_rows, cols: next_cols, pixel_width: 0, pixel_height: 0 });
+                }
             }
             // 调整 VT 终端模型尺寸。
             s.vt_terminal.lock().unwrap().resize(TerminalSize {

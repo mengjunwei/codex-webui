@@ -38,7 +38,7 @@ pub struct CreateThreadBody {
 pub async fn create_thread(
     State(state): State<AppState>,
     Json(body): Json<CreateThreadBody>,
-) -> Result<Json<Value>, AppError> {
+) -> Result<(StatusCode, Json<Value>), AppError> {
     let mut params = serde_json::Map::new();
     if let Some(m) = body.model {
         params.insert("model".into(), Value::String(m));
@@ -58,9 +58,9 @@ pub async fn create_thread(
         .map_err(map_rpc)?;
     // H6：标记已 resume（对齐 TS resumeRegistry.markResumed + cacheResponse）。
     if let Some(thread) = result.get("thread").and_then(|t| t.get("id")).and_then(Value::as_str) {
-        state.resume_registry.mark_resumed(thread);
+        state.resume_registry.mark_resumed(thread, result.clone());
     }
-    Ok(Json(result))
+    Ok((StatusCode::CREATED, Json(result)))
 }
 
 // ── GET /threads(列表)─────────────────────────────────────────────────────
@@ -208,19 +208,19 @@ fn is_not_materialized(e: &RpcError) -> bool {
 pub async fn resume_thread(
     State(state): State<AppState>,
     Path(thread_id): Path<String>,
-) -> Result<Json<Value>, AppError> {
-    // H6：如果已 resume 且 codex 未重启，跳过重复调用（对齐 TS
-    // resumeRegistry.ensureResumed 行为——先检查缓存，命中则直接返回）。
-    if state.resume_registry.is_resumed(&thread_id) {
-        tracing::debug!(thread_id, "resume_thread skipped (already resumed this generation)");
+) -> Result<(StatusCode, Json<Value>), AppError> {
+    // H6：若本 generation 已 resume 过该线程，直接返回缓存响应（对齐 TS
+    // resumeRegistry.ensureResumed —— 命中缓存则不再重发非幂等的 thread/resume）。
+    if let Some(cached) = state.resume_registry.get_cached(&thread_id) {
+        return Ok((StatusCode::CREATED, Json(cached)));
     }
     let result = state
         .codex
-        .request("thread/resume", Some(json!({ "threadId": thread_id })))
+        .request("thread/resume", Some(json!({ "threadId": thread_id, "persistExtendedHistory": true })))
         .await
         .map_err(map_rpc)?;
-    state.resume_registry.mark_resumed(&thread_id);
-    Ok(Json(result))
+    state.resume_registry.mark_resumed(&thread_id, result.clone());
+    Ok((StatusCode::CREATED, Json(result)))
 }
 
 // ── POST /threads/:threadId/turns(开始 turn)──────────────────────────────
@@ -236,7 +236,7 @@ pub async fn start_turn(
     State(state): State<AppState>,
     Path(thread_id): Path<String>,
     Json(body): Json<StartTurnBody>,
-) -> Result<Json<Value>, AppError> {
+) -> Result<(StatusCode, Json<Value>), AppError> {
     let input = validate_turn_input(&body.input, &state).await?;
     let mut params = serde_json::Map::new();
     params.insert("threadId".into(), Value::String(thread_id));
@@ -268,7 +268,7 @@ pub async fn start_turn(
         .request("turn/start", Some(Value::Object(params)))
         .await
         .map_err(map_rpc)?;
-    Ok(Json(result))
+    Ok((StatusCode::CREATED, Json(result)))
 }
 
 // ── POST /threads/:threadId/turns/:turnId/steer ──────────────────────────────
@@ -277,7 +277,7 @@ pub async fn steer_turn(
     State(state): State<AppState>,
     Path((thread_id, turn_id)): Path<(String, String)>,
     Json(body): Json<StartTurnBody>,
-) -> Result<Json<Value>, AppError> {
+) -> Result<(StatusCode, Json<Value>), AppError> {
     let input = validate_turn_input(&body.input, &state).await?;
     let params = json!({
         "threadId": thread_id,
@@ -289,7 +289,7 @@ pub async fn steer_turn(
         .request("turn/steer", Some(params))
         .await
         .map_err(map_rpc)?;
-    Ok(Json(result))
+    Ok((StatusCode::CREATED, Json(result)))
 }
 
 // ── POST /threads/:threadId/turns/:turnId/interrupt ──────────────────────────
@@ -297,13 +297,13 @@ pub async fn steer_turn(
 pub async fn interrupt_turn(
     State(state): State<AppState>,
     Path((thread_id, turn_id)): Path<(String, String)>,
-) -> Result<Json<Value>, AppError> {
+) -> Result<(StatusCode, Json<Value>), AppError> {
     state
         .codex
         .request("turn/interrupt", Some(json!({ "threadId": thread_id, "turnId": turn_id })))
         .await
         .map_err(map_rpc)?;
-    Ok(Json(json!({ "ok": true })))
+    Ok((StatusCode::CREATED, Json(json!({ "ok": true }))))
 }
 
 // ── 归档 / 取消归档 / 压缩 / 分叉 / 回滚 / 重命名 ───────────────────
@@ -325,13 +325,13 @@ pub async fn archive_thread(
 pub async fn unarchive_thread(
     State(state): State<AppState>,
     Path(thread_id): Path<String>,
-) -> Result<Json<Value>, AppError> {
+) -> Result<(StatusCode, Json<Value>), AppError> {
     let result = state
         .codex
         .request("thread/unarchive", Some(json!({ "threadId": thread_id })))
         .await
         .map_err(map_rpc)?;
-    Ok(Json(result))
+    Ok((StatusCode::CREATED, Json(result)))
 }
 
 pub async fn compact_thread(
@@ -349,7 +349,7 @@ pub async fn compact_thread(
 pub async fn fork_thread(
     State(state): State<AppState>,
     Path(thread_id): Path<String>,
-) -> Result<Json<Value>, AppError> {
+) -> Result<(StatusCode, Json<Value>), AppError> {
     let result = state
         .codex
         .request(
@@ -360,9 +360,9 @@ pub async fn fork_thread(
         .map_err(map_rpc)?;
     // H6：标记新 fork 的线程为已 resume（对齐 TS resumeRegistry.markResumed + cacheResponse）。
     if let Some(thread) = result.get("thread").and_then(|t| t.get("id")).and_then(Value::as_str) {
-        state.resume_registry.mark_resumed(thread);
+        state.resume_registry.mark_resumed(thread, result.clone());
     }
-    Ok(Json(result))
+    Ok((StatusCode::CREATED, Json(result)))
 }
 
 #[derive(Deserialize)]
@@ -375,7 +375,7 @@ pub async fn rollback_thread(
     State(state): State<AppState>,
     Path(thread_id): Path<String>,
     Json(body): Json<RollbackBody>,
-) -> Result<Json<Value>, AppError> {
+) -> Result<(StatusCode, Json<Value>), AppError> {
     if body.num_turns < 1 {
         return Err(bad_request(
             ErrorCode::ThreadsInvalidRollbackTurns,
@@ -390,7 +390,7 @@ pub async fn rollback_thread(
         )
         .await
         .map_err(map_rpc)?;
-    Ok(Json(result))
+    Ok((StatusCode::CREATED, Json(result)))
 }
 
 #[derive(Deserialize)]
@@ -424,25 +424,48 @@ const USER_INPUT_TYPES: &[&str] = &["text", "image", "localImage", "skill", "men
 const REASONING_EFFORT_VALUES: &[&str] = &["none", "minimal", "low", "medium", "high", "xhigh"];
 
 /// H6：线程 resume 注册表（按 generation 去重，对齐 TS ThreadResumeRegistryService）。
-/// 当 codex 重启时通过 `clear()` 清空（generation 递增）。
+/// 线程 resume 注册表：缓存最近一次 resume/start/fork 的响应，按 generation 去重。
+/// codex 重启（generation 变化）时通过 `advance_generation()` 清空缓存（对齐 TS
+/// resumeRegistry 在 appServerReady 时按 generation 重建）。
 #[derive(Debug, Default)]
 pub struct ThreadResumeRegistry {
-    resumed: std::sync::Mutex<std::collections::HashSet<String>>,
+    generation: std::sync::Mutex<u64>,
+    entries: std::sync::Mutex<std::collections::HashMap<String, serde_json::Value>>,
 }
 
 impl ThreadResumeRegistry {
-    pub fn new() -> Self { Self::default() }
-    pub fn mark_resumed(&self, thread_id: &str) {
-        self.resumed.lock().unwrap().insert(thread_id.to_string());
+    pub fn new() -> Self {
+        Self::default()
     }
-    pub fn is_resumed(&self, thread_id: &str) -> bool {
-        self.resumed.lock().unwrap().contains(thread_id)
+
+    /// 记录一次 resume/start/fork 的响应（缓存供后续重复调用复用）。
+    pub fn mark_resumed(&self, thread_id: &str, response: serde_json::Value) {
+        self.entries
+            .lock()
+            .unwrap()
+            .insert(thread_id.to_string(), response);
     }
+
+    /// 返回缓存响应（若当前 generation 已 resume 过该线程）。
+    pub fn get_cached(&self, thread_id: &str) -> Option<serde_json::Value> {
+        self.entries.lock().unwrap().get(thread_id).cloned()
+    }
+
     pub fn forget(&self, thread_id: &str) {
-        self.resumed.lock().unwrap().remove(thread_id);
+        self.entries.lock().unwrap().remove(thread_id);
     }
+
     pub fn clear(&self) {
-        self.resumed.lock().unwrap().clear();
+        self.entries.lock().unwrap().clear();
+    }
+
+    /// generation 推进：generation 变化时清空所有缓存的 resume 响应。
+    pub fn advance_generation(&self, new_generation: u64) {
+        let mut g = self.generation.lock().unwrap();
+        if *g != new_generation {
+            *g = new_generation;
+            self.entries.lock().unwrap().clear();
+        }
     }
 }
 
@@ -536,10 +559,14 @@ async fn validate_input_item(item: &Value, i: usize, state: &AppState) -> Result
                         )
                     })?;
             }
-            // H5：校验 text_elements（byteRange + placeholder 结构校验）。
-            if let Some(elements) = obj.get("text_elements") {
-                if let Some(arr) = elements.as_array() {
-                    let text_byte_len = text.as_bytes().len();
+            // H5：校验 text_elements（对齐 TS validateTextElements）——
+            // 非数组拒绝；每个元素必须是对象；byteRange 必填且结构/范围有效；
+            // placeholder 规整为 string|null。输出规整化后的数组。
+            let text_elements = match obj.get("text_elements") {
+                None | Some(Value::Null) => Value::Array(vec![]),
+                Some(Value::Array(arr)) => {
+                    let text_byte_len = text.len();
+                    let mut out = Vec::with_capacity(arr.len());
                     for (ei, elem) in arr.iter().enumerate() {
                         let elem_obj = elem.as_object().ok_or_else(|| {
                             bad_request_params(
@@ -548,25 +575,62 @@ async fn validate_input_item(item: &Value, i: usize, state: &AppState) -> Result
                                 i,
                             )
                         })?;
-                        if let Some(br) = elem_obj.get("byteRange") {
-                            let start = br.get("start").and_then(Value::as_i64);
-                            let end = br.get("end").and_then(Value::as_i64);
-                            match (start, end) {
-                                (Some(s), Some(e))
-                                    if s >= 0 && e >= s && (e as usize) <= text_byte_len => {}
-                                _ => {
-                                    return Err(bad_request_params(
-                                        ErrorCode::ThreadsInvalidInputField,
-                                        format!("input[{i}].text_elements[{ei}].byteRange is invalid"),
-                                        i,
-                                    ));
-                                }
+                        let br = elem_obj.get("byteRange").ok_or_else(|| {
+                            bad_request_params(
+                                ErrorCode::ThreadsInvalidInputField,
+                                format!("input[{i}].text_elements[{ei}].byteRange is required"),
+                                i,
+                            )
+                        })?;
+                        let br_obj = br.as_object().ok_or_else(|| {
+                            bad_request_params(
+                                ErrorCode::ThreadsInvalidInputField,
+                                format!("input[{i}].text_elements[{ei}].byteRange is invalid"),
+                                i,
+                            )
+                        })?;
+                        let start = br_obj.get("start").and_then(Value::as_i64);
+                        let end = br_obj.get("end").and_then(Value::as_i64);
+                        match (start, end) {
+                            (Some(s), Some(e))
+                                if s >= 0 && e >= s && (e as usize) <= text_byte_len => {}
+                            _ => {
+                                return Err(bad_request_params(
+                                    ErrorCode::ThreadsInvalidInputField,
+                                    format!("input[{i}].text_elements[{ei}].byteRange is invalid"),
+                                    i,
+                                ));
                             }
                         }
+                        let placeholder = match elem_obj.get("placeholder") {
+                            Some(Value::String(s)) => Value::String(s.clone()),
+                            Some(Value::Null) | None => Value::Null,
+                            Some(_) => {
+                                return Err(bad_request_params(
+                                    ErrorCode::ThreadsInvalidInputField,
+                                    format!(
+                                        "input[{i}].text_elements[{ei}].placeholder must be a string or null"
+                                    ),
+                                    i,
+                                ));
+                            }
+                        };
+                        let mut m = serde_json::Map::new();
+                        m.insert("byteRange".into(), br.clone());
+                        m.insert("placeholder".into(), placeholder);
+                        out.push(Value::Object(m));
                     }
+                    Value::Array(out)
                 }
-            }
-            Ok(json!({ "type": "text", "text": text, "text_elements": obj.get("text_elements").cloned().unwrap_or(Value::Array(vec![])) }))
+                Some(_) => {
+                    return Err(bad_request_params(
+                        ErrorCode::ThreadsInvalidInputField,
+                        format!("input[{i}].text_elements must be an array"),
+                        i,
+                    ));
+                }
+            };
+            Ok(json!({ "type": "text", "text": text, "text_elements": text_elements }))
         }
         "image" => {
             let url = req_string_trimmed(obj, "url", i)?;

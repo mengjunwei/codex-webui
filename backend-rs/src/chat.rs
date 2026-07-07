@@ -28,6 +28,8 @@ pub async fn upload_attachment(
 ) -> Result<Json<Value>, AppError> {
     let max_bytes = state.settings_reader().get_upload_max_bytes();
     let upload_root = ensure_upload_root()?;
+    // 周期性清理超过 TTL 的陈旧上传（对齐 TS，节流到每小时一次）。
+    maybe_sweep_uploads(&upload_root);
 
     // 只读取一个文件 part（字段名为 "file"）。
     while let Ok(Some(field)) = multipart.next_field().await {
@@ -70,10 +72,24 @@ pub async fn upload_attachment(
             ));
         }
 
-        // 原子写入：临时文件 → 重命名。
-        tokio::fs::write(&tmp_path, &data)
-            .await
-            .map_err(|e| AppError::internal(format!("write tmp: {e}")))?;
+        // 原子写入：临时文件 → 重命名（unix 下以 0o600 创建，对齐 TS mode:0o600）。
+        #[cfg(unix)]
+        {
+            use std::io::Write;
+            use std::os::unix::fs::OpenOptionsExt;
+            std::fs::OpenOptions::new()
+                .write(true).create(true).truncate(true).mode(0o600)
+                .open(&tmp_path)
+                .map_err(|e| AppError::internal(format!("open tmp: {e}")))?
+                .write_all(&data)
+                .map_err(|e| AppError::internal(format!("write tmp: {e}")))?;
+        }
+        #[cfg(not(unix))]
+        {
+            tokio::fs::write(&tmp_path, &data)
+                .await
+                .map_err(|e| AppError::internal(format!("write tmp: {e}")))?;
+        }
         tokio::fs::rename(&tmp_path, &target_path)
             .await
             .map_err(|e| AppError::internal(format!("rename: {e}")))?;
@@ -106,9 +122,54 @@ fn ensure_upload_root() -> Result<PathBuf, AppError> {
                 .join(".codex")
         });
     let upload_root = base.join(CHAT_UPLOAD_DIR_NAME);
-    std::fs::create_dir_all(&upload_root)
-        .map_err(|e| AppError::internal(format!("create upload dir: {e}")))?;
+    // unix 下以 0o700 创建上传目录（对齐 TS mode:0o700）。
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::DirBuilderExt;
+        std::fs::DirBuilder::new()
+            .recursive(true)
+            .mode(0o700)
+            .create(&upload_root)
+            .map_err(|e| AppError::internal(format!("create upload dir: {e}")))?;
+    }
+    #[cfg(not(unix))]
+    {
+        std::fs::create_dir_all(&upload_root)
+            .map_err(|e| AppError::internal(format!("create upload dir: {e}")))?;
+    }
     Ok(upload_root)
+}
+
+const CHAT_UPLOAD_TTL_SECS: u64 = 24 * 3600;
+const CHAT_UPLOAD_SWEEP_INTERVAL_SECS: u64 = 3600;
+static LAST_SWEEP_SECS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// 周期性清理超过 24h 的上传文件（对齐 TS 的 TTL 清理，节流到每小时一次）。
+fn maybe_sweep_uploads(root: &std::path::Path) {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    let last = LAST_SWEEP_SECS.load(std::sync::atomic::Ordering::Relaxed);
+    if now.saturating_sub(last) < CHAT_UPLOAD_SWEEP_INTERVAL_SECS {
+        return;
+    }
+    LAST_SWEEP_SECS.store(now, std::sync::atomic::Ordering::Relaxed);
+    let cutoff = now.saturating_sub(CHAT_UPLOAD_TTL_SECS);
+    if let Ok(mut entries) = std::fs::read_dir(root) {
+        while let Some(Ok(entry)) = entries.next() {
+            let stale = entry
+                .metadata()
+                .ok()
+                .and_then(|m| m.modified().ok())
+                .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                .map(|d| d.as_secs() < cutoff)
+                .unwrap_or(false);
+            if stale {
+                let _ = std::fs::remove_file(entry.path());
+            }
+        }
+    }
 }
 
 /// 提取安全的文件扩展名（包含点号），长度上限为 MAX_EXTENSION_LENGTH。

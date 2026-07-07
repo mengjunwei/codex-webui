@@ -224,11 +224,13 @@ pub async fn update_one(
     // TS settings.controller.ts:83 使用 hasOwnProperty('value') 进行区分。
     let has_value = body.get("value").is_some();
     if !has_value {
+        let mut params = std::collections::BTreeMap::new();
+        params.insert("field".to_string(), serde_json::Value::String("value".into()));
         return Err(AppError::business(
-            ErrorCode::ValidationFieldInvalid,
+            ErrorCode::ValidationFieldRequired,
             StatusCode::BAD_REQUEST,
             "value is required".into(),
-            None,
+            Some(params),
         ));
     }
     let value = &body["value"];

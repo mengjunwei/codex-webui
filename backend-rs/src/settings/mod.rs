@@ -89,7 +89,7 @@ impl<'a> SettingsReader<'a> {
             .and_then(|ek| std::env::var(ek).ok())
             .filter(|s| !s.is_empty())
         {
-            if let Some(value) = parse_env_value(&raw, def.ty) {
+            if let Some(value) = parse_env_value(&raw, def) {
                 return Some(ResolvedSetting {
                     key: def.key,
                     value,
@@ -227,13 +227,26 @@ pub fn default_as_value(def: &SettingDef) -> serde_json::Value {
 }
 
 /// 将原始环境变量字符串按类型解析为 Value（与 TS 的 `readEnvValue` 对齐）。
-fn parse_env_value(raw: &str, ty: SettingType) -> Option<serde_json::Value> {
-    match ty {
-        SettingType::Number => raw.parse::<f64>().ok().map(num_value),
+/// 数值会按 constraints 截断（integer）并夹到 [min,max]（对齐 TS clampNumber）。
+fn parse_env_value(raw: &str, def: &SettingDef) -> Option<serde_json::Value> {
+    match def.ty {
+        SettingType::Number => {
+            let mut n = raw.parse::<f64>().ok()?;
+            if def.constraints.integer {
+                n = n.trunc();
+            }
+            if let Some(min) = def.constraints.min {
+                n = n.max(min);
+            }
+            if let Some(max) = def.constraints.max {
+                n = n.min(max);
+            }
+            Some(num_value(n))
+        }
         SettingType::String => Some(serde_json::Value::String(raw.to_string())),
         SettingType::Boolean => match raw.to_ascii_lowercase().as_str() {
-            "1" | "true" | "yes" | "on" => Some(serde_json::Value::Bool(true)),
-            "0" | "false" | "no" | "off" => Some(serde_json::Value::Bool(false)),
+            "1" | "true" => Some(serde_json::Value::Bool(true)),
+            "0" | "false" => Some(serde_json::Value::Bool(false)),
             _ => None,
         },
         SettingType::Json => serde_json::from_str(raw).ok(),

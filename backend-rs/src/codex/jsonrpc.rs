@@ -189,8 +189,9 @@ impl CodexJsonRpcClient {
 
     /// 发后即忘（fire-and-forget）的通知。
     pub fn notify(&self, method: &str, params: Option<Value>) -> Result<(), RpcError> {
+        // closed 时静默丢弃（对齐 TS：fire-and-forget，不因通道关闭而报错）。
         if self.is_closed() {
-            return Err(RpcError::Closed);
+            return Ok(());
         }
         let mut msg = serde_json::Map::new();
         msg.insert("method".into(), Value::String(method.into()));
@@ -209,8 +210,9 @@ impl CodexJsonRpcClient {
         id: Value,
         result: Value,
     ) -> Result<(), RpcError> {
+        // closed 时静默丢弃（对齐 TS；调用方已预先校验连通性）。
         if self.is_closed() {
-            return Err(RpcError::Closed);
+            return Ok(());
         }
         let mut msg = serde_json::Map::new();
         msg.insert("id".into(), id);
@@ -228,7 +230,7 @@ impl CodexJsonRpcClient {
         message: &str,
     ) -> Result<(), RpcError> {
         if self.is_closed() {
-            return Err(RpcError::Closed);
+            return Ok(());
         }
         let mut msg = serde_json::Map::new();
         msg.insert("id".into(), id);
@@ -364,7 +366,7 @@ async fn dispatch_line(
 
     let has_id = msg.get("id").is_some();
     let has_result = msg.get("result").is_some();
-    let has_error = msg.get("error").is_some();
+    let has_error = msg.get("error").map_or(false, |v| !v.is_null());
     let has_method = msg.get("method").is_some();
 
     if has_id && (has_result || has_error) {

@@ -116,9 +116,10 @@ pub async fn get_config(
         .map(|d| d.as_millis() as i64)
         .unwrap_or(0);
     let size = meta.len();
-    // H2 修复：用解析后（规范化）的路径生成稳定的文档 key，而非原始输入。
+    // H2 修复：用解析后（规范化）的路径生成稳定的文档 key，而非原始输入
+    //（避免相对/绝对/符号链接等不同表示导致 key 不一致 → OO 缓存陈旧）。
     let mut hasher = Sha256::new();
-    hasher.update(format!("{}:{}:{}", raw_path, mtime, size).as_bytes());
+    hasher.update(format!("{}:{}:{}", resolved.display(), mtime, size).as_bytes());
     let key = format!("{:x}", hasher.finalize());
     let key = key[..key.len().min(48)].to_string();
 

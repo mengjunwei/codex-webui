@@ -75,6 +75,22 @@ async fn main() -> anyhow::Result<()> {
     // 就绪状态聚合服务（/codex/status、/account.provider、/logs/export 共享其缓存）。
     let status_service = Arc::new(codex_webui::codex_status::CodexStatusService::new(codex.clone()));
 
+    // 线程 resume 注册表：codex 重启（generation 变化）时清空缓存（按 generation 去重，
+    // 对齐 TS resumeRegistry 在 appServerReady 时重建）。
+    let resume_registry = Arc::new(ThreadResumeRegistry::new());
+    {
+        let lc_codex = codex.clone();
+        let lc_registry = resume_registry.clone();
+        tokio::spawn(async move {
+            let mut rx = lc_codex.subscribe_lifecycle();
+            while let Ok(ev) = rx.recv().await {
+                if let codex_webui::codex::LifecycleEvent::Ready { generation, .. } = ev {
+                    lc_registry.advance_generation(generation);
+                }
+            }
+        });
+    }
+
     // 共享状态。
     let state = AppState {
         db,
@@ -82,10 +98,11 @@ async fn main() -> anyhow::Result<()> {
         codex,
         terminal,
         status: status_service,
-        resume_registry: Arc::new(ThreadResumeRegistry::new()),
+        resume_registry,
         dynamic_files_roots,
     };
 
+    let codex_for_shutdown = state.codex.clone();
     let app = build_router(state).layer(ws_layer);
 
     let listener = tokio::net::TcpListener::bind(("0.0.0.0", cfg.port)).await?;
@@ -94,9 +111,10 @@ async fn main() -> anyhow::Result<()> {
     let server = axum::serve(listener, app).with_graceful_shutdown(shutdown_signal());
     server.await?;
 
-    tracing::info!("drain complete, shutting down codex + db");
-    // 优雅关闭：停止 codex 管理器（会终止 app-server 子进程）。
-    // （codex 通过 AppState 仍然存活，但管理器的重启循环已被阻塞。）
+    tracing::info!("drain complete, shutting down codex");
+    // 优雅关闭：销毁 codex 管理器（终止 app-server 子进程 + 阻止重启循环 +
+    // 拒绝在途请求 + flush JSONL 流）。
+    codex_for_shutdown.destroy().await;
     Ok(())
 }
 
