@@ -10,6 +10,7 @@ use codex_webui::{
     auth::AuthService, codex::CodexProcessManager, config::Config, db::Db, logging,
     routes::build_router, settings::{self, reconcile_settings},
     state::AppState, terminal::{TerminalConfig, TerminalService},
+    threads::ThreadResumeRegistry,
 };
 use std::collections::HashSet;
 use std::sync::{Arc, Mutex};
@@ -72,6 +73,7 @@ async fn main() -> anyhow::Result<()> {
         auth,
         codex,
         terminal,
+        resume_registry: Arc::new(ThreadResumeRegistry::new()),
         dynamic_files_roots: Arc::new(Mutex::new(HashSet::new())),
     };
 

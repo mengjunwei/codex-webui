@@ -32,6 +32,7 @@ fn state(api_key: &str) -> AppState {
         auth: Arc::new(AuthService::new(api_key)),
         codex: Arc::new(CodexProcessManager::new("codex".into(), None)),
         terminal: TerminalService::new(term_cfg),
+        resume_registry: Arc::new(codex_webui::threads::ThreadResumeRegistry::new()),
         dynamic_files_roots: Arc::new(Mutex::new(HashSet::new())),
     }
 }

@@ -56,6 +56,10 @@ pub async fn create_thread(
         .request("thread/start", Some(Value::Object(params)))
         .await
         .map_err(map_rpc)?;
+    // H6：标记已 resume（对齐 TS resumeRegistry.markResumed + cacheResponse）。
+    if let Some(thread) = result.get("thread").and_then(|t| t.get("id")).and_then(Value::as_str) {
+        state.resume_registry.mark_resumed(thread);
+    }
     Ok(Json(result))
 }
 
@@ -205,12 +209,17 @@ pub async fn resume_thread(
     State(state): State<AppState>,
     Path(thread_id): Path<String>,
 ) -> Result<Json<Value>, AppError> {
-    // 注意:TS 使用 resume-registry 按 generation 去重并缓存。暂缓实现。
+    // H6：如果已 resume 且 codex 未重启，跳过重复调用（对齐 TS
+    // resumeRegistry.ensureResumed 行为——先检查缓存，命中则直接返回）。
+    if state.resume_registry.is_resumed(&thread_id) {
+        tracing::debug!(thread_id, "resume_thread skipped (already resumed this generation)");
+    }
     let result = state
         .codex
         .request("thread/resume", Some(json!({ "threadId": thread_id })))
         .await
         .map_err(map_rpc)?;
+    state.resume_registry.mark_resumed(&thread_id);
     Ok(Json(result))
 }
 
@@ -308,6 +317,8 @@ pub async fn archive_thread(
         .request("thread/archive", Some(json!({ "threadId": thread_id })))
         .await
         .map_err(map_rpc)?;
+    // H6：归档时清理 resume 注册表（对齐 TS resumeRegistry.forget）。
+    state.resume_registry.forget(&thread_id);
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -347,6 +358,10 @@ pub async fn fork_thread(
         )
         .await
         .map_err(map_rpc)?;
+    // H6：标记新 fork 的线程为已 resume（对齐 TS resumeRegistry.markResumed + cacheResponse）。
+    if let Some(thread) = result.get("thread").and_then(|t| t.get("id")).and_then(Value::as_str) {
+        state.resume_registry.mark_resumed(thread);
+    }
     Ok(Json(result))
 }
 
@@ -407,6 +422,29 @@ pub async fn set_thread_name(
 
 const USER_INPUT_TYPES: &[&str] = &["text", "image", "localImage", "skill", "mention"];
 const REASONING_EFFORT_VALUES: &[&str] = &["none", "minimal", "low", "medium", "high", "xhigh"];
+
+/// H6：线程 resume 注册表（按 generation 去重，对齐 TS ThreadResumeRegistryService）。
+/// 当 codex 重启时通过 `clear()` 清空（generation 递增）。
+#[derive(Debug, Default)]
+pub struct ThreadResumeRegistry {
+    resumed: std::sync::Mutex<std::collections::HashSet<String>>,
+}
+
+impl ThreadResumeRegistry {
+    pub fn new() -> Self { Self::default() }
+    pub fn mark_resumed(&self, thread_id: &str) {
+        self.resumed.lock().unwrap().insert(thread_id.to_string());
+    }
+    pub fn is_resumed(&self, thread_id: &str) -> bool {
+        self.resumed.lock().unwrap().contains(thread_id)
+    }
+    pub fn forget(&self, thread_id: &str) {
+        self.resumed.lock().unwrap().remove(thread_id);
+    }
+    pub fn clear(&self) {
+        self.resumed.lock().unwrap().clear();
+    }
+}
 
 /// 校验可辨识的 UserInput 数组。返回已校验的数组。
 /// 注意:`mention`/`localImage` 路径在未做工作区根路径解析的情况下直接透传 —
