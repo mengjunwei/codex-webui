@@ -124,6 +124,12 @@ impl TerminalConfig {
     }
 }
 
+#[derive(Clone, Serialize)]
+pub struct TerminalMetadataEvent {
+    pub terminal: TerminalMetadata,
+    pub socket_ids: Vec<String>,
+}
+
 // ── 终端服务 ────────────────────────────────────────────────────────
 
 pub struct TerminalService {
@@ -131,6 +137,7 @@ pub struct TerminalService {
     output_tx: broadcast::Sender<TerminalOutputEvent>,
     exit_tx: broadcast::Sender<TerminalExitEvent>,
     closed_tx: broadcast::Sender<TerminalClosedEvent>,
+    metadata_tx: broadcast::Sender<TerminalMetadataEvent>,
     config: Mutex<TerminalConfig>,
 }
 
@@ -139,11 +146,13 @@ impl TerminalService {
         let (output_tx, _) = broadcast::channel(512);
         let (exit_tx, _) = broadcast::channel(64);
         let (closed_tx, _) = broadcast::channel(64);
+        let (metadata_tx, _) = broadcast::channel(64);
         Arc::new(Self {
             sessions: Arc::new(Mutex::new(HashMap::new())),
             output_tx,
             exit_tx,
             closed_tx,
+            metadata_tx,
             config: Mutex::new(config),
         })
     }
@@ -151,6 +160,16 @@ impl TerminalService {
     pub fn subscribe_output(&self) -> broadcast::Receiver<TerminalOutputEvent> { self.output_tx.subscribe() }
     pub fn subscribe_exit(&self) -> broadcast::Receiver<TerminalExitEvent> { self.exit_tx.subscribe() }
     pub fn subscribe_closed(&self) -> broadcast::Receiver<TerminalClosedEvent> { self.closed_tx.subscribe() }
+    pub fn subscribe_metadata(&self) -> broadcast::Receiver<TerminalMetadataEvent> { self.metadata_tx.subscribe() }
+
+    /// M2: 广播元数据变更给所有已附着的客户端。
+    fn emit_metadata(&self, s: &Session) {
+        let socket_ids: Vec<String> = s.attached.iter().cloned().collect();
+        let _ = self.metadata_tx.send(TerminalMetadataEvent {
+            terminal: Self::meta(s),
+            socket_ids,
+        });
+    }
 
     pub fn get_config_json(&self) -> Value {
         let c = self.config.lock().unwrap();
@@ -239,21 +258,24 @@ impl TerminalService {
             tokio::task::spawn_blocking(move || {
                 let mut reader = reader;
                 let mut buf = [0u8; 8192];
+                let mut carry: Vec<u8> = Vec::new(); // H1: 跨块 UTF-8 续传缓冲
                 loop {
                     match std::io::Read::read(&mut reader, &mut buf) {
                         Ok(0) => break,
                         Ok(n) => {
-                            // 广播原始字节，用于向 xterm.js 实时推流。
-                            // 注意：from_utf8_lossy 可能损坏跨读取块被拆分的
-                            // 多字节序列。这对实时推流路径可以接受（xterm.js
-                            // 会增量渲染）；VT 屏幕状态（用于重连/下载）使用
-                            // 喂给 advance_bytes 的原始字节 —— 是正确的。
-                            let data = String::from_utf8_lossy(&buf[..n]).to_string();
+                            // H1 修复：合并 carry + 新数据，在最后一个完整 UTF-8 边界处切割。
+                            carry.extend_from_slice(&buf[..n]);
+                            let boundary = find_utf8_boundary(&carry);
+                            let (valid, rest) = carry.split_at(boundary);
+                            let data = String::from_utf8_lossy(valid).to_string();
+                            let raw = valid.to_vec();
+                            carry = rest.to_vec();
+
                             let socket_ids: Vec<String> = {
                                 let mut sessions = sessions_c.lock().unwrap();
                                 if let Some(s) = sessions.get_mut(&sid) {
                                     // 用原始字节喂给 VT 终端（正确的 UTF-8 处理）。
-                                    s.vt_terminal.lock().unwrap().advance_bytes(&buf[..n]);
+                                    s.vt_terminal.lock().unwrap().advance_bytes(&raw);
                                     s.attached.iter().cloned().collect()
                                 } else { vec![] }
                             };
@@ -264,11 +286,19 @@ impl TerminalService {
                         Err(_) => break,
                     }
                 }
-                // PTY 已退出。
+                // PTY 已退出。M1 修复：捕获退出码/signal。
                 let (meta, socket_ids) = {
                     let mut sessions = sessions_c.lock().unwrap();
                     if let Some(s) = sessions.get_mut(&sid) {
                         s.status = TerminalStatus::Exited;
+                        // 尝试获取退出码。
+                        if let Ok(mut child_guard) = s.child.lock() {
+                            if let Some(ref mut child) = *child_guard {
+                                if let Ok(status) = child.wait() {
+                                    s.exit_code = Some(status.exit_code() as i32);
+                                }
+                            }
+                        }
                         (Self::meta(s), s.attached.iter().cloned().collect())
                     } else { return; }
                 };
@@ -313,6 +343,8 @@ impl TerminalService {
         let meta = Self::meta(s);
         // 序列化 VT 屏幕：通过 wezterm Terminal 获取回滚 + 可见行。
         let state = serialize_terminal_screen(&s.vt_terminal.lock().unwrap());
+        // M2: 通知其他客户端有人重新连上了（attached_count 变化）。
+        self.emit_metadata(s);
         Ok((meta, vec![state]))
     }
 
@@ -323,6 +355,8 @@ impl TerminalService {
         let closed_tx = self.closed_tx.clone();
 
         let mut sessions = sessions_arc.lock().unwrap();
+        // H4 修复：收集需要立即清理的已退出 session。
+        let mut to_remove: Vec<(String, String)> = Vec::new();
         for s in sessions.values_mut() {
             if terminal_id.map_or(false, |id| id != s.id) { continue; }
             s.attached.remove(socket_id);
@@ -354,6 +388,25 @@ impl TerminalService {
                 }).abort_handle();
                 s.grace_handle = Some(handle);
             }
+            // H4 修复：已退出的 session 在所有 socket 断开后立即清理。
+            if s.attached.is_empty() && s.status == TerminalStatus::Exited {
+                to_remove.push((s.id.clone(), s.context_key.clone()));
+            }
+        }
+        // 执行 H4 清理（在锁外发送事件避免死锁）。
+        for (id, ctx) in &to_remove {
+            if let Some(s) = sessions.get_mut(id) {
+                if let Ok(mut child) = s.child.lock() {
+                    if let Some(ref mut c) = *child { let _ = c.kill(); }
+                    child.take();
+                }
+                if let Ok(mut writer) = s.writer.lock() { writer.take(); }
+                s.master.take();
+            }
+            sessions.remove(id);
+            let _ = closed_tx.send(TerminalClosedEvent {
+                terminal_id: id.clone(), context_key: ctx.clone(), socket_ids: vec![],
+            });
         }
     }
 
@@ -403,6 +456,8 @@ impl TerminalService {
                 rows: next_rows as usize, cols: next_cols as usize,
                 pixel_width: 0, pixel_height: 0, dpi: 0,
             });
+            // M2: 广播元数据变更给所有已附着客户端。
+            self.emit_metadata(s);
         }
         Ok(Self::meta(s))
     }
@@ -473,6 +528,30 @@ fn serialize_terminal_screen(term: &Terminal) -> String {
 }
 
 // ── 辅助函数 ─────────────────────────────────────────────────────────────────
+
+/// H1 修复：在字节流的末尾找到最后一个完整 UTF-8 序列的边界。
+/// 返回可安全转为字符串的字节数；尾部不完整的序列留给下一次合并。
+fn find_utf8_boundary(bytes: &[u8]) -> usize {
+    if bytes.is_empty() { return 0; }
+    // 从末尾往回找，最多检查 4 字节（UTF-8 最长 4 字节）。
+    let start = bytes.len().saturating_sub(4);
+    for i in (start..bytes.len()).rev() {
+        let b = bytes[i];
+        if b & 0xC0 != 0x80 {
+            // 这是一个首字节（非续传字节）。检查后续是否有足够的续传字节。
+            let expected = if b < 0x80 { 1 }
+                else if b & 0xE0 == 0xC0 { 2 }
+                else if b & 0xF0 == 0xE0 { 3 }
+                else if b & 0xF8 == 0xF0 { 4 }
+                else { 1 }; // 非法首字节，按 1 字节处理
+            if i + expected <= bytes.len() {
+                return bytes.len(); // 最后一个序列完整，整个缓冲区安全
+            }
+            return i; // 首字节后缺续传字节，在此处切割
+        }
+    }
+    bytes.len() // 全是续传字节（极端情况），返回全长（lossy 会处理）
+}
 
 fn resolve_shell() -> String {
     if cfg!(windows) {

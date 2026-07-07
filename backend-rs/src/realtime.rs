@@ -10,7 +10,7 @@
 
 use crate::auth::AuthService;
 use crate::codex::{CodexProcessManager, LifecycleEvent};
-use crate::terminal::TerminalService;
+use crate::terminal::{TerminalMetadataEvent, TerminalService};
 use serde_json::{json, Value};
 use socketioxide::extract::{AckSender, Data as SocketData, SocketRef, State};
 use socketioxide::SocketIo;
@@ -205,7 +205,8 @@ pub fn spawn_emit_tasks(io: SocketIo, codex: Arc<CodexProcessManager>, terminal:
     spawn_lifecycle_emit(io.clone(), codex);
     spawn_terminal_output_emit(io.clone(), terminal.clone());
     spawn_terminal_exit_emit(io.clone(), terminal.clone());
-    spawn_terminal_closed_emit(io, terminal);
+    spawn_terminal_closed_emit(io.clone(), terminal.clone());
+    spawn_terminal_metadata_emit(io, terminal);
 }
 
 fn spawn_notification_emit(io: SocketIo, codex: Arc<CodexProcessManager>) {
@@ -354,7 +355,6 @@ fn spawn_terminal_closed_emit(io: SocketIo, terminal: Arc<TerminalService>) {
         loop {
             match rx.recv().await {
                 Ok(event) => {
-                    let Some(_ns) = io.of("/ws") else { continue };
                     let payload = json!({
                         "terminalId": event.terminal_id,
                         "contextKey": event.context_key,
@@ -365,6 +365,26 @@ fn spawn_terminal_closed_emit(io: SocketIo, terminal: Arc<TerminalService>) {
                     }
                 }
                 Err(RecvError::Lagged(n)) => tracing::warn!("terminal closed emit lagged {n}"),
+                Err(RecvError::Closed) => break,
+            }
+        }
+    });
+}
+
+// M2: 终端元数据广播（resize/open 时通知所有已附着客户端）。
+fn spawn_terminal_metadata_emit(io: SocketIo, terminal: Arc<TerminalService>) {
+    let mut rx = terminal.subscribe_metadata();
+    tokio::spawn(async move {
+        loop {
+            match rx.recv().await {
+                Ok(event) => {
+                    let TerminalMetadataEvent { terminal: meta, socket_ids } = event;
+                    let payload = json!({ "terminal": meta });
+                    for sid in &socket_ids {
+                        if let Some(ns) = io.of("/ws") { let _ = ns.within(sid.clone()).emit("terminal.metadata", &payload); }
+                    }
+                }
+                Err(RecvError::Lagged(n)) => tracing::warn!("terminal metadata emit lagged {n}"),
                 Err(RecvError::Closed) => break,
             }
         }
