@@ -47,6 +47,7 @@ pub enum ErrorCode {
     ApprovalsAlreadyResolved,
     ApprovalsServerNotConnected,
     ApprovalsAlreadyHandled,
+    ApprovalsResultRequired,
     // ── account.* ──────────────────────────────────────────────────────
     AccountLoginIdRequired,
     AccountApiKeyRequired,
@@ -179,6 +180,7 @@ impl ErrorCode {
             Self::ApprovalsAlreadyResolved => "approvals.already_resolved",
             Self::ApprovalsServerNotConnected => "approvals.server_not_connected",
             Self::ApprovalsAlreadyHandled => "approvals.already_handled",
+            Self::ApprovalsResultRequired => "approvals.result_required",
             Self::AccountLoginIdRequired => "account.login_id_required",
             Self::AccountApiKeyRequired => "account.api_key_required",
             Self::AccountAccessTokenRequired => "account.access_token_required",

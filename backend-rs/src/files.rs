@@ -180,7 +180,7 @@ pub struct AddRootBody {
 }
 
 pub async fn add_root(
-    State(mut state): State<AppState>,
+    State(state): State<AppState>,
     Json(body): Json<AddRootBody>,
 ) -> Result<Json<serde_json::Value>, AppError> {
     let raw = body.root.as_deref().map(|s| s.trim()).unwrap_or("");

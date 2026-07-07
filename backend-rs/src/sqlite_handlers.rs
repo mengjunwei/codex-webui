@@ -334,7 +334,7 @@ fn parse_pending_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<PendingServerReq
 
 #[derive(Deserialize)]
 pub struct RespondPayload {
-    pub result: serde_json::Value,
+    pub result: Option<serde_json::Value>,
     #[serde(rename = "clientId")]
     pub client_id: Option<String>,
 }
@@ -346,6 +346,16 @@ pub async fn respond_to_request(
 ) -> Result<Json<PendingServerRequestDto>, AppError> {
     let generation = state.codex.generation() as i64;
     let now = chrono::Utc::now().timestamp_millis();
+
+    // H5 FIX: explicit result validation (TS checks hasOwnProperty('result')).
+    let result = payload.result.ok_or_else(|| {
+        AppError::business(
+            ErrorCode::ApprovalsResultRequired,
+            StatusCode::BAD_REQUEST,
+            "result is required".into(),
+            None,
+        )
+    })?;
 
     // 1. Lookup (must release the DB lock before awaiting the client below —
     //    holding a MutexGuard across `.await` makes the future !Send).
@@ -431,7 +441,7 @@ pub async fn respond_to_request(
 
         // Forward to app-server INSIDE the transaction (tx rolls back on forward failure).
         let id_value = parse_request_id_value(&request_id);
-        if let Err(e) = client.respond_to_server_request(id_value, payload.result) {
+        if let Err(e) = client.respond_to_server_request(id_value, result) {
             // Drop tx without commit → rollback. Status stays pending.
             return Err(AppError::internal(format!("respond forward: {e}")));
         }

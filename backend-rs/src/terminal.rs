@@ -347,7 +347,7 @@ impl TerminalService {
         let data_bytes = data.as_bytes().to_vec();
         drop(data); // free the &str borrow
 
-        let writer_clone = {
+        let _writer_clone = {
             let sessions = self.sessions.lock().unwrap();
             let s = sessions.get(terminal_id).filter(|s| s.status != TerminalStatus::Exited)
                 .ok_or_else(|| not_found("terminal not found"))?;

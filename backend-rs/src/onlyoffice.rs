@@ -362,16 +362,25 @@ async fn callback_inner(
     let _state_payload = verify_callback_state(q.state.as_deref(), &secret, file_path, body.key.as_deref())?;
 
     // 3. Verify OnlyOffice callback JWT (body.token or Authorization header).
-    let oo_token = body
+    let oo_token: Option<String> = body
         .token
-        .as_deref()
+        .clone()
         .or_else(|| {
+            // L1 FIX: only extract Bearer token (was .or(Some(h)) which passed
+            // entire header value as token — e.g. "Basic xxx" would be used).
             headers
                 .get(axum::http::header::AUTHORIZATION)
                 .and_then(|v| v.to_str().ok())
-                .and_then(|h| h.strip_prefix("Bearer ").or(Some(h)))
+                .and_then(|h| {
+                    let lower = h.to_ascii_lowercase();
+                    if let Some(rest) = lower.strip_prefix("bearer ") {
+                        Some(h[h.len() - rest.trim().len()..].trim().to_string())
+                    } else {
+                        None
+                    }
+                })
         });
-    verify_onlyoffice_token(oo_token, &secret)?;
+    verify_onlyoffice_token(oo_token.as_deref(), &secret)?;
 
     // 4. Validate download URL origin against configured OnlyOffice server.
     let onlyoffice_url = reader
