@@ -210,7 +210,7 @@ pub async fn update_batch(
 pub async fn update_one(
     State(state): State<AppState>,
     Path(key): Path<String>,
-    Json(payload): Json<UpdatePayload>,
+    Json(body): Json<serde_json::Value>,
 ) -> Result<Json<SettingDto>, AppError> {
     let def = find_def(&key).ok_or_else(|| {
         AppError::business(
@@ -220,29 +220,43 @@ pub async fn update_one(
             None,
         )
     })?;
-    let serialized = match &payload.value {
-        Some(v) => Some(validate_and_serialize(def, v).map_err(|msg| {
+    // H3 修复：区分"value 字段缺失"（→ 400）和"value 为 null"（→ 重置）。
+    // TS settings.controller.ts:83 使用 hasOwnProperty('value') 进行区分。
+    let has_value = body.get("value").is_some();
+    if !has_value {
+        return Err(AppError::business(
+            ErrorCode::ValidationFieldInvalid,
+            StatusCode::BAD_REQUEST,
+            "value is required".into(),
+            None,
+        ));
+    }
+    let value = &body["value"];
+    let serialized = if value.is_null() {
+        None // 显式 null → 重置为 env/default
+    } else {
+        Some(validate_and_serialize(def, value).map_err(|msg| {
             AppError::business(
                 ErrorCode::SettingsInvalidValue,
                 StatusCode::BAD_REQUEST,
                 msg,
                 None,
             )
-        })?),
-        None => None,
+        })?)
     };
     write_setting(&state.db, &key, serialized.as_deref())
         .map_err(|e| AppError::internal(format!("write {key}: {e}")))?;
 
-    let reader = crate::settings::SettingsReader::new(&state.db);
-    let r = reader.resolve(&key).ok_or_else(|| {
-        AppError::business(
-            ErrorCode::HttpNotFound,
-            StatusCode::NOT_FOUND,
-            "Setting not found".into(),
-            None,
-        )
-    })?;
+    let r = crate::settings::SettingsReader::new(&state.db)
+        .resolve(&key)
+        .ok_or_else(|| {
+            AppError::business(
+                ErrorCode::HttpNotFound,
+                StatusCode::NOT_FOUND,
+                "Setting not found".into(),
+                None,
+            )
+        })?;
     Ok(Json(SettingDto::from_resolved(
         &r,
         constraints_for_key(&state.db, &key),

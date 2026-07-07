@@ -219,6 +219,32 @@ impl CodexJsonRpcClient {
         self.write_tx.send(line).map_err(|_| RpcError::Closed)
     }
 
+    /// 用错误码响应服务端请求（审批拒绝等场景）。
+    /// 对齐 TS `respondToServerRequestWithError(id, code, message)`。
+    pub fn respond_to_server_request_with_error(
+        &self,
+        id: Value,
+        code: i64,
+        message: &str,
+    ) -> Result<(), RpcError> {
+        if self.is_closed() {
+            return Err(RpcError::Closed);
+        }
+        let mut msg = serde_json::Map::new();
+        msg.insert("id".into(), id);
+        msg.insert(
+            "error".into(),
+            Value::Object({
+                let mut m = serde_json::Map::new();
+                m.insert("code".into(), Value::Number(code.into()));
+                m.insert("message".into(), Value::String(message.to_string()));
+                m
+            }),
+        );
+        let line = serde_json::to_string(&Value::Object(msg))?;
+        self.write_tx.send(line).map_err(|_| RpcError::Closed)
+    }
+
     /// 订阅服务端通知（method + params，无 id）。
     pub fn subscribe_notifications(&self) -> broadcast::Receiver<Value> {
         self.notify_tx.subscribe()

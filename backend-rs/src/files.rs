@@ -131,6 +131,23 @@ fn is_within(child: &Path, parent: &Path) -> bool {
     child.starts_with(parent)
 }
 
+/// C3：判断路径是否为某个 workspace root（禁止删除/重命名/移动）。
+fn is_workspace_root(state: &AppState, p: &Path) -> bool {
+    let canonical = std::fs::canonicalize(p).unwrap_or_else(|_| p.to_path_buf());
+    let canon_str = canonical.to_string_lossy().to_string();
+    workspace_roots(state).iter().any(|r| canon_str == *r)
+}
+
+/// C4：判断 child 是否为 ancestor 的子路径（禁止复制/移动到自身或后代）。
+fn is_descendant_of(child: &Path, ancestor: &Path) -> bool {
+    let child_canon = std::fs::canonicalize(child).ok();
+    let anc_canon = std::fs::canonicalize(ancestor).ok();
+    match (child_canon, anc_canon) {
+        (Some(c), Some(a)) => c.starts_with(&a) && c != a,
+        _ => false,
+    }
+}
+
 fn workspace_roots(state: &AppState) -> Vec<String> {
     let mut out: HashSet<String> = HashSet::new();
     // 家目录 —— 规范化以匹配 Windows 上规范化后文件路径的逐字前缀（\\?\）
@@ -229,6 +246,24 @@ pub async fn read_tree(
             "root must be a directory",
         ));
     }
+    // H1 修复：从 settings 读取 excludedDirs（逗号分隔），而非硬编码。
+    let reader = crate::settings::SettingsReader::new(&state.db);
+    let excluded: Vec<String> = reader
+        .get_string("files.excludedDirs")
+        .filter(|s| !s.is_empty())
+        .map(|s| {
+            s.split(',')
+                .map(|part| part.trim().to_string())
+                .filter(|p| !p.is_empty())
+                .collect()
+        })
+        .unwrap_or_else(|| {
+            DEFAULT_EXCLUDED_DIRS
+                .iter()
+                .map(|s| s.to_string())
+                .collect()
+        });
+
     let mut entries: Vec<serde_json::Value> = Vec::new();
     let mut dir = tokio::fs::read_dir(&resolved.resolved)
         .await
@@ -239,7 +274,7 @@ pub async fn read_tree(
         .map_err(|e| AppError::internal(format!("dir entry: {e}")))?
     {
         let name = entry.file_name().to_string_lossy().to_string();
-        if DEFAULT_EXCLUDED_DIRS.contains(&name.as_str()) {
+        if excluded.iter().any(|e| e == &name) {
             continue;
         }
         let path = entry.path();
@@ -372,6 +407,10 @@ pub async fn delete_path(
 
     // 普通路径：解析（规范化）后按类型删除。
     let resolved = resolve(&state, raw).await?;
+    // C3：禁止删除 workspace root 本身。
+    if is_workspace_root(&state, &resolved.resolved) {
+        return Err(forbidden("cannot delete a workspace root directory"));
+    }
     let recursive = matches!(q.recursive.as_deref(), Some("true") | Some("1"));
     match resolved.kind {
         ResolvedKind::Directory => {
@@ -930,7 +969,18 @@ pub async fn rename_path(
     if new_name.contains('/') || new_name.contains('\\') {
         return Err(bad_request(ErrorCode::FilesNameInvalid, "newName must not contain path separators"));
     }
+    // H2 修复：校验 newName 合法性（排除 `.`, `..`, NUL）。
+    if new_name == "." || new_name == ".." || new_name.contains('\0') {
+        return Err(bad_request(
+            ErrorCode::FilesNameInvalid,
+            "newName must not be '.', '..', or contain NUL",
+        ));
+    }
     let resolved = resolve(&state, raw).await?;
+    // C3：禁止重命名 workspace root。
+    if is_workspace_root(&state, &resolved.resolved) {
+        return Err(forbidden("cannot rename a workspace root directory"));
+    }
     let parent = resolved.resolved.parent()
         .ok_or_else(|| bad_request(ErrorCode::FilesNoParentFound, "parent path not found"))?;
     let dest = parent.join(new_name);
@@ -984,6 +1034,10 @@ async fn do_relocate(
             "sourcePath and destinationPath are required"));
     }
     let src = resolve(state, src_raw).await?;
+    // C3：禁止移动 workspace root。
+    if is_move && is_workspace_root(state, &src.resolved) {
+        return Err(forbidden("cannot move a workspace root directory"));
+    }
     // 校验目标：规范化目标（若目标尚不存在，则规范化其父目录）。
     let dst_canonical = match tokio::fs::canonicalize(dst_raw).await {
         Ok(c) => c,
@@ -997,6 +1051,17 @@ async fn do_relocate(
     };
     if !within_workspace(state, &dst_canonical) {
         return Err(forbidden("destination is outside workspace"));
+    }
+    // C4：禁止复制/移动到自身或其子路径（防止数据丢失或无限递归）。
+    let dest_full = if dst_canonical.is_dir() && !dst_raw.ends_with(std::path::MAIN_SEPARATOR) {
+        dst_canonical.join(
+            src.resolved.file_name().unwrap_or_default()
+        )
+    } else {
+        std::path::PathBuf::from(dst_raw)
+    };
+    if is_descendant_of(&dest_full, &src.resolved) {
+        return Err(forbidden("cannot copy/move a directory into itself or a descendant"));
     }
     let dest = std::path::PathBuf::from(dst_raw);
     if dest.exists() && !body.overwrite.unwrap_or(false) {
@@ -1174,6 +1239,15 @@ fn detect_format(path: &Path) -> Option<ArchiveFormat> {
     else { None }
 }
 
+/// C1+C2 修复：校验归档条目路径（防止 zip-slip）并限制总条目数。
+fn is_safe_entry_name(name: &str) -> bool {
+    // 拒绝含 `..` 分量的路径（zip-slip 攻击）。
+    !name.split(|c| c == '/' || c == '\\').any(|part| part == "..")
+}
+
+const MAX_ARCHIVE_ENTRIES: usize = 20_000;
+const MAX_ARCHIVE_TOTAL_BYTES: u64 = 1 << 30; // 1 GB
+
 fn list_archive_entries(path: &Path) -> Result<Vec<serde_json::Value>, String> {
     let fmt = detect_format(path).ok_or("unsupported archive format")?;
     match fmt {
@@ -1181,24 +1255,37 @@ fn list_archive_entries(path: &Path) -> Result<Vec<serde_json::Value>, String> {
             let file = std::fs::File::open(path).map_err(|e| e.to_string())?;
             let mut archive = zip::ZipArchive::new(file).map_err(|e| e.to_string())?;
             let mut entries = Vec::new();
-            for i in 0..archive.len() {
+            let mut total_size: u64 = 0;
+            let len = archive.len().min(MAX_ARCHIVE_ENTRIES);
+            for i in 0..len {
                 let entry = archive.by_index(i).map_err(|e| e.to_string())?;
                 let name = entry.name().to_string();
+                if !is_safe_entry_name(&name) {
+                    continue; // 跳过 zip-slip 条目
+                }
+                let entry_size = entry.size();
+                total_size += entry_size;
+                if total_size > MAX_ARCHIVE_TOTAL_BYTES {
+                    return Err("archive total uncompressed size exceeds limit (1GB)".into());
+                }
                 let is_dir = entry.is_dir();
                 entries.push(json!({
                     "name": name.rsplit('/').next().unwrap_or(&name),
                     "path": name,
                     "type": if is_dir { "directory" } else { "file" },
-                    "size": if is_dir { serde_json::Value::Null } else { serde_json::json!(entry.size()) },
+                    "size": if is_dir { serde_json::Value::Null } else { serde_json::json!(entry_size) },
                 }));
+            }
+            if archive.len() > MAX_ARCHIVE_ENTRIES {
+                return Err("archive has too many entries (>20000)".into());
             }
             Ok(entries)
         }
         ArchiveFormat::Tar => list_tar(std::fs::File::open(path).map_err(|e| e.to_string())?),
-        ArchiveFormat::TarGz => list_tar(flate2::read::GzDecoder::new(std::fs::File::open(path).map_err(|e| e.to_string())?)),
+        ArchiveFormat::TarGz => list_tar(flate2::read::GzDecoder::new(
+            std::fs::File::open(path).map_err(|e| e.to_string())?,
+        )),
         ArchiveFormat::TarBz2 | ArchiveFormat::TarXz => {
-            // H5 修复：bz2/xz 需要额外的解压 crate；返回明确的错误，
-            // 而不是把压缩字节直接喂给 tar（否则会产生乱码并 500）。
             Err("bz2/xz archive listing not yet supported".into())
         }
     }
@@ -1207,15 +1294,29 @@ fn list_archive_entries(path: &Path) -> Result<Vec<serde_json::Value>, String> {
 fn list_tar<R: std::io::Read>(reader: R) -> Result<Vec<serde_json::Value>, String> {
     let mut archive = tar::Archive::new(reader);
     let mut entries = Vec::new();
+    let mut total_size: u64 = 0;
+    let mut count = 0usize;
     for entry in archive.entries().map_err(|e| e.to_string())? {
         let entry = entry.map_err(|e| e.to_string())?;
         let path = entry.path().map_err(|e| e.to_string())?.to_string_lossy().to_string();
+        if !is_safe_entry_name(&path) {
+            continue; // 跳过 zip-slip 条目
+        }
+        count += 1;
+        if count > MAX_ARCHIVE_ENTRIES {
+            return Err("archive has too many entries (>20000)".into());
+        }
+        let entry_size = entry.size();
+        total_size += entry_size;
+        if total_size > MAX_ARCHIVE_TOTAL_BYTES {
+            return Err("archive total uncompressed size exceeds limit (1GB)".into());
+        }
         let is_dir = entry.header().entry_type().is_dir();
         entries.push(json!({
             "name": path.rsplit('/').next().unwrap_or(&path),
             "path": path,
             "type": if is_dir { "directory" } else { "file" },
-            "size": if is_dir { serde_json::Value::Null } else { serde_json::json!(entry.size()) },
+            "size": if is_dir { serde_json::Value::Null } else { serde_json::json!(entry_size) },
         }));
     }
     Ok(entries)
