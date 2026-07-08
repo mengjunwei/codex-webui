@@ -487,6 +487,7 @@ dependencies = [
  "hmac",
  "http-body-util",
  "jsonwebtoken",
+ "lzma-rust2",
  "once_cell",
  "portable-pty",
  "regex",
@@ -1760,6 +1761,9 @@ name = "lzma-rust2"
 version = "0.16.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ca93e534d1142d1d0dcca6d25fe302508a5dfb40b302802904577725ea0b695b"
+dependencies = [
+ "sha2 0.11.0",
+]
 
 [[package]]
 name = "lzma-sys"

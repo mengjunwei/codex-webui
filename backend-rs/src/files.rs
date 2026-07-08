@@ -10,7 +10,7 @@
 //! （供 threads 用于 mention 路径校验）。
 //!
 //! 已实现：multipart 上传、serve-Range（PDF/视频流式播放）、
-//! rename/copy/move、download、归档预览（zip/tar.gz/tar.bz2/7z；rar/xz 见 detect_format）。
+//! rename/copy/move、download、归档预览（zip/tar.gz/tar.bz2/tar.xz/7z；rar 不支持）。
 
 use crate::error::{AppError, ErrorCode};
 use crate::state::AppState;
@@ -1520,6 +1520,12 @@ fn detect_format(path: &Path) -> Option<ArchiveFormat> {
     else { None }
 }
 
+/// Wraps a reader in an XZ decoder so it can be fed into list_tar / read_tar_entry.
+/// lzma-rust2::XzReader implements std::io::Read under the std feature.
+fn xz_decoder<R: std::io::Read>(reader: R) -> lzma_rust2::XzReader<R> {
+    lzma_rust2::XzReader::new(reader, true)
+}
+
 /// C1+C2 修复：规范化归档条目路径，拒绝穿越/绝对路径/NUL/空段（对齐 TS
 /// `normalizeArchiveEntryPath`）。返回 `None` 视为不安全。
 ///
@@ -1647,7 +1653,9 @@ fn list_archive_entries(path: &Path) -> Result<Vec<serde_json::Value>, ArchiveLi
         ArchiveFormat::TarBz2 => list_tar(bzip2_rs::DecoderReader::new(
             std::fs::File::open(path).map_err(|e| Other(e.to_string()))?,
         )),
-        ArchiveFormat::TarXz => Err(UnsupportedFormat),
+        ArchiveFormat::TarXz => list_tar(xz_decoder(
+            std::fs::File::open(path).map_err(|e| Other(e.to_string()))?,
+        )),
     }
 }
 
@@ -1819,10 +1827,11 @@ fn read_archive_entry(path: &Path, entry_name: &str) -> Result<Vec<u8>, ArchiveR
             &target,
             entry_name,
         ),
-        ArchiveFormat::TarXz => {
-            // xz 暂无纯 Rust 流式 Read 包装;需要时再引入。
-            Err(Other("xz archive entry extraction not yet supported".into()))
-        }
+        ArchiveFormat::TarXz => read_tar_entry(
+            xz_decoder(std::fs::File::open(path).map_err(|e| Other(e.to_string()))?),
+            &target,
+            entry_name,
+        ),
     }
 }
 

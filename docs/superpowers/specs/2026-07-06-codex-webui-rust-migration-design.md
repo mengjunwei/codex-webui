@@ -32,7 +32,7 @@ SQLite (better-sqlite3 + Drizzle ORM) · Pino (pino-roll 滚动日志)
 | 层 | 模块 |
 |---|---|
 | 简单 CRUD | account · apps · models · mcp-servers · skills · plugins · token-usage · turn-diff · turn-errors · logs · pending-approvals · settings |
-| 中等 | auth（JWT + API Key 全局 Guard）· chat（multipart 上传）· archive（zip/tar/rar/7z）· onlyoffice |
+| 中等 | auth（JWT + API Key 全局 Guard）· chat（multipart 上传）· archive（zip/tar(.gz/.bz2/.xz)/7z）· onlyoffice |
 | 核心/硬骨头 | **codex**（JSON-RPC + 进程管理，系统中枢）· **threads / files**（Socket.IO 实时）· **terminal**（node-pty + xterm headless VT） |
 
 ### 1.4 关键架构事实（影响迁移）
@@ -92,7 +92,7 @@ SQLite (better-sqlite3 + Drizzle ORM) · Pino (pino-roll 滚动日志)
 | OpenAPI | @nestjs/swagger | **utoipa** | operationId 工厂需对齐，保证前端 SDK 生成不坏 |
 | 认证 | @nestjs/jwt + jsonwebtoken | **jsonwebtoken** crate | JWT 签名密钥派生自 WEBUI_API_KEY |
 | 终端 PTY | node-pty | **portable-pty** | 跨平台 PTY |
-| 压缩包 | 7zip-min / unrar-async / yauzl / tar-stream | **sevenz-rust2 / unrar / zip / tar** | 四种格式各一 crate |
+| 压缩包 | 7zip-min / unrar-async / yauzl / tar-stream | **sevenz-rust2 / zip / tar / bzip2-rs / lzma-rust2** | rar 不支持；其余 5 种格式纯 Rust 实现 |
 | 配置 | @nestjs/config (env) | **figment / config** + env | env 变量 + SQLite runtime settings |
 | 序列化 | reflect-metadata + class-validator | **serde + serde_json + validator** | DTO 校验 |
 | DI | NestJS IoC | **显式 `Arc<AppState>`** | 单例服务组装进共享 state，经 axum State 注入 |
@@ -138,7 +138,7 @@ account · apps · models · mcp-servers · skills · plugins · token-usage · 
 
 ### Phase 4 — chat / archive / onlyoffice
 - chat：multipart 上传 + `chat-upload.service`。
-- archive：zip / tar(.gz/.bz2) / 7z 适配器（免解压预览）。**rar 与 .tar.xz 不支持**（决策：不引入 unrar 的 C 绑定、无成熟纯 Rust xz 流式解码器；前端对这两种格式不提供预览）。
+- archive：zip / tar(.gz/.bz2/.xz) / 7z 适配器（免解压预览）。**rar 不支持**（决策：不引入 unrar 的 C 绑定，纯 Rust RAR 解码器成熟度不足；前端对 .rar 不提供归档预览）。.tar.xz 已通过 lzma-rust2 支持（纯 Rust，移植自 tukaani 官方参考实现）。
 - onlyoffice：630 行 controller，回调保存、publicBaseUrl 检测。
 
 ### Phase 5 — 终端
