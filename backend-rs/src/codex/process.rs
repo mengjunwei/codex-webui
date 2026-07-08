@@ -136,17 +136,22 @@ impl CodexProcessManager {
         // 第三阶段：initialize 握手。
         match self.initialize_client(&client).await {
             Ok((init, init_value)) => {
-                // spawn 之后、设置 current 之前若 destroy 已被调用：就地销毁新客户端，
-                // 避免产生无人管理的孤儿子进程（destroy 此刻 take 到的是 None）。
-                if self.destroyed.load(Ordering::SeqCst) {
-                    client.destroy().await;
-                    return;
-                }
                 // 重启成功，重置指数退避计数。
                 self.consecutive_failures.store(0, Ordering::SeqCst);
                 self.generation.fetch_add(1, Ordering::SeqCst);
                 let restarted = new_generation > 1;
-                *self.current.lock().await = Some((new_generation, client));
+                // M1 修复：复查 destroyed 与写入 current 在同一把锁内原子完成。
+                // spawn 之后、写 current 之前若 destroy 被调用，它 take 到 None；
+                // 此处锁内看到 destroyed=true 就地销毁新 client，避免孤儿子进程。
+                {
+                    let mut current = self.current.lock().await;
+                    if self.destroyed.load(Ordering::SeqCst) {
+                        drop(current);
+                        client.destroy().await;
+                        return;
+                    }
+                    *current = Some((new_generation, client));
+                }
                 *self.init_result.lock().await = Some(init_value);
 
                 tracing::info!(
@@ -225,7 +230,13 @@ impl CodexProcessManager {
                     Ok(msg) => {
                         let _ = mgr_notify.send(msg);
                     }
-                    Err(_) => break, // 客户端已关闭
+                    // H1 修复：Lagged 表示消费方落后、旧消息被丢弃，但通道仍存活，必须 continue；
+                    // 原 Err(_) => break 会把 Lagged 误当 Closed，突发通知下转发永久静默、前端断流。
+                    Err(broadcast::error::RecvError::Lagged(n)) => {
+                        tracing::warn!(lagged = n, "notify forwarder lagged, skipping");
+                        continue;
+                    }
+                    Err(broadcast::error::RecvError::Closed) => break, // 客户端已关闭
                 }
             }
         });
@@ -238,7 +249,11 @@ impl CodexProcessManager {
                     Ok(msg) => {
                         let _ = mgr_server_req.send(msg);
                     }
-                    Err(_) => break,
+                    Err(broadcast::error::RecvError::Lagged(n)) => {
+                        tracing::warn!(lagged = n, "server-request forwarder lagged, skipping");
+                        continue;
+                    }
+                    Err(broadcast::error::RecvError::Closed) => break,
                 }
             }
         });

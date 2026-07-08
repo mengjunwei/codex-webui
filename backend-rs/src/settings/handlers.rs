@@ -214,15 +214,28 @@ pub async fn update_batch(
             .unchecked_transaction()
             .map_err(|e| AppError::internal(format!("tx begin: {e}")))?;
         for (key, value) in &prepared {
-            tx.execute(
+            // M5：检查 affected rows，与 write_setting 一致——行缺失（reconcile 未跑/被删）时报错，
+            // 而非静默成功（否则前端拿到 200 但值未写入）。
+            let changes = tx.execute(
                 "UPDATE settings SET value = ?1, updated_at = (strftime('%s','now')*1000) WHERE key = ?2",
                 rusqlite::params![value.as_deref(), key],
             )
             .map_err(|e| AppError::internal(format!("update {key}: {e}")))?;
+            if changes == 0 {
+                return Err(AppError::business(
+                    ErrorCode::SettingsNotFound,
+                    StatusCode::NOT_FOUND,
+                    format!("setting row not found for key '{key}' (was reconcile run?)"),
+                    None,
+                ));
+            }
         }
         tx.commit()
             .map_err(|e| AppError::internal(format!("tx commit: {e}")))?;
     }
+    // G3：批量写入后清空缓存（R4 让缓存覆盖 DB/env/default 全 key，漏清会导致后续
+    // list/get_one 命中 stale 缓存返回旧值；update_one/delete_one 已调用，此处补齐）。
+    state.invalidate_settings_cache();
 
     // 返回更新后的设置（锁会在 resolve 内部安全地重新获取）。
     let dtos: Vec<SettingDto> = prepared

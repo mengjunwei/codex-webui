@@ -232,7 +232,15 @@ fn maybe_sweep_uploads(root: &std::path::Path) {
 
 /// 提取安全的文件扩展名（包含点号），长度上限为 MAX_EXTENSION_LENGTH。
 fn get_safe_extension(filename: &str) -> String {
-    let ext = filename.rsplit('.').next().unwrap_or("");
+    let trimmed = filename.trim();
+    // M4：对齐 TS path.extname —— 取最后一个 '.'；无点或点在首位（dotfile）→ 无扩展名。
+    // 原用 rsplit('.').next() 会把无点/点开头文件名整个当扩展名（"README"→"README"、
+    // ".bashrc"→"bashrc"），与 TS 落盘行为不符。
+    let dot_idx = match trimmed.rfind('.') {
+        Some(0) | None => return String::new(),
+        Some(i) => i,
+    };
+    let ext = &trimmed[dot_idx + 1..];
     // 用字符计数（与下方 chars 校验一致），避免多字节扩展名按字节长度误判。
     if ext.is_empty() || ext.chars().count() > MAX_EXTENSION_LENGTH {
         return String::new();

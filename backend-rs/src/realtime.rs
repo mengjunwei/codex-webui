@@ -470,6 +470,12 @@ fn spawn_lifecycle_emit(
                             tracing::warn!("emit codex.lifecycle failed: {e}");
                         }
                     }
+                    // H2 根治：在同一任务内推进 generation（清空旧缓存），保证后续 auto-resume
+                    // 读到新 generation。不再依赖 main.rs 的独立推进任务，消除"advance 与
+                    // auto-resume 跨任务调度顺序无保证"的竞态（原 H7 修复只堵了 advance 之后）。
+                    if matches!(event, LifecycleEvent::Ready { .. }) {
+                        resume_registry.advance_generation(generation);
+                    }
                     // codex 重启后:auto-resume 仍被订阅的线程(对齐 TS AutoResumeService)。
                     if do_resume {
                         let threads = active.snapshot();

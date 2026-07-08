@@ -1209,14 +1209,15 @@ async fn do_relocate(
     if effective_dest.starts_with(&src.resolved) {
         return Err(forbidden("cannot copy/move a directory into itself or a descendant"));
     }
-    let dst_exists = tokio::fs::try_exists(&dst_canonical).await.unwrap_or(false);
+    // M2 修复：存在性检查与实际落点都基于 effective_dest（目标为已存在目录时，落点为 dst/src_name）。
+    // 原代码算了 effective_dest 却仍用 dst_canonical：移入目录时要么 EISDIR 失败、要么 rename
+    // 替换目录 / copy_dir 合并覆盖，均与 TS resolveSafeTargetPath 语义不符。
+    let dst_exists = tokio::fs::try_exists(&effective_dest).await.unwrap_or(false);
     if dst_exists && !body.overwrite.unwrap_or(false) {
         return Err(conflict(ErrorCode::FilesPathExists,
             "destination already exists (set overwrite=true)"));
     }
-    // 统一使用 canonical 路径执行实际操作（对齐 TS resolveSafeTargetPath），
-    // 避免 dst_raw 为相对路径时落点偏离工作区校验位置。
-    let dest = dst_canonical;
+    let dest = effective_dest;
     if is_move {
         tokio::fs::rename(&src.resolved, &dest)
             .await
@@ -1510,15 +1511,33 @@ pub async fn archive_entry(
             .status(StatusCode::RANGE_NOT_SATISFIABLE)
             .header(header::CONTENT_RANGE, format!("bytes */{}", total))
             .body(Body::empty())?,
+        // G2 修复：Content-Length 用实际解压字节数（data.len()），而非声明 total。
+        // 损坏/截断/恶意归档（声明 size > 实际）时，旧逻辑发出与 body 不符的 Content-Length，
+        // 导致客户端按声明值等待字节而挂起至超时。
         RangeResult::None => resp
-            .header(header::CONTENT_LENGTH, total)
+            .header(header::CONTENT_LENGTH, data.len() as u64)
             .body(Body::from(data))?,
         RangeResult::Range(r) => {
-            let length = r.end - r.start + 1;
-            resp.status(StatusCode::PARTIAL_CONTENT)
-                .header(header::CONTENT_RANGE, format!("bytes {}-{}/{}", r.start, r.end, total))
-                .header(header::CONTENT_LENGTH, length)
-                .body(Body::from(data))?
+            let want = (r.end - r.start + 1) as usize;
+            // 实际解压不足（截断/损坏/Range 超出实际）：空 → 416；否则按实际收窄 end 与长度。
+            if data.len() < want {
+                if data.is_empty() {
+                    return Ok(resp
+                        .status(StatusCode::RANGE_NOT_SATISFIABLE)
+                        .header(header::CONTENT_RANGE, format!("bytes */{}", total))
+                        .body(Body::empty())?);
+                }
+                let actual_end = r.start + data.len() as u64 - 1;
+                resp.status(StatusCode::PARTIAL_CONTENT)
+                    .header(header::CONTENT_RANGE, format!("bytes {}-{}/{}", r.start, actual_end, total))
+                    .header(header::CONTENT_LENGTH, data.len() as u64)
+                    .body(Body::from(data))?
+            } else {
+                resp.status(StatusCode::PARTIAL_CONTENT)
+                    .header(header::CONTENT_RANGE, format!("bytes {}-{}/{}", r.start, r.end, total))
+                    .header(header::CONTENT_LENGTH, want as u64)
+                    .body(Body::from(data))?
+            }
         }
     })
 }
@@ -1924,6 +1943,14 @@ fn read_limited_range<R: std::io::Read>(
 ) -> Result<Vec<u8>, ArchiveReadError> {
     use std::io::Read;
     let limit = MAX_ARCHIVE_ENTRY_BYTES as u64;
+    // M3 修复：skip 上限防 zip-bomb CPU DoS —— 声明大 size 的归档配合 Range 可强迫顺序解压并
+    // 丢弃海量字节（内存仅 8KB skip_buf 不会 OOM，但 CPU 被打满、占满阻塞线程池）。上限与单条目上限一致。
+    if start > limit {
+        return Err(ArchiveReadError::Other(format!(
+            "range start exceeds max archive entry size ({} bytes)",
+            limit
+        )));
+    }
     let length = end.saturating_sub(start).saturating_add(1).min(limit);
     // 跳过 start 字节（解压丢弃）。
     let mut remaining = start;

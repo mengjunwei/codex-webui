@@ -87,19 +87,8 @@ async fn main() -> anyhow::Result<()> {
         resume_registry.clone(),
     );
 
-    // codex 重启（generation 变化）时清空 resume 缓存（按 generation 去重）。
-    {
-        let lc_codex = codex.clone();
-        let lc_registry = resume_registry.clone();
-        tokio::spawn(async move {
-            let mut rx = lc_codex.subscribe_lifecycle();
-            while let Ok(ev) = rx.recv().await {
-                if let codex_webui::codex::LifecycleEvent::Ready { generation, .. } = ev {
-                    lc_registry.advance_generation(generation);
-                }
-            }
-        });
-    }
+    // codex 重启（generation 变化）时清空 resume 缓存——现由 realtime 的 lifecycle
+    // emit 任务在 auto-resume 之前推进（见 realtime::spawn_lifecycle_emit），不再另起任务。
 
     // 就绪状态聚合服务（/codex/status、/account.provider、/logs/export 共享其缓存）。
     let status_service = Arc::new(codex_webui::codex_status::CodexStatusService::new(codex.clone()));

@@ -596,12 +596,18 @@ impl TerminalService {
         -> Result<(String, String), AppError>
     {
         let context_key = normalize_context_key(context_key)?;
-        let sessions = self.sessions.lock().unwrap();
-        let s = sessions.get(terminal_id).ok_or_else(|| not_found("terminal not found"))?;
-        if s.context_key != context_key { return Err(context_mismatch()); }
-        if !s.attached.contains(socket_id) { return Err(not_attached()); }
-        let content = serialize_terminal_plain(&s.vt_terminal.lock().unwrap());
-        let safe_title = s.title.chars().map(|c| if c.is_alphanumeric() || "._-".contains(c) { c } else { '-' }).collect::<String>();
+        // H3：锁内仅校验 + clone vt_terminal Arc + 取 title，释放 sessions 锁后再序列化
+        // （serialize_terminal_plain 是 wezterm 重活；持全局 sessions 锁会阻塞所有终端，
+        // 且 wezterm panic 会中毒全局 sessions 锁波及整个终端服务）。
+        let (vt_clone, safe_title) = {
+            let sessions = self.sessions.lock().unwrap();
+            let s = sessions.get(terminal_id).ok_or_else(|| not_found("terminal not found"))?;
+            if s.context_key != context_key { return Err(context_mismatch()); }
+            if !s.attached.contains(socket_id) { return Err(not_attached()); }
+            let safe_title = s.title.chars().map(|c| if c.is_alphanumeric() || "._-".contains(c) { c } else { '-' }).collect::<String>();
+            (s.vt_terminal.clone(), safe_title)
+        };
+        let content = serialize_terminal_plain(&vt_clone.lock().unwrap());
         let ts = chrono::Utc::now().format("%Y-%m-%dT%H-%M-%S").to_string();
         Ok((format!("{safe_title}-{ts}.txt"), content))
     }

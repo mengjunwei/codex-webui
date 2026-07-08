@@ -568,8 +568,11 @@ impl ThreadResumeRegistry {
         }
         let result = f(key.clone()).await?;
         self.mark_resumed(&key, result.clone());
-        // 释放 in-flight 锁后回收孤立锁槽（仅本表持有时 strong_count==1），避免 HashMap 无限增长。
+        // 释放 in-flight 锁 + 自己的 Arc clone 后回收孤立锁槽（仅本表持有时 strong_count==1）。
+        // 必须先 drop(lock)：否则局部变量 lock 仍持有一个 Arc clone，strong_count 恒 ≥2，
+        // 回收条件永不成立，锁槽确定泄漏。
         drop(_guard);
+        drop(lock);
         let mut guards = self.inflight.lock().unwrap();
         if let Some(arc) = guards.get(&key) {
             if std::sync::Arc::strong_count(arc) == 1 {
