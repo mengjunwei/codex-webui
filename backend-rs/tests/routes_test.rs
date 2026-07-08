@@ -20,11 +20,11 @@ use std::sync::{Arc, Mutex};
 use tower::ServiceExt;
 
 fn state(api_key: &str) -> AppState {
-    use std::collections::HashSet;
+    use std::collections::{HashMap, HashSet};
     let c = Connection::open_in_memory().unwrap();
     let db = Arc::new(Db { conn: Mutex::new(c) });
     let term_cfg = {
-        let r = codex_webui::settings::SettingsReader::new(&db);
+        let r = codex_webui::settings::SettingsReader::new(&db, None);
         TerminalConfig::from_settings(&r)
     };
     let codex = Arc::new(CodexProcessManager::new("codex".into(), None));
@@ -36,6 +36,7 @@ fn state(api_key: &str) -> AppState {
         terminal: TerminalService::new(term_cfg),
         resume_registry: Arc::new(codex_webui::threads::ThreadResumeRegistry::new()),
         dynamic_files_roots: Arc::new(Mutex::new(HashSet::new())),
+        settings_cache: Arc::new(Mutex::new(HashMap::new())),
     }
 }
 

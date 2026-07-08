@@ -11,6 +11,7 @@ use codex_webui::state::AppState;
 use codex_webui::terminal::{TerminalConfig, TerminalService};
 use rusqlite::Connection;
 use serde_json::Value;
+use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use tower::ServiceExt;
 
@@ -21,7 +22,7 @@ fn state() -> AppState {
     run_migrations(&db).unwrap();
     reconcile_settings(&db).unwrap();
     let term_cfg = {
-        let r = settings::SettingsReader::new(&db);
+        let r = settings::SettingsReader::new(&db, None);
         TerminalConfig::from_settings(&r)
     };
     let codex = Arc::new(CodexProcessManager::new("codex".into(), None));
@@ -33,6 +34,7 @@ fn state() -> AppState {
         terminal: TerminalService::new(term_cfg),
         resume_registry: Arc::new(codex_webui::threads::ThreadResumeRegistry::new()),
         dynamic_files_roots: Arc::new(Mutex::new(HashSet::new())),
+        settings_cache: Arc::new(Mutex::new(HashMap::new())),
     }
 }
 

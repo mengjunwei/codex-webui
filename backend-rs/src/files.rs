@@ -25,7 +25,6 @@ use serde::Deserialize;
 use serde_json::json;
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
-use tokio::fs;
 use tokio::io::{AsyncReadExt, AsyncSeekExt, SeekFrom};
 use tokio_util::io::ReaderStream;
 
@@ -154,7 +153,7 @@ pub fn compute_workspace_roots(db: &crate::db::Db, dynamic_roots: &HashSet<Strin
         }
     }
     // 从设置中读取已配置的 WORKSPACE_ROOTS（修复评审提出的 H1）。
-    let reader = crate::settings::SettingsReader::new(db);
+    let reader = crate::settings::SettingsReader::new(db, None);
     if let Some(roots_str) = reader.get_string("security.workspaceRoots") {
         for root in roots_str.split(',').map(|s| s.trim()).filter(|s| !s.is_empty()) {
             if let Ok(c) = std::fs::canonicalize(root) {
@@ -328,7 +327,7 @@ pub async fn read_tree(
         ));
     }
     // H1 修复：从 settings 读取 excludedDirs（逗号分隔），而非硬编码。
-    let reader = crate::settings::SettingsReader::new(&state.db);
+    let reader = crate::settings::SettingsReader::new(&state.db, None);
     let excluded: Vec<String> = reader
         .get_string("files.excludedDirs")
         .filter(|s| !s.is_empty())
@@ -839,6 +838,10 @@ pub async fn download_file(
         .header(header::CONTENT_LENGTH, resolved.size)
         .header(header::CONTENT_DISPOSITION,
             build_content_disposition(&filename, false).as_str())
+        // 安全头（对齐 TS files.controller.ts:290）：防止浏览器缓存可能携带
+        // 认证 token 的下载 URL，以及阻止 MIME 嗅探。
+        .header("cache-control", "private, no-store")
+        .header("x-content-type-options", "nosniff")
         .body(Body::from_stream(ReaderStream::new(file)))
         .map_err(|e| AppError::internal(format!("response: {e}")))?)
 }
@@ -1196,11 +1199,13 @@ async fn do_relocate(
     if effective_dest.starts_with(&src.resolved) {
         return Err(forbidden("cannot copy/move a directory into itself or a descendant"));
     }
-    let dest = std::path::PathBuf::from(dst_raw);
-    if dest.exists() && !body.overwrite.unwrap_or(false) {
+    if dst_canonical.exists() && !body.overwrite.unwrap_or(false) {
         return Err(conflict(ErrorCode::FilesPathExists,
             "destination already exists (set overwrite=true)"));
     }
+    // 统一使用 canonical 路径执行实际操作（对齐 TS resolveSafeTargetPath），
+    // 避免 dst_raw 为相对路径时落点偏离工作区校验位置。
+    let dest = dst_canonical;
     if is_move {
         tokio::fs::rename(&src.resolved, &dest)
             .await
@@ -1294,7 +1299,7 @@ pub async fn upload_files(
 
     // 上传字节上限（对齐 TS files.uploadMaxBytes，默认 100 MB）。
     let max_bytes: u64 = {
-        let reader = crate::settings::SettingsReader::new(&state.db);
+        let reader = crate::settings::SettingsReader::new(&state.db, None);
         reader.get_upload_max_bytes()
     };
 
@@ -2029,11 +2034,6 @@ fn build_archive_tree(entries: Vec<serde_json::Value>) -> Vec<serde_json::Value>
     }
 
     roots.into_iter().map(|i| to_json(&arena, i)).collect()
-}
-
-#[allow(dead_code)]
-fn _unused_fs() {
-    let _ = std::any::type_name::<fs::File>();
 }
 
 // ── 冲突辅助函数（409 CONFLICT，对齐 TS assertNoOverwrite）──────────────────

@@ -12,7 +12,7 @@ use codex_webui::{
     state::AppState, terminal::{TerminalConfig, TerminalService},
     threads::ThreadResumeRegistry,
 };
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
 use tokio::signal;
 
@@ -58,7 +58,7 @@ async fn main() -> anyhow::Result<()> {
     codex_webui::event_subscribers::spawn_all(db.clone(), codex.clone());
 
     // 终端服务（共享 PTY 会话）。
-    let reader = settings::SettingsReader::new(&db);
+    let reader = settings::SettingsReader::new(&db, None);
     let terminal = TerminalService::new(TerminalConfig::from_settings(&reader));
 
     // 动态工作区根目录（POST /api/files/roots 注册）；终端 cwd 沙箱与文件路由共用。
@@ -113,6 +113,7 @@ async fn main() -> anyhow::Result<()> {
         status: status_service,
         resume_registry,
         dynamic_files_roots,
+        settings_cache: Arc::new(Mutex::new(HashMap::new())),
     };
 
     let codex_for_shutdown = state.codex.clone();

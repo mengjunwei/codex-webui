@@ -520,13 +520,15 @@ impl TerminalService {
     }
 
     /// 显式关闭某个终端。
-    pub fn close(&self, _socket_id: &str, context_key: &str, terminal_id: &str)
+    /// 调用者必须是已附着的 socket（对齐 TS getAttachedSession 校验）。
+    pub fn close(&self, socket_id: &str, context_key: &str, terminal_id: &str)
         -> Result<(), AppError>
     {
         let context_key = normalize_context_key(context_key)?;
         let mut sessions = self.sessions.lock().unwrap();
         let s = sessions.get_mut(terminal_id).ok_or_else(|| not_found("terminal not found"))?;
         if s.context_key != context_key { return Err(context_mismatch()); }
+        if !s.attached.contains(socket_id) { return Err(not_attached()); }
         // 在清理 attached 之前收集，使 closed 事件能通知所有原共享 socket
         // （对齐 TS cleanupSession 之前 Array.from(attachedSocketIds)）。
         let socket_ids: Vec<String> = s.attached.iter().cloned().collect();

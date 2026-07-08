@@ -394,7 +394,7 @@ fn mask_base_url(value: Option<&str>) -> Option<Value> {
             let path = if u.path() == "/" { String::new() } else { u.path().to_string() };
             Some(Value::String(format!("{}//{}{}{}", u.scheme(), mask_host(u.host_str().unwrap_or("")), port, path)))
         }
-        None => Some(Value::String(mask_raw_string(v).to_string())),
+        None => Some(Value::String(mask_raw_string(v))),
     }
 }
 
@@ -412,9 +412,13 @@ fn mask_host(host: &str) -> String {
     format!("{}…{}", &host[..host.len().min(4)], &host[host.len().saturating_sub(4)..])
 }
 
-fn mask_raw_string(value: &str) -> &str {
-    // 简化：返回原串（TS 仅在 value.length>16 时截断；这里保留原值，足够安全脱敏由 host 掩码承担）。
-    value
+fn mask_raw_string(value: &str) -> String {
+    // 对齐 TS maskRawString：value.length > 16 时截断为首 8 字符 + "…" + 末 6 字符。
+    if value.len() <= 16 {
+        value.to_string()
+    } else {
+        format!("{}…{}", &value[..8], &value[value.len() - 6..])
+    }
 }
 
 fn is_env_present(env_key: &str) -> bool {

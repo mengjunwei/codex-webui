@@ -17,6 +17,7 @@ pub mod reconcile;
 pub use reconcile::reconcile_settings;
 
 use crate::db::Db;
+use crate::state::SettingsCache;
 use anyhow::Result;
 use definitions::{SettingDef, SettingType, SETTINGS_DEFINITIONS};
 
@@ -48,16 +49,33 @@ pub fn find_def(key: &str) -> Option<&'static SettingDef> {
 
 pub struct SettingsReader<'a> {
     db: &'a Db,
+    cache: Option<&'a SettingsCache>,
 }
 
 impl<'a> SettingsReader<'a> {
-    pub fn new(db: &'a Db) -> Self {
-        Self { db }
+    pub fn new(db: &'a Db, cache: Option<&'a SettingsCache>) -> Self {
+        Self { db, cache }
     }
 
-    /// 解析单个设置，并追踪其来源。
+    /// 解析单个设置，并追踪其来源。优先从内存缓存读取（对齐 TS SettingsService.cache）。
     pub fn resolve(&self, key: &str) -> Option<ResolvedSetting> {
         let def = find_def(key)?;
+
+        // 缓存命中：直接返回。
+        if let Some(cache_ref) = self.cache {
+            if let Ok(cache) = cache_ref.lock() {
+                if let Some((value, source, updated_at)) = cache.get(key) {
+                    return Some(ResolvedSetting {
+                        key: def.key,
+                        value: value.clone(),
+                        source: *source,
+                        def,
+                        updated_at: *updated_at,
+                    });
+                }
+            }
+        }
+
         let conn = self.db.conn.lock().ok()?;
 
         let (db_raw, updated_at): (Option<String>, Option<i64>) = conn
@@ -71,13 +89,20 @@ impl<'a> SettingsReader<'a> {
         // DB 层：JSON 解码；TS 仅把 NULL 视为缺失（空字符串不算）。
         if let Some(raw) = db_raw {
             if let Ok(value) = serde_json::from_str::<serde_json::Value>(&raw) {
-                return Some(ResolvedSetting {
+                let result = ResolvedSetting {
                     key: def.key,
-                    value,
+                    value: value.clone(),
                     source: ValueSource::Db,
                     def,
                     updated_at,
-                });
+                };
+                // 写入缓存。
+                if let Some(cache_ref) = self.cache {
+                    if let Ok(mut cache) = cache_ref.lock() {
+                        cache.insert(key.to_string(), (value, ValueSource::Db, updated_at));
+                    }
+                }
+                return Some(result);
             }
             // 存储值已损坏：TS 会告警并回退到 env/default。
             tracing::warn!("ignoring invalid stored setting {}: {}", def.key, raw);

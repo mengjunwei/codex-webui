@@ -168,6 +168,11 @@ pub async fn get_config(
         }
     };
 
+    // H4 修复：使用解析后（规范化）的路径替代 raw_path，避免相对路径/路径穿越
+    // 导致 documentUrl、documentKey、callback state 三处 key 不一致
+    // （对齐 TS 使用 metadata.path 而非用户原始输入）。
+    let norm_path = resolved.to_string_lossy().to_string();
+
     // 提取调用方的 bearer JWT 用于文档 URL（OnlyOffice Document Server
     // 不带凭证获取 —— 需按 RFC 6750 §2.3 通过 access_token 查询参数传递）。
     // 中等优先级修复：大小写不敏感的 Bearer 前缀，正确的偏移量切片。
@@ -191,28 +196,28 @@ pub async fn get_config(
         format!(
             "{}/api/files/serve?path={}&access_token={}",
             base_url.trim_end_matches('/'),
-            url_encode(raw_path),
+            url_encode(&norm_path),
             url_encode(t.as_str())
         )
     } else {
         format!(
             "{}/api/files/serve?path={}",
             base_url.trim_end_matches('/'),
-            url_encode(raw_path)
+            url_encode(&norm_path)
         )
     };
     let callback_state_token = if let Some(ref s) = secret {
         let now = chrono::Utc::now().timestamp() as usize;
         Some(encode(
             &Header::new(Algorithm::HS256),
-            &json!({ "path": raw_path, "key": key, "iat": now, "exp": now + 86400 }),
+            &json!({ "path": norm_path, "key": key, "iat": now, "exp": now + 86400 }),
             &EncodingKey::from_secret(s.as_bytes()),
         )
         .map_err(|e| AppError::internal(format!("jwt sign: {e}")))?)
     } else {
         None
     };
-    let mut callback_params = format!("path={}", url_encode(raw_path));
+    let mut callback_params = format!("path={}", url_encode(&norm_path));
     if let Some(ref t) = callback_state_token {
         callback_params.push_str(&format!("&state={}", url_encode(t)));
     }

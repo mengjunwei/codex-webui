@@ -824,7 +824,8 @@ fn bad_request_params(code: ErrorCode, msg: String, index: usize) -> AppError {
 }
 
 fn is_http_url(s: &str) -> bool {
-    s.starts_with("http://") || s.starts_with("https://")
+    // 完整 URL 解析校验（对齐 TS new URL(url)），拒绝 javascript:、data:、畸形 URL 等。
+    matches!(url::Url::parse(s), Ok(u) if u.scheme() == "http" || u.scheme() == "https")
 }
 
 fn parse_positive_limit(value: Option<&str>) -> Result<Option<i64>, AppError> {

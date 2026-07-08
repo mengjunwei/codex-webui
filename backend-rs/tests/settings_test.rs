@@ -18,7 +18,7 @@ fn reconcile_inserts_defaults() {
     run_migrations(&db).unwrap();
     reconcile_settings(&db).unwrap();
 
-    let r = SettingsReader::new(&db);
+    let r = SettingsReader::new(&db, None);
     // files.uploadMaxBytes default 100 MB, no env override set
     assert_eq!(r.get_number("files.uploadMaxBytes"), Some(104_857_600.0));
 }
@@ -40,7 +40,7 @@ fn db_override_wins() {
         .unwrap();
     }
 
-    let r = SettingsReader::new(&db);
+    let r = SettingsReader::new(&db, None);
     assert_eq!(r.get_number("files.uploadMaxBytes"), Some(209_715_200.0));
 }
 
@@ -55,7 +55,7 @@ fn env_fallback_when_db_null() {
     run_migrations(&db).unwrap();
     reconcile_settings(&db).unwrap();
 
-    let r = SettingsReader::new(&db);
+    let r = SettingsReader::new(&db, None);
     assert_eq!(
         r.get_string("security.workspaceRoots"),
         Some("/ws1,/ws2".to_string())
@@ -74,7 +74,7 @@ fn default_value_fallback() {
     run_migrations(&db).unwrap();
     reconcile_settings(&db).unwrap();
 
-    let r = SettingsReader::new(&db);
+    let r = SettingsReader::new(&db, None);
     assert_eq!(r.get_number("terminal.scrollback"), Some(5000.0));
 }
 
@@ -84,7 +84,7 @@ fn unknown_key_returns_none() {
     run_migrations(&db).unwrap();
     reconcile_settings(&db).unwrap();
 
-    let r = SettingsReader::new(&db);
+    let r = SettingsReader::new(&db, None);
     assert!(r.get_string("nonexistent.key").is_none());
     assert!(r.get_number("nonexistent.key").is_none());
 }

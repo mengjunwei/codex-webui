@@ -4,10 +4,14 @@ use crate::auth::AuthService;
 use crate::codex::CodexProcessManager;
 use crate::codex_status::CodexStatusService;
 use crate::db::Db;
+use crate::settings::ValueSource;
 use crate::terminal::TerminalService;
 use crate::threads::ThreadResumeRegistry;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
+
+/// settings 内存缓存条目：(value, source, updated_at)。
+pub type SettingsCache = Arc<Mutex<HashMap<String, (serde_json::Value, ValueSource, Option<i64>)>>>;
 
 #[derive(Clone)]
 pub struct AppState {
@@ -21,6 +25,8 @@ pub struct AppState {
     pub resume_registry: Arc<ThreadResumeRegistry>,
     /// 通过 POST /api/files/roots 动态注册的工作区根目录。
     pub dynamic_files_roots: Arc<Mutex<HashSet<String>>>,
+    /// settings 内存缓存（对齐 TS SettingsService.cache）。
+    pub settings_cache: SettingsCache,
 }
 
 impl AppState {
@@ -32,6 +38,13 @@ impl AppState {
 
     /// 便捷方法：借用本状态中的 DB 构造一个 `SettingsReader`。
     pub fn settings_reader(&self) -> crate::settings::SettingsReader<'_> {
-        crate::settings::SettingsReader::new(&self.db)
+        crate::settings::SettingsReader::new(&self.db, Some(&self.settings_cache))
+    }
+
+    /// 清空 settings 缓存（写入后调用，对齐 TS reloadCache）。
+    pub fn invalidate_settings_cache(&self) {
+        if let Ok(mut cache) = self.settings_cache.lock() {
+            cache.clear();
+        }
     }
 }

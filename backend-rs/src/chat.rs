@@ -248,5 +248,5 @@ fn get_safe_extension(filename: &str) -> String {
     if !chars.all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-')) {
         return String::new();
     }
-    format!(".{}", ext.to_ascii_lowercase())
+    format!(".{}", ext)
 }

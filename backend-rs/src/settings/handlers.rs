@@ -85,7 +85,7 @@ pub async fn list(
             ));
         }
     }
-    let reader = crate::settings::SettingsReader::new(&state.db);
+    let reader = state.settings_reader();
     let resolved = reader.list_all(q.category.as_deref());
     let dtos: Vec<SettingDto> = resolved
         .iter()
@@ -106,7 +106,7 @@ pub async fn get_one(
             None,
         ));
     }
-    let reader = crate::settings::SettingsReader::new(&state.db);
+    let reader = state.settings_reader();
     let r = reader.resolve(&key).ok_or_else(|| {
         AppError::business(
             ErrorCode::HttpNotFound,
@@ -276,8 +276,9 @@ pub async fn update_one(
     };
     write_setting(&state.db, &key, serialized.as_deref())
         .map_err(|e| AppError::internal(format!("write {key}: {e}")))?;
+    state.invalidate_settings_cache();
 
-    let r = crate::settings::SettingsReader::new(&state.db)
+    let r = crate::settings::SettingsReader::new(&state.db, None)
         .resolve(&key)
         .ok_or_else(|| {
             AppError::business(
@@ -307,6 +308,7 @@ pub async fn delete_one(
     }
     write_setting(&state.db, &key, None)
         .map_err(|e| AppError::internal(format!("delete {key}: {e}")))?;
+    state.invalidate_settings_cache();
 
     let r = resolve(&state.db, &key).ok_or_else(|| {
         AppError::business(
@@ -342,5 +344,5 @@ fn constraints_for_key(db: &Db, key: &str) -> serde_json::Value {
 
 /// 供 handler 作用域使用的独立函数 `resolve`。
 fn resolve(db: &Db, key: &str) -> Option<ResolvedSetting> {
-    crate::settings::SettingsReader::new(db).resolve(key)
+    crate::settings::SettingsReader::new(db, None).resolve(key)
 }
