@@ -96,9 +96,10 @@ async fn resolve(state: &AppState, input: &str) -> Result<ResolvedTarget, AppErr
     let meta = tokio::fs::metadata(&canonical)
         .await
         .map_err(|e| AppError::internal(format!("metadata: {e}")))?;
-    let kind = if meta.is_symlink() {
-        ResolvedKind::Symlink
-    } else if meta.is_file() {
+    // 注意：canonicalize 已跟随符号链接，此处 meta 是链接目标（非链接本身）的元数据，
+    // 故 is_symlink() 恒为 false —— 对齐 TS（跟随链接、按目标类型上报）。
+    // 若将来需要区分符号链接，应在 canonicalize 之前用 symlink_metadata 判断。
+    let kind = if meta.is_file() {
         ResolvedKind::File
     } else if meta.is_dir() {
         ResolvedKind::Directory
@@ -1251,7 +1252,18 @@ async fn copy_dir_recursive(src: &Path, dst: &Path) -> std::io::Result<()> {
             #[cfg(unix)]
             {
                 let target = tokio::fs::read_link(&from).await?;
-                tokio::fs::symlink(&target, &to).await?;
+                // 安全加固：拒绝重建指向 workspace 外的绝对符号链接 ——
+                // 否则会在副本里留下指向任意位置的"毒链接"（跳板）。相对链接保留
+                // （在副本目录内解析，随副本移动仍合理）。
+                if target.is_absolute() {
+                    tracing::warn!(
+                        from = %from.display(),
+                        target = %target.display(),
+                        "skipping symlink with absolute target during directory copy"
+                    );
+                } else {
+                    tokio::fs::symlink(&target, &to).await?;
+                }
             }
             #[cfg(not(unix))]
             {
@@ -1462,7 +1474,11 @@ pub async fn archive_entry(
             ArchiveReadError::Other(s) => AppError::internal(format!("archive read: {s}")),
         })?;
 
-    // 支持 Range（对齐 TS sendRangedStream）：压缩包内的视频/PDF 可拖动播放。
+    // Range 支持（对齐 TS sendRangedStream）。
+    // 注意：当前实现先全量解压条目（上限 MAX_ARCHIVE_ENTRY_BYTES）再按 Range 切片，
+    // 属"伪流式" —— 大条目的视频拖动预览性能受限，并发大条目有内存压力。
+    // 真正的按需 seek/读取（zip 可随机访问、tar 顺序读到 Range 即停）需重构
+    // read_archive_entry，列为后续改进（50MB 单条目上限已兜底 OOM）。
     let mime = guess_mime_type(entry_path);
     let filename = std::path::Path::new(entry_path)
         .file_name()
@@ -2052,31 +2068,37 @@ fn conflict(code: ErrorCode, msg: impl Into<String>) -> AppError {
 
 /// 把 `std::io::Error` 映射为业务错误（对齐 TS `rethrowFsError`）。
 ///
-/// 优先按 `raw_os_error()`（POSIX errno）区分：EEXIST→409 FilesPathExists、
-/// ENOENT→404 FilesPathNotFound、ENOTEMPTY→400 FilesDirNotEmpty、EXDEV→400
-/// FilesOperationFailed；命中不了时用 `ErrorKind` 跨平台兜底（Windows 上
-/// `raw_os_error` 为 Win32 码），最终回落到 400 `fallback_code`，避免一律 500。
+/// 优先按跨平台的 `ErrorKind` 区分（std 已把 Windows Win32 码正确映射为 AlreadyExists /
+/// NotFound），再用 `raw_os_error()` 补充 ErrorKind 未覆盖的语义（ENOTEMPTY / EXDEV /
+/// Windows ERROR_DIR_NOT_EMPTY），最终回落到 `fallback_code`，避免一律 500。
 fn map_fs_error(e: std::io::Error, fallback_code: ErrorCode) -> AppError {
     use std::io::ErrorKind;
+    // 1) 跨平台 ErrorKind 优先（Windows 下 raw_os_error 是 Win32 码，与 POSIX errno 不同）。
+    match e.kind() {
+        ErrorKind::AlreadyExists => return conflict(ErrorCode::FilesPathExists, "Path already exists"),
+        ErrorKind::NotFound => return not_found("Path not found"),
+        _ => {}
+    }
+    // 2) ErrorKind 未覆盖的特定语义：按平台 raw_os_error 补充。
     match e.raw_os_error() {
-        // POSIX EEXIST
+        // POSIX EEXIST(17) / ENOENT(2)
         Some(17) => conflict(ErrorCode::FilesPathExists, "Path already exists"),
-        // POSIX ENOENT
         Some(2) => not_found("Path not found"),
-        // POSIX ENOTEMPTY
+        // POSIX ENOTEMPTY(39)（Linux/macOS）
+        #[cfg(not(windows))]
         Some(39) => bad_request(ErrorCode::FilesDirNotEmpty, "Directory is not empty"),
-        // POSIX EXDEV（跨设备移动）
+        // POSIX EXDEV(18)（跨设备移动）
+        #[cfg(not(windows))]
         Some(18) => bad_request(
             ErrorCode::FilesOperationFailed,
             "cannot move across devices; copy/delete fallback is not supported",
         ),
-        _ => match e.kind() {
-            // Windows 等平台兜底（Win32 码与 POSIX errno 不同）。
-            ErrorKind::AlreadyExists => {
-                conflict(ErrorCode::FilesPathExists, "Path already exists")
-            }
-            ErrorKind::NotFound => not_found("Path not found"),
-            _ => bad_request(fallback_code, format!("File operation failed: {e}")),
-        },
+        // Windows ERROR_DIR_NOT_EMPTY(145)
+        #[cfg(windows)]
+        Some(145) => bad_request(ErrorCode::FilesDirNotEmpty, "Directory is not empty"),
+        // Windows ERROR_ALREADY_EXISTS(183) / ERROR_FILE_EXISTS(80)（ErrorKind 通常已映射，兜底）
+        #[cfg(windows)]
+        Some(183) | Some(80) => conflict(ErrorCode::FilesPathExists, "Path already exists"),
+        _ => bad_request(fallback_code, format!("File operation failed: {e}")),
     }
 }

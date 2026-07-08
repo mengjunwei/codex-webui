@@ -49,7 +49,7 @@ pub fn init(level: &str, otlp_endpoint: Option<&str>) -> (WorkerGuard, Option<Ot
                     .with(tracing_opentelemetry::layer().with_tracer(tracer))
                     .init();
                 tracing::info!(endpoint, "OTLP tracing exporter enabled");
-                Some(OtelGuard(provider))
+                Some(OtelGuard)
             }
             Err(e) => {
                 eprintln!("OTLP init failed (endpoint={endpoint}): {e}; continuing without OTLP");
@@ -99,14 +99,13 @@ fn build_tracer_provider(
         .build())
 }
 
-/// OTLP tracer provider 的 RAII guard —— drop 时 flush 所有未完成的 span。
-pub struct OtelGuard(opentelemetry_sdk::trace::TracerProvider);
+/// OTLP tracer provider 的 RAII guard —— drop 时触发 global tracer provider 的
+/// shutdown（flush 未完成 span）。不再额外调用本地 provider 的 shutdown，避免与
+/// `global::shutdown_tracer_provider` 双重 shutdown 产生冗余错误日志。
+pub struct OtelGuard;
 
 impl Drop for OtelGuard {
     fn drop(&mut self) {
-        if let Err(e) = self.0.shutdown() {
-            eprintln!("OTLP tracer shutdown error: {e}");
-        }
         opentelemetry::global::shutdown_tracer_provider();
     }
 }

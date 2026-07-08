@@ -42,7 +42,7 @@ const BREAKPOINT: &str = "--> statement-breakpoint";
 
 /// 执行所有待处理的 drizzle 迁移。幂等操作；可在每次启动时安全调用。
 pub fn run_migrations(db: &Db) -> Result<()> {
-    let conn = db.conn.lock().map_err(|e| anyhow::anyhow!("db lock poisoned: {e}"))?;
+    let mut conn = db.conn.lock().map_err(|e| anyhow::anyhow!("db lock poisoned: {e}"))?;
 
     // 确保我们的追踪表存在。
     conn.execute_batch(
@@ -85,20 +85,24 @@ pub fn run_migrations(db: &Db) -> Result<()> {
             continue;
         }
 
+        // 每个迁移文件用事务包裹以保证原子性：中途失败则整体回滚，
+        // 避免"半应用 schema"在下次启动时触发 table already exists 死循环。
+        let tx = conn.transaction()?;
         for stmt in sql.split(BREAKPOINT) {
             let stmt = stmt.trim();
             if stmt.is_empty() {
                 continue;
             }
-            conn.execute_batch(stmt)
+            tx.execute_batch(stmt)
                 .map_err(|e| anyhow::anyhow!("migration {} failed: {}", name, e))?;
         }
 
-        conn.execute(
+        tx.execute(
             "INSERT INTO schema_migrations(filename, applied_at) \
              VALUES (?1, strftime('%s','now'))",
             [*name],
         )?;
+        tx.commit()?;
         tracing::info!("applied migration {}", name);
     }
 

@@ -392,7 +392,7 @@ fn mask_base_url(value: Option<&str>) -> Option<Value> {
             u.set_fragment(None);
             let port = u.port().map(|p| format!(":{p}")).unwrap_or_default();
             let path = if u.path() == "/" { String::new() } else { u.path().to_string() };
-            Some(Value::String(format!("{}//{}{}{}", u.scheme(), mask_host(u.host_str().unwrap_or("")), port, path)))
+            Some(Value::String(format!("{}://{}{}{}", u.scheme(), mask_host(u.host_str().unwrap_or("")), port, path)))
         }
         None => Some(Value::String(mask_raw_string(v))),
     }
@@ -401,7 +401,7 @@ fn mask_base_url(value: Option<&str>) -> Option<Value> {
 fn mask_host(host: &str) -> String {
     if host == "localhost"
         || host.split('.').all(|p| p.parse::<u8>().is_ok()) // IPv4
-        || host.len() <= 12
+        || host.chars().count() <= 12
     {
         return host.to_string();
     }
@@ -409,15 +409,35 @@ fn mask_host(host: &str) -> String {
     if parts.len() >= 3 {
         return format!("{}…{}", parts[0], parts[parts.len() - 2..].join("."));
     }
-    format!("{}…{}", &host[..host.len().min(4)], &host[host.len().saturating_sub(4)..])
+    // 按字符边界截取，避免多字节 UTF-8 字节切片 panic。
+    let head: String = host.chars().take(4).collect();
+    let tail: String = host
+        .chars()
+        .rev()
+        .take(4)
+        .collect::<Vec<_>>()
+        .into_iter()
+        .rev()
+        .collect();
+    format!("{head}…{tail}")
 }
 
 fn mask_raw_string(value: &str) -> String {
     // 对齐 TS maskRawString：value.length > 16 时截断为首 8 字符 + "…" + 末 6 字符。
-    if value.len() <= 16 {
+    // 用 chars() 按字符计数与截取，避免多字节 UTF-8 边界字节切片 panic。
+    if value.chars().count() <= 16 {
         value.to_string()
     } else {
-        format!("{}…{}", &value[..8], &value[value.len() - 6..])
+        let head: String = value.chars().take(8).collect();
+        let tail: String = value
+            .chars()
+            .rev()
+            .take(6)
+            .collect::<Vec<_>>()
+            .into_iter()
+            .rev()
+            .collect();
+        format!("{head}…{tail}")
     }
 }
 

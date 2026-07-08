@@ -20,6 +20,16 @@ use sha2::{Digest, Sha256};
 use std::path::Path;
 use tokio::io::AsyncWriteExt;
 use url::Url;
+use once_cell::sync::Lazy;
+
+/// 全局复用的 HTTP 客户端：禁用重定向跟随以防 SSRF（下载 URL 校验仅覆盖初始 origin），
+/// 并复用连接池与 TLS 上下文。保存请求的超时在每次请求上单独指定。
+static SAVE_CLIENT: Lazy<reqwest::Client> = Lazy::new(|| {
+    reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .expect("failed to build onlyoffice save HTTP client")
+});
 
 fn bad_request(code: ErrorCode, msg: impl Into<String>) -> AppError {
     AppError::business(code, StatusCode::BAD_REQUEST, msg.into(), None)
@@ -192,12 +202,23 @@ pub async fn get_config(
         })
         .filter(|t| !t.is_empty());
 
-    let document_url = if let Some(ref t) = caller_token {
+    // H2 安全修复：不把调用方的长期会话 JWT（24h TTL）嵌入 document_url，
+    // 改为用同一 JWT 密钥签发短期（5 分钟）下载 token，将泄漏窗口从 24h 降至 5min。
+    // 仅当调用方已通过 bearer 认证（caller_token 存在）时才签发。
+    let document_url = if caller_token.is_some() {
+        let now = chrono::Utc::now().timestamp() as usize;
+        let dl_claims = json!({ "sub": "webui", "iat": now, "exp": now + 300 });
+        let dl_token = encode(
+            &Header::new(Algorithm::HS256),
+            &dl_claims,
+            &EncodingKey::from_secret(state.auth.jwt_secret().as_bytes()),
+        )
+        .map_err(|e| AppError::internal(format!("download token sign: {e}")))?;
         format!(
             "{}/api/files/serve?path={}&access_token={}",
             base_url.trim_end_matches('/'),
             url_encode(&norm_path),
-            url_encode(t.as_str())
+            url_encode(&dl_token)
         )
     } else {
         format!(
@@ -409,13 +430,12 @@ async fn callback_inner(
         .map(|n| n as u64)
         .unwrap_or(DEFAULT_MAX_SAVE_BYTES);
 
-    let client = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(SAVE_TIMEOUT_SECS))
-        .build()
-        .map_err(|e| AppError::internal(format!("http client: {e}")))?;
-
-    let response = client
+    // H1 安全修复：复用全局 Client 并禁用重定向（Policy::none）。
+    // validate_download_url 仅校验初始 origin，若跟随 3xx 可被导向内网（SSRF）；
+    // 禁用后任何 3xx 都会因 !is_success() 被当作失败拒绝。
+    let response = SAVE_CLIENT
         .get(download_url)
+        .timeout(std::time::Duration::from_secs(SAVE_TIMEOUT_SECS))
         .send()
         .await
         .map_err(|e| AppError::internal(format!("download failed: {e}")))?;

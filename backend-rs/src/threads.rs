@@ -481,7 +481,9 @@ const REASONING_EFFORT_VALUES: &[&str] = &["none", "minimal", "low", "medium", "
 #[derive(Debug, Default)]
 pub struct ThreadResumeRegistry {
     generation: std::sync::Mutex<u64>,
-    entries: std::sync::Mutex<std::collections::HashMap<String, serde_json::Value>>,
+    /// 条目携带写入时的 generation；读侧按当前 generation 过滤，根除
+    /// advance_generation 与 auto-resume 跨任务调度的时序竞态（H7）。
+    entries: std::sync::Mutex<std::collections::HashMap<String, (u64, serde_json::Value)>>,
     /// per-key in-flight 锁槽：并发 resume 串行化（对齐 TS resumeRegistry.inFlight）。
     /// HashMap 用 std Mutex（取槽短暂），每个槽是 tokio Mutex（跨 RPC await 持有）。
     inflight: std::sync::Mutex<std::collections::HashMap<String, std::sync::Arc<tokio::sync::Mutex<()>>>>,
@@ -493,16 +495,24 @@ impl ThreadResumeRegistry {
     }
 
     /// 记录一次 resume/start/fork 的响应（缓存供后续重复调用复用）。
+    /// 条目绑定当前 generation，跨 generation 读侧自动失效。
     pub fn mark_resumed(&self, thread_id: &str, response: serde_json::Value) {
+        let g = *self.generation.lock().unwrap();
         self.entries
             .lock()
             .unwrap()
-            .insert(thread_id.to_string(), response);
+            .insert(thread_id.to_string(), (g, response));
     }
 
-    /// 返回缓存响应（若当前 generation 已 resume 过该线程）。
+    /// 返回缓存响应（仅当条目 generation 与当前 generation 一致时命中）。
     pub fn get_cached(&self, thread_id: &str) -> Option<serde_json::Value> {
-        self.entries.lock().unwrap().get(thread_id).cloned()
+        let g = *self.generation.lock().unwrap();
+        self.entries
+            .lock()
+            .unwrap()
+            .get(thread_id)
+            .filter(|(gen, _)| *gen == g)
+            .map(|(_, v)| v.clone())
     }
 
     pub fn forget(&self, thread_id: &str) {
@@ -513,14 +523,15 @@ impl ThreadResumeRegistry {
         self.entries.lock().unwrap().clear();
     }
 
-    /// generation 推进：generation 变化时清空所有缓存的 resume 响应。
+    /// generation 推进：generation 变化时清空缓存响应。
+    /// 注意：不再清空 inflight —— clear 会打断进行中的 resume，使 per-key 互斥出现破洞；
+    /// 孤立锁槽改由 ensure_resumed 释放 guard 后按 strong_count 回收。
+    /// （即使本调用未被及时调度，get_cached 的 generation 过滤也能保证不命中陈旧缓存。）
     pub fn advance_generation(&self, new_generation: u64) {
         let mut g = self.generation.lock().unwrap();
         if *g != new_generation {
             *g = new_generation;
             self.entries.lock().unwrap().clear();
-            // codex 重启：清理旧 generation 的 in-flight 锁槽。
-            self.inflight.lock().unwrap().clear();
         }
     }
 
@@ -557,6 +568,14 @@ impl ThreadResumeRegistry {
         }
         let result = f(key.clone()).await?;
         self.mark_resumed(&key, result.clone());
+        // 释放 in-flight 锁后回收孤立锁槽（仅本表持有时 strong_count==1），避免 HashMap 无限增长。
+        drop(_guard);
+        let mut guards = self.inflight.lock().unwrap();
+        if let Some(arc) = guards.get(&key) {
+            if std::sync::Arc::strong_count(arc) == 1 {
+                guards.remove(&key);
+            }
+        }
         Ok((result, false))
     }
 }

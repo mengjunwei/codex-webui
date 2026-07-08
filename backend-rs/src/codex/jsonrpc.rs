@@ -126,8 +126,9 @@ impl CodexJsonRpcClient {
             write_loop(stdin, write_rx, writer_jsonl).await;
         });
 
-        // JSONL 追加任务（分离运行；所有 jsonl 发送端 drop 后结束）。
-        tokio::spawn(jsonl_loop(jsonl_rx));
+        // JSONL 追加任务（spawn_blocking：同步文件 IO 不占 tokio worker；
+        // 所有 jsonl 发送端 drop 后 blocking_recv 返回 None 结束）。
+        tokio::task::spawn_blocking(move || jsonl_loop_blocking(jsonl_rx));
 
         Ok(Self {
             next_id: AtomicU64::new(1),
@@ -324,14 +325,18 @@ async fn write_loop(
     }
 }
 
-async fn jsonl_loop(mut jsonl_rx: mpsc::UnboundedReceiver<String>) {
+/// JSONL 追加循环（同步，运行在 spawn_blocking 线程上）。
+/// 用 `blocking_recv` + 持久文件句柄，避免在 tokio worker 上做同步 IO
+/// 以及每条消息 open/close 的开销（原实现在 async 任务里每条都重新打开文件）。
+fn jsonl_loop_blocking(mut jsonl_rx: mpsc::UnboundedReceiver<String>) {
+    use std::io::Write;
     let path = std::path::Path::new("logs").join("codex-jsonrpc.jsonl");
     if let Some(parent) = path.parent() {
         let _ = std::fs::create_dir_all(parent);
     }
-    while let Some(line) = jsonl_rx.recv().await {
-        use std::io::Write;
-        if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(&path) {
+    let mut file = std::fs::OpenOptions::new().create(true).append(true).open(&path).ok();
+    while let Some(line) = jsonl_rx.blocking_recv() {
+        if let Some(f) = file.as_mut() {
             let _ = f.write_all(line.as_bytes());
             let _ = f.write_all(b"\n");
         }

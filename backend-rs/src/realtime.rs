@@ -366,6 +366,9 @@ pub fn spawn_emit_tasks(io: SocketIo, codex: Arc<CodexProcessManager>, terminal:
 
 fn spawn_notification_emit(io: SocketIo, codex: Arc<CodexProcessManager>) {
     let mut rx = codex.subscribe_notifications();
+    // H6：循环体不再使用 codex，立即释放强引用，避免任务持有 service 阻止其回收
+    // （单例运行无影响；防御性修复，使未来 service 重建时旧任务能随 service 析构退出）。
+    drop(codex);
     tokio::spawn(async move {
         loop {
             match rx.recv().await {
@@ -519,6 +522,7 @@ fn spawn_lifecycle_emit(
 
 fn spawn_terminal_output_emit(io: SocketIo, terminal: Arc<TerminalService>) {
     let mut rx = terminal.subscribe_output();
+    drop(terminal); // H6：循环体不再使用 terminal，释放强引用（见 spawn_notification_emit 注释）。
     tokio::spawn(async move {
         loop {
             match rx.recv().await {
@@ -538,6 +542,7 @@ fn spawn_terminal_output_emit(io: SocketIo, terminal: Arc<TerminalService>) {
 
 fn spawn_terminal_exit_emit(io: SocketIo, terminal: Arc<TerminalService>) {
     let mut rx = terminal.subscribe_exit();
+    drop(terminal); // H6：循环体不再使用 terminal，释放强引用。
     tokio::spawn(async move {
         loop {
             match rx.recv().await {
@@ -557,6 +562,7 @@ fn spawn_terminal_exit_emit(io: SocketIo, terminal: Arc<TerminalService>) {
 
 fn spawn_terminal_closed_emit(io: SocketIo, terminal: Arc<TerminalService>) {
     let mut rx = terminal.subscribe_closed();
+    drop(terminal); // H6：循环体不再使用 terminal，释放强引用。
     tokio::spawn(async move {
         loop {
             match rx.recv().await {
@@ -580,6 +586,7 @@ fn spawn_terminal_closed_emit(io: SocketIo, terminal: Arc<TerminalService>) {
 // M2: 终端元数据广播（resize/open 时通知所有已附着客户端）。
 fn spawn_terminal_metadata_emit(io: SocketIo, terminal: Arc<TerminalService>) {
     let mut rx = terminal.subscribe_metadata();
+    drop(terminal); // H6：循环体不再使用 terminal，释放强引用。
     tokio::spawn(async move {
         loop {
             match rx.recv().await {

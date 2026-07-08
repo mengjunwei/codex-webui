@@ -61,8 +61,11 @@ fn extract_token(req: &Request<Body>) -> (Option<String>, bool) {
         .get(axum::http::header::AUTHORIZATION)
         .and_then(|v| v.to_str().ok())
     {
-        if let Some(rest) = header.strip_prefix("Bearer ") {
-            let t = rest.trim();
+        // scheme 大小写不敏感（RFC 6750 §2.1）："bearer "/"BEARER " 等均接受。
+        // "bearer " 为 7 个 ASCII 字符，转小写不改变字节长度，故可按原 header 偏移切片。
+        let lower = header.to_ascii_lowercase();
+        if let Some(_rest) = lower.strip_prefix("bearer ") {
+            let t = header[7..].trim();
             if !t.is_empty() {
                 return (Some(t.to_string()), false);
             }

@@ -257,6 +257,15 @@ pub async fn update_raw_config(
         .content
         .as_str()
         .ok_or_else(|| bad_request(ErrorCode::CodexRawContentInvalid, "Raw config content must be a string"))?;
+    const MAX_RAW_CONFIG_BYTES: usize = 1024 * 1024;
+    if content.len() > MAX_RAW_CONFIG_BYTES {
+        return Err(AppError::business(
+            ErrorCode::CodexRawContentInvalid,
+            StatusCode::PAYLOAD_TOO_LARGE,
+            format!("raw config too large (max {MAX_RAW_CONFIG_BYTES} bytes)"),
+            None,
+        ));
+    }
     let path = user_config_path(&state).await?;
     tracing::info!("writing raw config.toml ({} bytes)", content.len());
     if let Some(parent) = std::path::Path::new(&path).parent() {
@@ -293,7 +302,9 @@ async fn user_config_path(state: &AppState) -> Result<String, AppError> {
                 if let Some(file) = name.and_then(|n| n.get("file")).and_then(Value::as_str) {
                     let f = file.trim();
                     if !f.is_empty() {
-                        return Ok(f.to_string());
+                        // H3 安全校验：限制路径位于 CODEX_HOME 下且为 .toml，防止任意文件读写。
+                        let validated = validate_user_config_path(f)?;
+                        return Ok(validated.to_string_lossy().into_owned());
                     }
                 }
             }
@@ -305,6 +316,61 @@ async fn user_config_path(state: &AppState) -> Result<String, AppError> {
         "Codex user config.toml path was not reported by config/read".into(),
         None,
     ))
+}
+
+/// H3 安全校验：限制用户 config 路径必须为 .toml 文件，且（若配置了 CODEX_HOME）
+/// 位于 CODEX_HOME 目录下，防止 config/read 返回异常路径导致任意文件读写。
+fn validate_user_config_path(raw: &str) -> Result<std::path::PathBuf, AppError> {
+    use std::path::Path;
+    let p = std::path::Path::new(raw);
+    let is_toml = p
+        .extension()
+        .and_then(|e| e.to_str())
+        .map(|s| s.eq_ignore_ascii_case("toml"))
+        .unwrap_or(false);
+    if !is_toml {
+        return Err(AppError::business(
+            ErrorCode::CodexWriteFailed,
+            StatusCode::BAD_REQUEST,
+            "user config path must point to a .toml file".into(),
+            None,
+        ));
+    }
+    let canonical = canonicalize_path_or_parent(p);
+    if let Some(home) = std::env::var("CODEX_HOME")
+        .ok()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+    {
+        let home_c = canonicalize_path_or_parent(Path::new(&home));
+        if !canonical.starts_with(&home_c) {
+            return Err(AppError::business(
+                ErrorCode::CodexWriteFailed,
+                StatusCode::BAD_REQUEST,
+                "user config path must reside under CODEX_HOME".into(),
+                None,
+            ));
+        }
+    }
+    Ok(canonical)
+}
+
+/// 规范化路径：优先 canonicalize（文件存在时）；否则规范化父目录后拼接文件名。
+fn canonicalize_path_or_parent(p: &std::path::Path) -> std::path::PathBuf {
+    if let Ok(c) = std::fs::canonicalize(p) {
+        return c;
+    }
+    if let Some(parent) = p.parent() {
+        if !parent.as_os_str().is_empty() {
+            if let Ok(c) = std::fs::canonicalize(parent) {
+                if let Some(name) = p.file_name() {
+                    return c.join(name);
+                }
+                return c;
+            }
+        }
+    }
+    p.to_path_buf()
 }
 
 /// 递归脱敏敏感键对应的值(与 TS `redactSecrets` 对齐)。

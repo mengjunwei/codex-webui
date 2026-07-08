@@ -34,6 +34,8 @@ pub struct CodexProcessManager {
     generation: AtomicU64,
     restarting: AtomicBool,
     destroyed: AtomicBool,
+    /// 连续重启失败次数（用于指数退避；start 成功时重置为 0）。
+    consecutive_failures: AtomicU64,
     /// 管理器级别的通知/服务端请求通道 —— 跨重启保持有效。
     notify_tx: broadcast::Sender<Value>,
     server_request_tx: broadcast::Sender<Value>,
@@ -56,6 +58,7 @@ impl CodexProcessManager {
             generation: AtomicU64::new(0),
             restarting: AtomicBool::new(false),
             destroyed: AtomicBool::new(false),
+            consecutive_failures: AtomicU64::new(0),
             notify_tx,
             server_request_tx,
             lifecycle_tx,
@@ -133,6 +136,14 @@ impl CodexProcessManager {
         // 第三阶段：initialize 握手。
         match self.initialize_client(&client).await {
             Ok((init, init_value)) => {
+                // spawn 之后、设置 current 之前若 destroy 已被调用：就地销毁新客户端，
+                // 避免产生无人管理的孤儿子进程（destroy 此刻 take 到的是 None）。
+                if self.destroyed.load(Ordering::SeqCst) {
+                    client.destroy().await;
+                    return;
+                }
+                // 重启成功，重置指数退避计数。
+                self.consecutive_failures.store(0, Ordering::SeqCst);
                 self.generation.fetch_add(1, Ordering::SeqCst);
                 let restarted = new_generation > 1;
                 *self.current.lock().await = Some((new_generation, client));
@@ -273,13 +284,19 @@ impl CodexProcessManager {
         if self.restarting.swap(true, Ordering::SeqCst) || self.destroyed.load(Ordering::SeqCst) {
             return;
         }
+        // 指数退避：3s → 6s → 12s → 24s → 48s → 60s（上限），避免持续失败时日志爆炸 + 空转。
+        let attempt = self.consecutive_failures.fetch_add(1, Ordering::SeqCst);
+        let delay_ms = std::cmp::min(
+            RESTART_DELAY_MS.saturating_mul(2u64.saturating_pow(attempt.min(10) as u32)),
+            60_000,
+        );
         let generation = self.generation.load(Ordering::SeqCst);
-        tracing::warn!(generation, delay_ms = RESTART_DELAY_MS, "restarting codex app-server");
+        tracing::warn!(generation, delay_ms, attempt, "restarting codex app-server");
         let _ = self.lifecycle_tx.send(LifecycleEvent::Restarting {
             generation,
-            delay_ms: RESTART_DELAY_MS,
+            delay_ms,
         });
-        sleep(Duration::from_millis(RESTART_DELAY_MS)).await;
+        sleep(Duration::from_millis(delay_ms)).await;
         self.restarting.store(false, Ordering::SeqCst);
         if !self.destroyed.load(Ordering::SeqCst) {
             // 装箱以打破 start ↔ restart 的异步递归。
@@ -290,7 +307,10 @@ impl CodexProcessManager {
     /// 停止管理器：销毁客户端并阻止重启。
     pub async fn destroy(&self) {
         self.destroyed.store(true, Ordering::SeqCst);
-        if let Some((_, client)) = self.current.lock().await.take() {
+        // H8 修复：先 take 再释放锁，避免持有 current 锁跨 client.destroy().await
+        // （destroy 含 kill 子进程等耗时操作，会长时间阻塞 request/handle_close 等热点路径）。
+        let taken = self.current.lock().await.take();
+        if let Some((_, client)) = taken {
             client.destroy().await;
         }
     }

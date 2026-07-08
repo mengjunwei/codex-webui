@@ -65,22 +65,16 @@ pub async fn upload_attachment(
         let tmp_path = upload_root.join(format!(".{id}.tmp"));
 
         // 流式写入临时文件 + 累计字节（对齐 TS pipeline；避免大文件全量缓冲导致内存峰值）。
-        // 先创建临时文件（unix 以 0o600，对齐 TS mode:0o600），再用 chunk 流式写入。
+        // 一次性以 tokio::fs 打开（unix 设 0o600，对齐 TS mode:0o600），避免原来的
+        // "std 创建 + tokio 重新打开"两次 open，并在 async 上下文中改用异步 IO。
+        let mut opts = tokio::fs::OpenOptions::new();
+        opts.write(true).create(true).truncate(true);
         #[cfg(unix)]
         {
             use std::os::unix::fs::OpenOptionsExt;
-            std::fs::OpenOptions::new()
-                .write(true).create(true).truncate(true).mode(0o600)
-                .open(&tmp_path)
-                .map_err(|e| AppError::internal(format!("open tmp: {e}")))?;
+            opts.mode(0o600);
         }
-        #[cfg(not(unix))]
-        {
-            std::fs::File::create(&tmp_path)
-                .map_err(|e| AppError::internal(format!("create tmp: {e}")))?;
-        }
-        let mut tmp = tokio::fs::OpenOptions::new()
-            .write(true)
+        let mut tmp = opts
             .open(&tmp_path)
             .await
             .map_err(|e| AppError::internal(format!("open tmp: {e}")))?;
@@ -235,7 +229,8 @@ fn maybe_sweep_uploads(root: &std::path::Path) {
 /// 提取安全的文件扩展名（包含点号），长度上限为 MAX_EXTENSION_LENGTH。
 fn get_safe_extension(filename: &str) -> String {
     let ext = filename.rsplit('.').next().unwrap_or("");
-    if ext.is_empty() || ext.len() > MAX_EXTENSION_LENGTH {
+    // 用字符计数（与下方 chars 校验一致），避免多字节扩展名按字节长度误判。
+    if ext.is_empty() || ext.chars().count() > MAX_EXTENSION_LENGTH {
         return String::new();
     }
     // 对齐 TS 正则 ^\.[A-Za-z0-9][A-Za-z0-9._-]*$：首字符须为字母数字，

@@ -20,6 +20,7 @@ use crate::db::Db;
 use crate::state::SettingsCache;
 use anyhow::Result;
 use definitions::{SettingDef, SettingType, SETTINGS_DEFINITIONS};
+use rusqlite::OptionalExtension;
 
 // ── 值来源追踪 ────────────────────────────────────────────────────
 
@@ -78,13 +79,23 @@ impl<'a> SettingsReader<'a> {
 
         let conn = self.db.conn.lock().ok()?;
 
-        let (db_raw, updated_at): (Option<String>, Option<i64>) = conn
+        // 用 optional() 精确区分"无行"（None，回退到 env/default）与"DB 真实错误"
+        // （记录 warn 后回退），避免 unwrap_or 把磁盘 IO/锁失败静默当成"用户未设置"。
+        let row: Option<(Option<String>, Option<i64>)> = match conn
             .query_row(
                 "SELECT value, updated_at FROM settings WHERE key = ?1",
                 [key],
                 |r| Ok((r.get::<_, Option<String>>(0)?, r.get::<_, Option<i64>>(1)?)),
             )
-            .unwrap_or((None, None));
+            .optional()
+        {
+            Ok(r) => r,
+            Err(e) => {
+                tracing::warn!("settings db read error for {}: {}", key, e);
+                None
+            }
+        };
+        let (db_raw, updated_at) = row.unwrap_or((None, None));
 
         // DB 层：JSON 解码；TS 仅把 NULL 视为缺失（空字符串不算）。
         if let Some(raw) = db_raw {
@@ -174,10 +185,17 @@ pub fn write_setting(db: &Db, key: &str, value: Option<&str>) -> Result<()> {
         .conn
         .lock()
         .map_err(|e| anyhow::anyhow!("db lock poisoned: {e}"))?;
-    conn.execute(
+    let n = conn.execute(
         "UPDATE settings SET value = ?1, updated_at = (strftime('%s','now')*1000) WHERE key = ?2",
         rusqlite::params![value, key],
     )?;
+    if n == 0 {
+        // reconcile 应在启动时为每个已定义设置建行；命中 0 行说明行缺失，
+        // 显式报错而非静默成功（否则前端拿到 200 但值实际未写入）。
+        return Err(anyhow::anyhow!(
+            "setting row not found for key '{key}' (was reconcile_settings run?)"
+        ));
+    }
     Ok(())
 }
 

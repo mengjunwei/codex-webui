@@ -95,9 +95,10 @@ struct Session {
     rows: u16,
     created_at: String,
     /// wezterm VT 终端模型，用于保存屏幕状态、resize 以及重连序列化。
-    vt_terminal: Mutex<Terminal>,
-    /// 用于写入 PTY stdin 的内部可变 writer。
-    writer: Mutex<Option<Box<dyn std::io::Write + Send>>>,
+    /// 用 Arc<Mutex> 以便 reader_task / reconnect 在释放全局 sessions 锁后仍可访问。
+    vt_terminal: Arc<Mutex<Terminal>>,
+    /// 用于写入 PTY stdin 的内部可变 writer（Arc 以便 write_input 锁外写入）。
+    writer: Arc<Mutex<Option<Box<dyn std::io::Write + Send>>>>,
     /// 用于 resize 的 PTY master（SIGWINCH）。
     master: Option<Box<dyn portable_pty::MasterPty + Send>>,
     child: Mutex<Option<Box<dyn portable_pty::Child + Send>>>,
@@ -145,7 +146,7 @@ pub struct TerminalService {
 
 impl TerminalService {
     pub fn new(config: TerminalConfig) -> Arc<Self> {
-        let (output_tx, _) = broadcast::channel(512);
+        let (output_tx, _) = broadcast::channel(4096);
         let (exit_tx, _) = broadcast::channel(64);
         let (closed_tx, _) = broadcast::channel(64);
         let (metadata_tx, _) = broadcast::channel(64);
@@ -285,14 +286,20 @@ impl TerminalService {
                             let raw = valid.to_vec();
                             carry = rest.to_vec();
 
-                            let socket_ids: Vec<String> = {
-                                let mut sessions = sessions_c.lock().unwrap();
-                                if let Some(s) = sessions.get_mut(&sid) {
-                                    // 用原始字节喂给 VT 终端（正确的 UTF-8 处理）。
-                                    s.vt_terminal.lock().unwrap().advance_bytes(&raw);
-                                    s.attached.iter().cloned().collect()
-                                } else { vec![] }
+                            // H9 修复：锁 sessions 仅 clone vt_terminal Arc + 收集 attached，
+                            // 释放 sessions 锁后再做 VT 解析（高频重活），避免串行化所有终端操作。
+                            let (vt_clone, socket_ids): (Option<Arc<Mutex<Terminal>>>, Vec<String>) = {
+                                let sessions = sessions_c.lock().unwrap();
+                                if let Some(s) = sessions.get(&sid) {
+                                    (Some(s.vt_terminal.clone()), s.attached.iter().cloned().collect())
+                                } else {
+                                    (None, vec![])
+                                }
                             };
+                            if let Some(vt) = vt_clone {
+                                // 用原始字节喂给 VT 终端（正确的 UTF-8 处理）。
+                                vt.lock().unwrap().advance_bytes(&raw);
+                            }
                             let _ = out_tx.send(TerminalOutputEvent {
                                 terminal_id: sid.clone(), data, socket_ids,
                             });
@@ -334,14 +341,14 @@ impl TerminalService {
         let mut attached = HashSet::new();
         attached.insert(socket_id.to_string());
 
-        let session = Session {
+        let mut session = Session {
             id: id.clone(), context_key: context_key.to_string(), attached,
             title: display_title, cwd: cwd.clone(), shell: std::path::Path::new(&shell)
                 .file_name().unwrap_or_default().to_string_lossy().to_string(),
             status: TerminalStatus::Running, exit_code: None, signal: None,
             cols, rows, created_at: created_at.clone(),
-            vt_terminal: Mutex::new(vt_term),
-            writer: Mutex::new(Some(writer)),
+            vt_terminal: Arc::new(Mutex::new(vt_term)),
+            writer: Arc::new(Mutex::new(Some(writer))),
             master: Some(master),
             child: Mutex::new(Some(child)),
             _reader_task: Some(reader_task),
@@ -349,7 +356,30 @@ impl TerminalService {
         };
 
         let meta = Self::meta(&session);
-        self.sessions.lock().unwrap().insert(id.clone(), session);
+        // H10 修复：insert 时原子重新检查 max_sessions，消除入口检查与 insert 之间的 TOCTOU
+        // （多个并发 open 可能都通过入口检查；此处只允许 max 个真正落库，多余的清理 PTY 并拒绝）。
+        {
+            let mut sessions = self.sessions.lock().unwrap();
+            if sessions.len() >= max {
+                drop(sessions);
+                // 回收刚创建的 PTY 资源（kill child 让 reader EOF 退出 + 释放 writer/master）。
+                if let Ok(mut c) = session.child.lock() {
+                    if let Some(ref mut child) = *c {
+                        let _ = child.kill();
+                    }
+                    c.take();
+                }
+                if let Ok(mut w) = session.writer.lock() {
+                    w.take();
+                }
+                session.master.take();
+                return Err(bad_request(
+                    ErrorCode::TerminalMaxSessionsReached,
+                    format!("max sessions reached ({max})"),
+                ));
+            }
+            sessions.insert(id.clone(), session);
+        }
         tracing::info!(terminal = %id, cwd = %cwd, "opened terminal");
         Ok(meta)
     }
@@ -359,17 +389,25 @@ impl TerminalService {
         -> Result<(TerminalMetadata, Vec<String>), AppError>
     {
         let context_key = normalize_context_key(context_key)?;
-        let mut sessions = self.sessions.lock().unwrap();
-        let s = sessions.get_mut(terminal_id)
-            .ok_or_else(|| not_found("terminal not found"))?;
-        if s.context_key != context_key { return Err(context_mismatch()); }
-        s.attached.insert(socket_id.to_string());
-        if let Some(h) = s.grace_handle.take() { h.abort(); }
-        let meta = Self::meta(s);
-        // 序列化 VT 屏幕：通过 wezterm Terminal 获取回滚 + 可见行。
-        let state = serialize_terminal_screen(&s.vt_terminal.lock().unwrap());
+        // 锁 sessions 做校验 + attached 变更 + clone vt_terminal Arc，随即释放锁。
+        let (vt_clone, meta) = {
+            let mut sessions = self.sessions.lock().unwrap();
+            let s = sessions.get_mut(terminal_id)
+                .ok_or_else(|| not_found("terminal not found"))?;
+            if s.context_key != context_key { return Err(context_mismatch()); }
+            s.attached.insert(socket_id.to_string());
+            if let Some(h) = s.grace_handle.take() { h.abort(); }
+            (s.vt_terminal.clone(), Self::meta(s))
+        };
+        // H9 修复：序列化 VT 屏幕（重活）移出 sessions 锁，仅持有 per-session 的 vt_terminal 锁。
+        let state = serialize_terminal_screen(&vt_clone.lock().unwrap());
         // M2: 通知其他客户端有人重新连上了（attached_count 变化）。
-        self.emit_metadata(s);
+        {
+            let sessions = self.sessions.lock().unwrap();
+            if let Some(s) = sessions.get(terminal_id) {
+                self.emit_metadata(s);
+            }
+        }
         Ok((meta, vec![state]))
     }
 
@@ -451,13 +489,18 @@ impl TerminalService {
         }
         let data_bytes = data.as_bytes().to_vec();
 
-        let sessions = self.sessions.lock().unwrap();
-        let s = sessions.get(terminal_id).filter(|s| s.status != TerminalStatus::Exited)
-            .ok_or_else(|| not_found("terminal not found"))?;
-        if s.context_key != context_key { return Err(context_mismatch()); }
-        if !s.attached.contains(socket_id) { return Err(not_attached()); }
-        if s.status != TerminalStatus::Running { return Err(exited()); }
-        let mut writer = s.writer.lock().unwrap();
+        // S2 修复：锁 sessions 仅做校验 + clone writer Arc，随即释放 sessions 锁，
+        // 在锁外做 PTY 写入 —— 避免 write_all 阻塞时持有全局 sessions 锁导致所有终端卡死。
+        let writer_clone = {
+            let sessions = self.sessions.lock().unwrap();
+            let s = sessions.get(terminal_id).filter(|s| s.status != TerminalStatus::Exited)
+                .ok_or_else(|| not_found("terminal not found"))?;
+            if s.context_key != context_key { return Err(context_mismatch()); }
+            if !s.attached.contains(socket_id) { return Err(not_attached()); }
+            if s.status != TerminalStatus::Running { return Err(exited()); }
+            s.writer.clone()
+        };
+        let mut writer = writer_clone.lock().unwrap();
         if let Some(w) = writer.as_mut() {
             w.write_all(&data_bytes)
                 .map_err(|e| AppError::internal(format!("pty write: {e}")))?;
@@ -569,6 +612,31 @@ impl TerminalService {
             cwd: s.cwd.clone(), shell: s.shell.clone(), status: s.status,
             exit_code: s.exit_code, signal: s.signal, attached_count: s.attached.len(),
             cols: s.cols, rows: s.rows, created_at: s.created_at.clone(),
+        }
+    }
+}
+
+impl Drop for TerminalService {
+    fn drop(&mut self) {
+        // 防御性回收：service 析构时 kill 所有子进程并清理资源
+        // （单例运行时不触发；测试/service 重建场景下避免孤儿 PTY 子进程与悬挂 reader 任务）。
+        if let Ok(mut sessions) = self.sessions.lock() {
+            for (_, s) in sessions.iter_mut() {
+                if let Ok(mut c) = s.child.lock() {
+                    if let Some(ref mut child) = *c {
+                        let _ = child.kill();
+                    }
+                    *c = None;
+                }
+                if let Ok(mut w) = s.writer.lock() {
+                    *w = None;
+                }
+                s.master.take();
+                if let Some(h) = s.grace_handle.take() {
+                    h.abort();
+                }
+            }
+            sessions.clear();
         }
     }
 }
