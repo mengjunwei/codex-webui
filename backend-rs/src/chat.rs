@@ -75,7 +75,6 @@ pub async fn upload_attachment(
         opts.write(true).create(true).truncate(true);
         #[cfg(unix)]
         {
-            use std::os::unix::fs::OpenOptionsExt;
             opts.mode(0o600);
         }
         let mut tmp = opts

@@ -14,27 +14,27 @@ use anyhow::Result;
 const MIGRATIONS: &[(&str, &str)] = &[
     (
         "0000_init.sql",
-        include_str!("../../../drizzle/0000_init.sql"),
+        include_str!("../../drizzle/0000_init.sql"),
     ),
     (
         "0001_fresh_daredevil.sql",
-        include_str!("../../../drizzle/0001_fresh_daredevil.sql"),
+        include_str!("../../drizzle/0001_fresh_daredevil.sql"),
     ),
     (
         "0002_certain_starbolt.sql",
-        include_str!("../../../drizzle/0002_certain_starbolt.sql"),
+        include_str!("../../drizzle/0002_certain_starbolt.sql"),
     ),
     (
         "0003_mature_chameleon.sql",
-        include_str!("../../../drizzle/0003_mature_chameleon.sql"),
+        include_str!("../../drizzle/0003_mature_chameleon.sql"),
     ),
     (
         "0004_lethal_rhodey.sql",
-        include_str!("../../../drizzle/0004_lethal_rhodey.sql"),
+        include_str!("../../drizzle/0004_lethal_rhodey.sql"),
     ),
     (
         "0005_melted_mister_sinister.sql",
-        include_str!("../../../drizzle/0005_melted_mister_sinister.sql"),
+        include_str!("../../drizzle/0005_melted_mister_sinister.sql"),
     ),
 ];
 
