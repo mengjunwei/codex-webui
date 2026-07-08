@@ -1,0 +1,2 @@
+# 运行时日志（logging.rs RollingWriter 10MB×5 滚动 + codex/jsonrpc.rs 的 jsonl）
+/logs/

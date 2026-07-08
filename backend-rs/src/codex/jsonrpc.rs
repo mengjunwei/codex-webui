@@ -94,7 +94,9 @@ impl CodexJsonRpcClient {
         let closed = Arc::new(AtomicBool::new(false));
 
         // JSONL 日志通道（尽力而为的双向日志记录）。
-        let (jsonl_tx, jsonl_rx) = mpsc::unbounded_channel::<String>();
+        // T8：有界 channel + try_send 背压 —— 慢盘下消费速度跟不上时丢弃日志（best-effort），
+        //        避免 unbounded 通道无界积压致 OOM。
+        let (jsonl_tx, jsonl_rx) = mpsc::channel::<String>(4096);
 
         let request_timeout = Duration::from_millis(
             request_timeout_ms.unwrap_or(DEFAULT_REQUEST_TIMEOUT_MS),
@@ -283,7 +285,7 @@ async fn read_loop(
     server_request_tx: broadcast::Sender<Value>,
     close_tx: broadcast::Sender<CloseReason>,
     closed: Arc<AtomicBool>,
-    jsonl_tx: mpsc::UnboundedSender<String>,
+    jsonl_tx: mpsc::Sender<String>,
 ) {
     let reader = BufReader::new(stdout);
     let mut lines = reader.lines();
@@ -309,7 +311,7 @@ async fn read_loop(
 async fn write_loop(
     mut stdin: ChildStdin,
     mut write_rx: mpsc::UnboundedReceiver<String>,
-    jsonl_tx: mpsc::UnboundedSender<String>,
+    jsonl_tx: mpsc::Sender<String>,
 ) {
     while let Some(line) = write_rx.recv().await {
         jsonl_log(&jsonl_tx, "out", &line);
@@ -328,7 +330,7 @@ async fn write_loop(
 /// JSONL 追加循环（同步，运行在 spawn_blocking 线程上）。
 /// 用 `blocking_recv` + 持久文件句柄，避免在 tokio worker 上做同步 IO
 /// 以及每条消息 open/close 的开销（原实现在 async 任务里每条都重新打开文件）。
-fn jsonl_loop_blocking(mut jsonl_rx: mpsc::UnboundedReceiver<String>) {
+fn jsonl_loop_blocking(mut jsonl_rx: mpsc::Receiver<String>) {
     use std::io::Write;
     let path = std::path::Path::new("logs").join("codex-jsonrpc.jsonl");
     if let Some(parent) = path.parent() {
@@ -343,7 +345,7 @@ fn jsonl_loop_blocking(mut jsonl_rx: mpsc::UnboundedReceiver<String>) {
     }
 }
 
-fn jsonl_log(jsonl_tx: &mpsc::UnboundedSender<String>, dir: &str, raw_line: &str) {
+fn jsonl_log(jsonl_tx: &mpsc::Sender<String>, dir: &str, raw_line: &str) {
     // 重新解析以嵌入到 {ts, dir, msg} 下；失败时退回原始字符串。
     let msg: Value = serde_json::from_str(raw_line).unwrap_or(Value::String(raw_line.into()));
     let entry = serde_json::json!({
@@ -351,7 +353,7 @@ fn jsonl_log(jsonl_tx: &mpsc::UnboundedSender<String>, dir: &str, raw_line: &str
         "dir": dir,
         "msg": msg,
     });
-    let _ = jsonl_tx.send(entry.to_string());
+    let _ = jsonl_tx.try_send(entry.to_string()); // 满（慢盘）则丢弃
 }
 
 /// 解析单条入站行并路由。为单元测试而抽取出来。
@@ -364,7 +366,9 @@ async fn dispatch_line(
     let msg: Value = match serde_json::from_str(line) {
         Ok(v) => v,
         Err(_) => {
-            tracing::warn!("failed to parse JSON-RPC message: {}", &line[..line.len().min(200)]);
+            // T5：按字符边界截断，避免多字节 UTF-8（如中文）落在字节边界 panic 致 read_loop 终止。
+            let preview: String = line.chars().take(200).collect();
+            tracing::warn!("failed to parse JSON-RPC message: {}", preview);
             return;
         }
     };

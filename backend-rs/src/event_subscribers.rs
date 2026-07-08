@@ -161,7 +161,16 @@ fn spawn_turn_diff(db: Arc<Db>, codex: Arc<CodexProcessManager>) {
                         _ => {}
                     }
                 }
-                Err(RecvError::Lagged(n)) => tracing::warn!("turn-diff subscriber lagged {n}"),
+                Err(RecvError::Lagged(n)) => {
+                    // T9：Lagged 可能丢失 turn/completed，buffer 条目会孤立泄漏；flush 全部落盘后清空。
+                    tracing::warn!("turn-diff subscriber lagged {n}, flushing {} buffered diffs", buffer.len());
+                    for (tid, uid, diff) in buffer.values() {
+                        if let Err(e) = persist_turn_diff(&db, tid, uid, diff) {
+                            tracing::warn!("turn-diff lag flush failed: {e}");
+                        }
+                    }
+                    buffer.clear();
+                }
                 Err(RecvError::Closed) => break,
             }
         }

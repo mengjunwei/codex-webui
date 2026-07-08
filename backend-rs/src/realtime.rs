@@ -479,28 +479,39 @@ fn spawn_lifecycle_emit(
                     // codex 重启后:auto-resume 仍被订阅的线程(对齐 TS AutoResumeService)。
                     if do_resume {
                         let threads = active.snapshot();
+                        // T11：并发 resume（per-key 锁已保证同 key 串行去重，跨线程可安全并发），
+                        // 避免串行 N×T 阻塞 lifecycle 任务引发 Lagged 连锁（丢 Ready/Restarting）。
+                        let futs: Vec<_> = threads
+                            .iter()
+                            .map(|tid| {
+                                let codex_c = codex.clone();
+                                let registry = resume_registry.clone();
+                                let tid = tid.clone();
+                                async move {
+                                    let r = registry
+                                        .ensure_resumed(&tid, move |t| async move {
+                                            codex_c
+                                                .request(
+                                                    "thread/resume",
+                                                    Some(json!({ "threadId": t, "persistExtendedHistory": true })),
+                                                )
+                                                .await
+                                                .map_err(|e| AppError::internal(format!("codex: {e}")))
+                                        })
+                                        .await;
+                                    (tid, r)
+                                }
+                            })
+                            .collect();
+                        let results = futures_util::future::join_all(futs).await;
                         let mut resumed: Vec<String> = Vec::new();
                         let mut failed: Vec<String> = Vec::new();
-                        for tid in &threads {
-                            // ensure_resumed：缓存命中 / 并发 in-flight 去重，避免对非幂等的
-                            // thread/resume 重复调用（对齐 TS resumeRegistry.ensureResumed）。
-                            let codex_c = codex.clone();
-                            match resume_registry
-                                .ensure_resumed(tid, move |t| async move {
-                                    codex_c
-                                        .request(
-                                            "thread/resume",
-                                            Some(json!({ "threadId": t, "persistExtendedHistory": true })),
-                                        )
-                                        .await
-                                        .map_err(|e| AppError::internal(format!("codex: {e}")))
-                                })
-                                .await
-                            {
-                                Ok(_) => resumed.push(tid.clone()),
+                        for (tid, r) in results {
+                            match r {
+                                Ok(_) => resumed.push(tid),
                                 Err(e) => {
                                     tracing::warn!(thread = %tid, "auto-resume failed: {e}");
-                                    failed.push(tid.clone());
+                                    failed.push(tid);
                                 }
                             }
                         }

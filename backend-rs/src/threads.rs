@@ -548,11 +548,11 @@ impl ThreadResumeRegistry {
         F: FnOnce(String) -> Fut,
         Fut: std::future::Future<Output = Result<serde_json::Value, AppError>>,
     {
-        // 快路径：缓存命中
+        // 快路径：缓存命中（未获取锁槽，无回收义务）。
         if let Some(v) = self.get_cached(thread_id) {
             return Ok((v, true));
         }
-        // per-key 锁槽（std Mutex 短暂持有，仅取/建 tokio Mutex）
+        // per-key 锁槽（std Mutex 短暂持有取槽，tokio Mutex 跨 RPC await）。
         let key = thread_id.to_string();
         let lock = {
             let mut guards = self.inflight.lock().unwrap();
@@ -562,24 +562,41 @@ impl ThreadResumeRegistry {
                 .clone()
         };
         let _guard = lock.lock().await;
-        // 锁内重检：前一个 in-flight 可能已完成并写入缓存
+        // T7：锁内重检命中 / RPC 失败 / 成功 三条路径都要回收锁槽，否则并发命中（最常见）
+        // 与失败路径泄漏。提取 reap_inflight_slot，先 drop 自己的 guard + Arc clone 再检查 strong_count。
         if let Some(v) = self.get_cached(thread_id) {
+            drop(_guard);
+            drop(lock);
+            self.reap_inflight_slot(&key);
             return Ok((v, true));
         }
-        let result = f(key.clone()).await?;
+        let result = match f(key.clone()).await {
+            Ok(r) => r,
+            Err(e) => {
+                drop(_guard);
+                drop(lock);
+                self.reap_inflight_slot(&key);
+                return Err(e);
+            }
+        };
         self.mark_resumed(&key, result.clone());
-        // 释放 in-flight 锁 + 自己的 Arc clone 后回收孤立锁槽（仅本表持有时 strong_count==1）。
-        // 必须先 drop(lock)：否则局部变量 lock 仍持有一个 Arc clone，strong_count 恒 ≥2，
-        // 回收条件永不成立，锁槽确定泄漏。
         drop(_guard);
         drop(lock);
+        self.reap_inflight_slot(&key);
+        Ok((result, false))
+    }
+}
+
+impl ThreadResumeRegistry {
+    /// 回收孤立的 in-flight 锁槽：仅当本表是唯一持有者（strong_count==1）时移除。
+    /// 调用前必须已 drop 调用方自己的 Arc clone，否则计数恒 ≥2。
+    fn reap_inflight_slot(&self, key: &str) {
         let mut guards = self.inflight.lock().unwrap();
-        if let Some(arc) = guards.get(&key) {
+        if let Some(arc) = guards.get(key) {
             if std::sync::Arc::strong_count(arc) == 1 {
-                guards.remove(&key);
+                guards.remove(key);
             }
         }
-        Ok((result, false))
     }
 }
 

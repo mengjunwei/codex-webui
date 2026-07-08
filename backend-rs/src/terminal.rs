@@ -307,31 +307,35 @@ impl TerminalService {
                         Err(_) => break,
                     }
                 }
-                // PTY 已退出。M1 修复：捕获退出码/signal。
-                let (meta, socket_ids) = {
+                // PTY 已退出（Ok(0)=EOF 或 Err）。T1+T3+T4：锁内仅置 Exited + take child +
+                // 收集 socket_ids，释放 sessions 锁后再 wait（避免持全局锁做阻塞 waitpid
+                // 挂起整个终端服务）；Err 分支也走此收尾（T4：不再静默丢状态/事件/僵尸）。
+                let (child_opt, socket_ids) = {
                     let mut sessions = sessions_c.lock().unwrap();
                     if let Some(s) = sessions.get_mut(&sid) {
                         s.status = TerminalStatus::Exited;
-                        // 捕获退出码/signal（对齐 node-pty onExit 的 { exitCode, signal }）。
-                        //
-                        // portable-pty 0.8 的 ExitStatus 公开 API 仅 with_exit_code /
-                        // with_signal / success / exit_code —— 其 `signal` 字段
-                        // （Option<String>，存的是 strsignal 的信号名字符串而非数字）
-                        // 为私有且无公开 getter，因此无法读取信号编号，也就无法对齐
-                        // node-pty 的 `exit_code = Some(128 + signal)` 语义。
-                        // 这里 exit_code 取 ExitStatus::exit_code()（被信号杀死时
-                        // portable-pty 内部用 `std code().unwrap_or(1)`，通常为 1），
-                        // signal 保持 None。
-                        if let Ok(mut child_guard) = s.child.lock() {
-                            if let Some(ref mut child) = *child_guard {
-                                if let Ok(status) = child.wait() {
-                                    s.exit_code = Some(status.exit_code() as i32);
-                                    // signal 无法通过 portable-pty 0.8 公开 API 获取，保持 None。
-                                }
-                            }
+                        // portable-pty 0.8 的 signal 字段无私有 getter，仅取 exit_code。
+                        let child_opt = s.child.lock().ok().and_then(|mut g| g.take());
+                        (child_opt, s.attached.iter().cloned().collect())
+                    } else {
+                        return;
+                    }
+                };
+                // 锁外 wait（T1：不持 sessions 锁；T3：显式 wait 防僵尸 ——
+                // portable-pty 0.8 的 Child=std::process::Child，其 drop 既不 kill 也不 wait）。
+                let exit_code = child_opt
+                    .and_then(|mut c| c.wait().ok())
+                    .map(|st| st.exit_code() as i32);
+                let meta = {
+                    let mut sessions = sessions_c.lock().unwrap();
+                    if let Some(s) = sessions.get_mut(&sid) {
+                        if let Some(code) = exit_code {
+                            s.exit_code = Some(code);
                         }
-                        (Self::meta(s), s.attached.iter().cloned().collect())
-                    } else { return; }
+                        Self::meta(s)
+                    } else {
+                        return;
+                    }
                 };
                 let _ = ex_tx.send(TerminalExitEvent { terminal: meta, socket_ids });
             })
@@ -362,12 +366,12 @@ impl TerminalService {
             let mut sessions = self.sessions.lock().unwrap();
             if sessions.len() >= max {
                 drop(sessions);
-                // 回收刚创建的 PTY 资源（kill child 让 reader EOF 退出 + 释放 writer/master）。
-                if let Ok(mut c) = session.child.lock() {
-                    if let Some(ref mut child) = *c {
-                        let _ = child.kill();
-                    }
-                    c.take();
+                // 回收刚创建的 PTY 资源：take child 后 kill+wait（T3：显式 wait 防僵尸，
+                // portable-pty Child::drop 既不 kill 也不 wait）+ 释放 writer/master。
+                let child_opt = session.child.lock().ok().and_then(|mut g| g.take());
+                if let Some(mut c) = child_opt {
+                    let _ = c.kill();
+                    let _ = c.wait();
                 }
                 if let Ok(mut w) = session.writer.lock() {
                     w.take();
@@ -432,26 +436,39 @@ impl TerminalService {
                 let tx = closed_tx.clone();
                 let handle = tokio::spawn(async move {
                     tokio::time::sleep(std::time::Duration::from_millis(grace_ms)).await;
-                    let mut sessions = sessions_c.lock().unwrap();
-                    if let Some(session) = sessions.get_mut(&sid) {
-                        // TS：只要无附着 socket 即移除（无论 Running/Exited）。
-                        // 修复：PTY 在 grace 窗口内退出时，status 已被 reader_task 置为
-                        // Exited，原 Running 守卫会漏掉这种情况导致 session 泄漏。
-                        if session.attached.is_empty() {
-                            if session.status == TerminalStatus::Running {
-                                if let Ok(mut child) = session.child.lock() {
-                                    if let Some(ref mut c) = *child { let _ = c.kill(); }
-                                    child.take();
+                    // T2+T3：锁内 take child + clone writer + remove，锁外 kill+wait + take writer + send。
+                    let cleanup = {
+                        let mut sessions = sessions_c.lock().unwrap();
+                        if let Some(session) = sessions.get_mut(&sid) {
+                            // 只要无附着 socket 即移除（无论 Running/Exited）；PTY 在 grace 窗口内
+                            // 退出时 status 已被 reader_task 置 Exited。
+                            if session.attached.is_empty() {
+                                if session.status == TerminalStatus::Running {
+                                    session.status = TerminalStatus::Exited;
                                 }
-                                session.status = TerminalStatus::Exited;
+                                let child_opt = session.child.lock().ok().and_then(|mut g| g.take());
+                                let writer_arc = session.writer.clone();
+                                session.master.take();
+                                sessions.remove(&sid);
+                                Some((child_opt, writer_arc))
+                            } else {
+                                None
                             }
-                            if let Ok(mut writer) = session.writer.lock() { writer.take(); }
-                            session.master.take();
-                            let _ = tx.send(TerminalClosedEvent {
-                                terminal_id: sid.clone(), context_key: ctx, socket_ids: vec![],
-                            });
-                            sessions.remove(&sid);
+                        } else {
+                            None
                         }
+                    };
+                    if let Some((child_opt, writer_arc)) = cleanup {
+                        if let Some(mut c) = child_opt {
+                            let _ = c.kill();
+                            let _ = c.wait();
+                        }
+                        if let Ok(mut w) = writer_arc.lock() {
+                            w.take();
+                        }
+                        let _ = tx.send(TerminalClosedEvent {
+                            terminal_id: sid, context_key: ctx, socket_ids: vec![],
+                        });
                     }
                 }).abort_handle();
                 s.grace_handle = Some(handle);
@@ -461,19 +478,33 @@ impl TerminalService {
                 to_remove.push((s.id.clone(), s.context_key.clone()));
             }
         }
-        // 执行 H4 清理（在锁外发送事件避免死锁）。
+        // T2+T3：锁内 take child + clone writer + remove，收集到 cleaned；释放 sessions 锁后再 kill+wait。
+        let mut cleaned: Vec<(
+            String,
+            String,
+            Option<Box<dyn portable_pty::Child + Send>>,
+            std::sync::Arc<std::sync::Mutex<Option<Box<dyn std::io::Write + Send>>>>,
+        )> = Vec::new();
         for (id, ctx) in &to_remove {
             if let Some(s) = sessions.get_mut(id) {
-                if let Ok(mut child) = s.child.lock() {
-                    if let Some(ref mut c) = *child { let _ = c.kill(); }
-                    child.take();
-                }
-                if let Ok(mut writer) = s.writer.lock() { writer.take(); }
+                let child_opt = s.child.lock().ok().and_then(|mut g| g.take());
+                let writer_arc = s.writer.clone();
                 s.master.take();
+                cleaned.push((id.clone(), ctx.clone(), child_opt, writer_arc));
             }
             sessions.remove(id);
+        }
+        drop(sessions);
+        for (id, ctx, child_opt, writer_arc) in cleaned {
+            if let Some(mut c) = child_opt {
+                let _ = c.kill();
+                let _ = c.wait();
+            }
+            if let Ok(mut w) = writer_arc.lock() {
+                w.take();
+            }
             let _ = closed_tx.send(TerminalClosedEvent {
-                terminal_id: id.clone(), context_key: ctx.clone(), socket_ids: vec![],
+                terminal_id: id, context_key: ctx, socket_ids: vec![],
             });
         }
     }
@@ -513,31 +544,39 @@ impl TerminalService {
         -> Result<TerminalMetadata, AppError>
     {
         let context_key = normalize_context_key(context_key)?;
-        let mut sessions = self.sessions.lock().unwrap();
-        let s = sessions.get_mut(terminal_id)
-            .ok_or_else(|| not_found("terminal not found"))?;
-        if s.context_key != context_key { return Err(context_mismatch()); }
-        if !s.attached.contains(socket_id) { return Err(not_attached()); }
-        let next_cols = cols.clamp(20, 300);
-        let next_rows = rows.clamp(5, 120);
-        if next_cols != s.cols || next_rows != s.rows {
-            s.cols = next_cols;
-            s.rows = next_rows;
-            // 已退出的终端仅更新存储尺寸 + VT 模型，跳过 PTY resize（对齐 TS）。
-            if s.status == TerminalStatus::Running {
-                if let Some(ref mut master) = s.master {
-                    let _ = master.resize(PtySize { rows: next_rows, cols: next_cols, pixel_width: 0, pixel_height: 0 });
+        // T6：锁内仅更新 cols/rows + PTY master.resize + clone vt_terminal Arc + emit_metadata，
+        // 释放 sessions 锁后再调 wezterm vt_terminal.resize（避免持全局 sessions 锁调第三方库，
+        // 一旦 panic 会中毒 sessions 锁波及整个终端服务 —— 与 download/reconnect 一致）。
+        let (vt_resize, meta) = {
+            let mut sessions = self.sessions.lock().unwrap();
+            let s = sessions.get_mut(terminal_id)
+                .ok_or_else(|| not_found("terminal not found"))?;
+            if s.context_key != context_key { return Err(context_mismatch()); }
+            if !s.attached.contains(socket_id) { return Err(not_attached()); }
+            let next_cols = cols.clamp(20, 300);
+            let next_rows = rows.clamp(5, 120);
+            if next_cols != s.cols || next_rows != s.rows {
+                s.cols = next_cols;
+                s.rows = next_rows;
+                if s.status == TerminalStatus::Running {
+                    if let Some(ref mut master) = s.master {
+                        let _ = master.resize(PtySize { rows: next_rows, cols: next_cols, pixel_width: 0, pixel_height: 0 });
+                    }
                 }
+                let vt = s.vt_terminal.clone();
+                self.emit_metadata(s);
+                (Some((vt, next_cols, next_rows)), Self::meta(s))
+            } else {
+                (None, Self::meta(s))
             }
-            // 调整 VT 终端模型尺寸。
-            s.vt_terminal.lock().unwrap().resize(TerminalSize {
+        };
+        if let Some((vt, next_cols, next_rows)) = vt_resize {
+            vt.lock().unwrap().resize(TerminalSize {
                 rows: next_rows as usize, cols: next_cols as usize,
                 pixel_width: 0, pixel_height: 0, dpi: 0,
             });
-            // M2: 广播元数据变更给所有已附着客户端。
-            self.emit_metadata(s);
         }
-        Ok(Self::meta(s))
+        Ok(meta)
     }
 
     /// 重命名终端标签（所有已附着客户端共享）。
@@ -568,23 +607,30 @@ impl TerminalService {
         -> Result<(), AppError>
     {
         let context_key = normalize_context_key(context_key)?;
-        let mut sessions = self.sessions.lock().unwrap();
-        let s = sessions.get_mut(terminal_id).ok_or_else(|| not_found("terminal not found"))?;
-        if s.context_key != context_key { return Err(context_mismatch()); }
-        if !s.attached.contains(socket_id) { return Err(not_attached()); }
-        // 在清理 attached 之前收集，使 closed 事件能通知所有原共享 socket
-        // （对齐 TS cleanupSession 之前 Array.from(attachedSocketIds)）。
-        let socket_ids: Vec<String> = s.attached.iter().cloned().collect();
-        s.status = TerminalStatus::Exited;
-        if let Ok(mut child) = s.child.lock() {
-            if let Some(ref mut c) = *child { let _ = c.kill(); }
-            child.take();
+        // T2+T3：锁内仅 take child + clone writer Arc + take master + remove，释放 sessions 锁后
+        // 再 kill+wait child 与 take writer（避免与 write_input 持 writer 锁做 write_all 互锁，
+        // 且 kill/wait 不持全局 sessions 锁、显式 wait 防僵尸）。
+        let (child_opt, writer_arc, socket_ids) = {
+            let mut sessions = self.sessions.lock().unwrap();
+            let s = sessions.get_mut(terminal_id).ok_or_else(|| not_found("terminal not found"))?;
+            if s.context_key != context_key { return Err(context_mismatch()); }
+            if !s.attached.contains(socket_id) { return Err(not_attached()); }
+            let socket_ids: Vec<String> = s.attached.iter().cloned().collect();
+            s.status = TerminalStatus::Exited;
+            let child_opt = s.child.lock().ok().and_then(|mut g| g.take());
+            let writer_arc = s.writer.clone();
+            s.master.take();
+            s.attached.clear();
+            sessions.remove(terminal_id);
+            (child_opt, writer_arc, socket_ids)
+        };
+        if let Some(mut c) = child_opt {
+            let _ = c.kill();
+            let _ = c.wait();
         }
-        if let Ok(mut writer) = s.writer.lock() { writer.take(); }
-        s.master.take();
-        s.attached.clear();
-        sessions.remove(terminal_id);
-        drop(sessions);
+        if let Ok(mut w) = writer_arc.lock() {
+            w.take();
+        }
         let _ = self.closed_tx.send(TerminalClosedEvent {
             terminal_id: terminal_id.into(), context_key: context_key.into(), socket_ids,
         });
@@ -626,23 +672,32 @@ impl Drop for TerminalService {
     fn drop(&mut self) {
         // 防御性回收：service 析构时 kill 所有子进程并清理资源
         // （单例运行时不触发；测试/service 重建场景下避免孤儿 PTY 子进程与悬挂 reader 任务）。
+        // T2+T3：锁内遍历 take child + clone writer + take master + abort grace + clear，
+        // 释放锁后再 kill+wait（不持全局锁、防僵尸）。
+        let mut pending: Vec<(
+            Option<Box<dyn portable_pty::Child + Send>>,
+            std::sync::Arc<std::sync::Mutex<Option<Box<dyn std::io::Write + Send>>>>,
+        )> = Vec::new();
         if let Ok(mut sessions) = self.sessions.lock() {
             for (_, s) in sessions.iter_mut() {
-                if let Ok(mut c) = s.child.lock() {
-                    if let Some(ref mut child) = *c {
-                        let _ = child.kill();
-                    }
-                    *c = None;
-                }
-                if let Ok(mut w) = s.writer.lock() {
-                    *w = None;
-                }
+                let child_opt = s.child.lock().ok().and_then(|mut g| g.take());
+                let writer_arc = s.writer.clone();
                 s.master.take();
                 if let Some(h) = s.grace_handle.take() {
                     h.abort();
                 }
+                pending.push((child_opt, writer_arc));
             }
             sessions.clear();
+        }
+        for (child_opt, writer_arc) in pending {
+            if let Some(mut c) = child_opt {
+                let _ = c.kill();
+                let _ = c.wait();
+            }
+            if let Ok(mut w) = writer_arc.lock() {
+                *w = None;
+            }
         }
     }
 }
