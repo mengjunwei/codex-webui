@@ -33,6 +33,15 @@ impl Config {
             .map(|s| s.trim().to_string())
             .filter(|s| !s.is_empty())
             .ok_or_else(|| anyhow!("WEBUI_API_KEY is required"))?;
+        // 强制最小长度：该 key 同时用作 bearer 回退凭据与 JWT 派生种子，
+        // 过短会被暴力破解。16 字符为下限（建议 32+）。
+        if webui_api_key.len() < 16 {
+            return Err(anyhow!(
+                "WEBUI_API_KEY must be at least 16 characters (current: {}); \
+                 use a long random secret",
+                webui_api_key.len()
+            ));
+        }
 
         let port: u16 = env::var("PORT")
             .ok()
@@ -144,7 +153,7 @@ mod tests {
     fn db_path_uses_explicit_webui_db_path() {
         let _g = ENV_LOCK.lock().unwrap();
         clear();
-        unsafe { env::set_var("WEBUI_API_KEY", "k"); }
+        unsafe { env::set_var("WEBUI_API_KEY", "0123456789abcdef"); }
         unsafe { env::set_var("CODEX_HOME", "/tmp/ignored"); }
         unsafe { env::set_var("WEBUI_DB_PATH", "/explicit/a.sqlite"); }
         let c = Config::from_env().unwrap();
@@ -155,7 +164,7 @@ mod tests {
     fn db_path_uses_codex_home_when_no_explicit() {
         let _g = ENV_LOCK.lock().unwrap();
         clear();
-        unsafe { env::set_var("WEBUI_API_KEY", "k"); }
+        unsafe { env::set_var("WEBUI_API_KEY", "0123456789abcdef"); }
         unsafe { env::set_var("CODEX_HOME", "/codex-home"); }
         let c = Config::from_env().unwrap();
         assert!(c.db_path.contains("codex-home"),
@@ -168,7 +177,7 @@ mod tests {
     fn db_path_falls_back_to_dotcodex() {
         let _g = ENV_LOCK.lock().unwrap();
         clear();
-        unsafe { env::set_var("WEBUI_API_KEY", "k"); }
+        unsafe { env::set_var("WEBUI_API_KEY", "0123456789abcdef"); }
         let c = Config::from_env().unwrap();
         assert!(c.db_path.ends_with("codex-webui.sqlite"),
             "expected codex-webui.sqlite suffix, got {}", c.db_path);
@@ -195,7 +204,7 @@ mod tests {
     fn port_defaults_to_8172() {
         let _g = ENV_LOCK.lock().unwrap();
         clear();
-        unsafe { env::set_var("WEBUI_API_KEY", "k"); }
+        unsafe { env::set_var("WEBUI_API_KEY", "0123456789abcdef"); }
         assert_eq!(Config::from_env().unwrap().port, 8172);
     }
 
@@ -203,7 +212,7 @@ mod tests {
     fn port_parses_when_set() {
         let _g = ENV_LOCK.lock().unwrap();
         clear();
-        unsafe { env::set_var("WEBUI_API_KEY", "k"); }
+        unsafe { env::set_var("WEBUI_API_KEY", "0123456789abcdef"); }
         unsafe { env::set_var("PORT", "9000"); }
         assert_eq!(Config::from_env().unwrap().port, 9000);
     }

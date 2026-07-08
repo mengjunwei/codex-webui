@@ -89,7 +89,7 @@ impl CodexJsonRpcClient {
         let pending: PendingMap = Arc::new(Mutex::new(HashMap::new()));
         let (write_tx, write_rx) = mpsc::unbounded_channel::<String>();
         let (notify_tx, _) = broadcast::channel::<Value>(256);
-        let (server_request_tx, _) = broadcast::channel::<Value>(256);
+        let (server_request_tx, _) = broadcast::channel::<Value>(1024);
         let (close_tx, _) = broadcast::channel::<CloseReason>(8);
         let closed = Arc::new(AtomicBool::new(false));
 

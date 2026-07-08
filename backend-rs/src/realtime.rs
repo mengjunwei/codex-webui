@@ -430,7 +430,7 @@ fn spawn_server_request_record_and_emit(io: SocketIo, codex: Arc<CodexProcessMan
                         tracing::warn!("emit codex.serverRequest failed: {e}");
                     }
                 }
-                Err(RecvError::Lagged(n)) => tracing::warn!("server-request record+emit lagged {n}"),
+                Err(RecvError::Lagged(n)) => tracing::error!("server-request record+emit lagged {n} (approval requests may be lost — consumer too slow)"),
                 Err(RecvError::Closed) => break,
             }
         }

@@ -49,7 +49,7 @@ impl CodexProcessManager {
     /// 构造但不立即启动（懒加载）。调用 `start()` 才会启动 + 初始化。
     pub fn new(codex_bin: String, codex_home: Option<String>) -> Self {
         let (notify_tx, _) = broadcast::channel::<Value>(256);
-        let (server_request_tx, _) = broadcast::channel::<Value>(256);
+        let (server_request_tx, _) = broadcast::channel::<Value>(1024);
         let (lifecycle_tx, _) = broadcast::channel::<LifecycleEvent>(32);
         Self {
             codex_bin,

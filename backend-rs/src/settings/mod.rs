@@ -126,6 +126,12 @@ impl<'a> SettingsReader<'a> {
             .filter(|s| !s.is_empty())
         {
             if let Some(value) = parse_env_value(&raw, def) {
+                // 写入缓存：env 来源也缓存，避免每次 resolve 都重查 DB 确认无值。
+                if let Some(cache_ref) = self.cache {
+                    if let Ok(mut cache) = cache_ref.lock() {
+                        cache.insert(key.to_string(), (value.clone(), ValueSource::Env, updated_at));
+                    }
+                }
                 return Some(ResolvedSetting {
                     key: def.key,
                     value,
@@ -137,9 +143,16 @@ impl<'a> SettingsReader<'a> {
         }
 
         // default 层：按类型解释定义中的默认值字符串。
+        let value = default_as_value(def);
+        // 写入缓存：default 来源也缓存（同 env），避免每次 resolve 重查 DB。
+        if let Some(cache_ref) = self.cache {
+            if let Ok(mut cache) = cache_ref.lock() {
+                cache.insert(key.to_string(), (value.clone(), ValueSource::Default, updated_at));
+            }
+        }
         Some(ResolvedSetting {
             key: def.key,
-            value: default_as_value(def),
+            value,
             source: ValueSource::Default,
             def,
             updated_at,

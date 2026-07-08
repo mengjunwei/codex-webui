@@ -144,14 +144,17 @@ fn is_workspace_root(state: &AppState, p: &Path) -> bool {
 pub fn compute_workspace_roots(db: &crate::db::Db, dynamic_roots: &HashSet<String>) -> Vec<String> {
     let mut out: HashSet<String> = HashSet::new();
     // 家目录 —— 规范化以匹配 Windows 上规范化后文件路径的逐字前缀（\\?\）
-    // （修复评审提出的 C1）。
-    if let Ok(home) = std::env::var("USERPROFILE").or_else(|_| std::env::var("HOME")) {
-        if !home.is_empty() {
-            match std::fs::canonicalize(&home) {
-                Ok(c) => { out.insert(c.to_string_lossy().to_string()); }
-                Err(_) => { out.insert(home); }
-            }
-        }
+    // （修复评审提出的 C1）。home 不随运行时变化，用 OnceCell 缓存其 canonical
+    // 路径，避免 workspace_roots（每次路径解析都调用）反复 canonicalize。
+    static HOME_CANONICAL: once_cell::sync::OnceCell<Option<String>> = once_cell::sync::OnceCell::new();
+    if let Some(hc) = HOME_CANONICAL.get_or_init(|| {
+        std::env::var("USERPROFILE")
+            .ok()
+            .or_else(|| std::env::var("HOME").ok())
+            .filter(|s| !s.is_empty())
+            .map(|h| std::fs::canonicalize(&h).map(|c| c.to_string_lossy().to_string()).unwrap_or(h))
+    }) {
+        out.insert(hc.clone());
     }
     // 从设置中读取已配置的 WORKSPACE_ROOTS（修复评审提出的 H1）。
     let reader = crate::settings::SettingsReader::new(db, None);
@@ -1192,7 +1195,13 @@ async fn do_relocate(
     }
     // C4：禁止复制/移动到自身或其子路径（对齐 TS path.relative 词法判断）。
     // 若目标是已存在目录，实际落点为 dst/src 名。
-    let effective_dest = if dst_canonical.is_dir() {
+    // R7：用 tokio::fs 异步检查，避免在 async handler 里用 Path::is_dir/exists
+    // （它们内部是同步 std::fs::metadata）阻塞 worker。
+    let dst_is_dir = tokio::fs::metadata(&dst_canonical)
+        .await
+        .map(|m| m.is_dir())
+        .unwrap_or(false);
+    let effective_dest = if dst_is_dir {
         dst_canonical.join(src.resolved.file_name().unwrap_or_default())
     } else {
         dst_canonical.clone()
@@ -1200,7 +1209,8 @@ async fn do_relocate(
     if effective_dest.starts_with(&src.resolved) {
         return Err(forbidden("cannot copy/move a directory into itself or a descendant"));
     }
-    if dst_canonical.exists() && !body.overwrite.unwrap_or(false) {
+    let dst_exists = tokio::fs::try_exists(&dst_canonical).await.unwrap_or(false);
+    if dst_exists && !body.overwrite.unwrap_or(false) {
         return Err(conflict(ErrorCode::FilesPathExists,
             "destination already exists (set overwrite=true)"));
     }
@@ -1458,37 +1468,34 @@ pub async fn archive_entry(
     }
     let path = resolved.resolved.clone();
     let ep = entry_path.to_string();
-    let data = tokio::task::spawn_blocking(move || read_archive_entry(&path, &ep))
-        .await
-        .map_err(|e| AppError::internal(format!("archive task: {e}")))?
-        .map_err(|e| match e {
-            ArchiveReadError::TooLarge => AppError::business(
-                ErrorCode::ArchiveEntryTooLarge,
-                StatusCode::PAYLOAD_TOO_LARGE,
-                format!(
-                    "Archive entry exceeds maximum size ({} bytes)",
-                    MAX_ARCHIVE_ENTRY_BYTES
+    let range_header = headers
+        .get(header::RANGE)
+        .and_then(|v| v.to_str().ok())
+        .map(|s| s.to_string());
+    // R9 真流式 Range：read_archive_entry 内部按 Range 决定读取范围
+    // （zip/tar 顺序读到 Range 即停，不再全量解压整个条目），返回 (total, outcome, data)。
+    let (total, outcome, data) =
+        tokio::task::spawn_blocking(move || read_archive_entry(&path, &ep, range_header.as_deref()))
+            .await
+            .map_err(|e| AppError::internal(format!("archive task: {e}")))?
+            .map_err(|e| match e {
+                ArchiveReadError::TooLarge => AppError::business(
+                    ErrorCode::ArchiveEntryTooLarge,
+                    StatusCode::PAYLOAD_TOO_LARGE,
+                    format!(
+                        "Archive entry exceeds maximum size ({} bytes)",
+                        MAX_ARCHIVE_ENTRY_BYTES
+                    ),
+                    None,
                 ),
-                None,
-            ),
-            ArchiveReadError::Other(s) => AppError::internal(format!("archive read: {s}")),
-        })?;
+                ArchiveReadError::Other(s) => AppError::internal(format!("archive read: {s}")),
+            })?;
 
-    // Range 支持（对齐 TS sendRangedStream）。
-    // 注意：当前实现先全量解压条目（上限 MAX_ARCHIVE_ENTRY_BYTES）再按 Range 切片，
-    // 属"伪流式" —— 大条目的视频拖动预览性能受限，并发大条目有内存压力。
-    // 真正的按需 seek/读取（zip 可随机访问、tar 顺序读到 Range 即停）需重构
-    // read_archive_entry，列为后续改进（50MB 单条目上限已兜底 OOM）。
     let mime = guess_mime_type(entry_path);
     let filename = std::path::Path::new(entry_path)
         .file_name()
         .map(|n| n.to_string_lossy().to_string())
         .unwrap_or_default();
-    let total = data.len() as u64;
-    let range_header = headers
-        .get(header::RANGE)
-        .and_then(|v| v.to_str().ok())
-        .map(|s| s.to_string());
 
     let resp = Response::builder()
         .header(header::ACCEPT_RANGES, "bytes")
@@ -1498,7 +1505,7 @@ pub async fn archive_entry(
         .header("Cache-Control", "private, no-store")
         .header(header::CONTENT_DISPOSITION, build_content_disposition(&filename, true).as_str());
 
-    Ok(match parse_range_header(range_header.as_deref(), total) {
+    Ok(match outcome {
         RangeResult::Invalid => resp
             .status(StatusCode::RANGE_NOT_SATISFIABLE)
             .header(header::CONTENT_RANGE, format!("bytes */{}", total))
@@ -1508,11 +1515,10 @@ pub async fn archive_entry(
             .body(Body::from(data))?,
         RangeResult::Range(r) => {
             let length = r.end - r.start + 1;
-            let chunk = data[r.start as usize..=r.end as usize].to_vec();
             resp.status(StatusCode::PARTIAL_CONTENT)
                 .header(header::CONTENT_RANGE, format!("bytes {}-{}/{}", r.start, r.end, total))
                 .header(header::CONTENT_LENGTH, length)
-                .body(Body::from(chunk))?
+                .body(Body::from(data))?
         }
     })
 }
@@ -1783,7 +1789,11 @@ enum ArchiveReadError {
     Other(String),
 }
 
-fn read_archive_entry(path: &Path, entry_name: &str) -> Result<Vec<u8>, ArchiveReadError> {
+fn read_archive_entry(
+    path: &Path,
+    entry_name: &str,
+    range_header: Option<&str>,
+) -> Result<(u64, RangeResult, Vec<u8>), ArchiveReadError> {
     use ArchiveReadError::*;
     let fmt = detect_format(path).ok_or_else(|| Other("unsupported archive format".into()))?;
     // 入口路径需为已规范化的安全路径（与 list 输出一致），否则直接拒绝。
@@ -1799,7 +1809,9 @@ fn read_archive_entry(path: &Path, entry_name: &str) -> Result<Vec<u8>, ArchiveR
                 let mut entry = archive.by_index(i).map_err(|e| Other(e.to_string()))?;
                 let raw = entry.name().to_string();
                 if normalize_archive_entry_path(&raw).as_deref() == Some(target.as_str()) {
-                    return read_limited(&mut entry);
+                    let total = entry.size();
+                    let (outcome, data) = read_entry_with_range(total, range_header, &mut entry)?;
+                    return Ok((total, outcome, data));
                 }
             }
             Err(Other(format!("entry not found: {entry_name}")))
@@ -1808,6 +1820,7 @@ fn read_archive_entry(path: &Path, entry_name: &str) -> Result<Vec<u8>, ArchiveR
             std::fs::File::open(path).map_err(|e| Other(e.to_string()))?,
             &target,
             entry_name,
+            range_header,
         ),
         ArchiveFormat::TarGz => read_tar_entry(
             flate2::read::GzDecoder::new(
@@ -1815,11 +1828,12 @@ fn read_archive_entry(path: &Path, entry_name: &str) -> Result<Vec<u8>, ArchiveR
             ),
             &target,
             entry_name,
+            range_header,
         ),
         ArchiveFormat::SevenZip => {
             let mut reader = sevenz_rust2::ArchiveReader::open(path, sevenz_rust2::Password::empty())
                 .map_err(|e| Other(e.to_string()))?;
-            let mut result: Result<Vec<u8>, ArchiveReadError> =
+            let mut result: Result<(u64, RangeResult, Vec<u8>), ArchiveReadError> =
                 Err(Other(format!("entry not found: {entry_name}")));
             reader
                 .for_each_entries(|entry, stream| {
@@ -1828,7 +1842,15 @@ fn read_archive_entry(path: &Path, entry_name: &str) -> Result<Vec<u8>, ArchiveR
                     }
                     let raw = entry.name().to_string();
                     if normalize_archive_entry_path(&raw).as_deref() == Some(target.as_str()) {
-                        result = read_limited(stream);
+                        let total = entry.size();
+                        match read_entry_with_range(total, range_header, stream) {
+                            Ok((outcome, data)) => {
+                                result = Ok((total, outcome, data));
+                            }
+                            Err(e) => {
+                                result = Err(e);
+                            }
+                        }
                         return Ok(false);
                     }
                     Ok(true)
@@ -1842,11 +1864,13 @@ fn read_archive_entry(path: &Path, entry_name: &str) -> Result<Vec<u8>, ArchiveR
             ),
             &target,
             entry_name,
+            range_header,
         ),
         ArchiveFormat::TarXz => read_tar_entry(
             xz_decoder(std::fs::File::open(path).map_err(|e| Other(e.to_string()))?),
             &target,
             entry_name,
+            range_header,
         ),
     }
 }
@@ -1855,7 +1879,8 @@ fn read_tar_entry<R: std::io::Read>(
     reader: R,
     target: &str,
     entry_name: &str,
-) -> Result<Vec<u8>, ArchiveReadError> {
+    range_header: Option<&str>,
+) -> Result<(u64, RangeResult, Vec<u8>), ArchiveReadError> {
     use ArchiveReadError::*;
     let mut archive = tar::Archive::new(reader);
     for entry in archive.entries().map_err(|e| Other(e.to_string()))? {
@@ -1867,7 +1892,9 @@ fn read_tar_entry<R: std::io::Read>(
             .to_string();
         // 用规范化名匹配（与 list 输出一致）。
         if normalize_archive_entry_path(&raw).as_deref() == Some(target) {
-            return read_limited(&mut entry);
+            let total = entry.header().size().map_err(|e| Other(e.to_string()))?;
+            return read_entry_with_range(total, range_header, &mut entry)
+                .map(|(outcome, data)| (total, outcome, data));
         }
     }
     Err(Other(format!("entry not found: {entry_name}")))
@@ -1884,6 +1911,57 @@ fn read_limited<R: std::io::Read>(reader: R) -> Result<Vec<u8>, ArchiveReadError
         return Err(ArchiveReadError::TooLarge);
     }
     Ok(buf)
+}
+
+/// R9 真流式 Range：跳过前 `start` 字节（解压丢弃，不计上限），再读取
+/// `end - start + 1` 字节（受 MAX_ARCHIVE_ENTRY_BYTES 上限约束；`end` 为 inclusive）。
+/// zip/tar 等压缩流不可随机寻址，故 start 之前仍需顺序解压丢弃，但避免了
+/// "全量解压整个条目再切片"的内存峰值与每次 Range 的重复全量解压。
+fn read_limited_range<R: std::io::Read>(
+    mut reader: R,
+    start: u64,
+    end: u64,
+) -> Result<Vec<u8>, ArchiveReadError> {
+    use std::io::Read;
+    let limit = MAX_ARCHIVE_ENTRY_BYTES as u64;
+    let length = end.saturating_sub(start).saturating_add(1).min(limit);
+    // 跳过 start 字节（解压丢弃）。
+    let mut remaining = start;
+    let mut skip_buf = [0u8; 8192];
+    while remaining > 0 {
+        let want = remaining.min(skip_buf.len() as u64) as usize;
+        let n = reader
+            .read(&mut skip_buf[..want])
+            .map_err(|e| ArchiveReadError::Other(e.to_string()))?;
+        if n == 0 {
+            return Ok(Vec::new()); // start 超出条目大小：返回空（上层 total 正确，响应空体）
+        }
+        remaining -= n as u64;
+    }
+    let mut out = Vec::with_capacity(length as usize);
+    reader
+        .take(length)
+        .read_to_end(&mut out)
+        .map_err(|e| ArchiveReadError::Other(e.to_string()))?;
+    Ok(out)
+}
+
+/// 根据条目总大小与 Range 头决定读取方式，返回 (Range 结果, 数据)。
+/// - Invalid → 空 Vec（上层返回 416）
+/// - None → 全量读取（上限保护）
+/// - Range → 仅读取 [start, end]（真流式，不全量解压）
+fn read_entry_with_range<R: std::io::Read>(
+    total: u64,
+    range_header: Option<&str>,
+    reader: R,
+) -> Result<(RangeResult, Vec<u8>), ArchiveReadError> {
+    let outcome = parse_range_header(range_header, total);
+    let data = match &outcome {
+        RangeResult::Invalid => Vec::new(),
+        RangeResult::None => read_limited(reader)?,
+        RangeResult::Range(r) => read_limited_range(reader, r.start, r.end)?,
+    };
+    Ok((outcome, data))
 }
 
 /// 将扁平归档条目构建为嵌套目录树（对齐 TS `ArchiveService.buildTree`）。

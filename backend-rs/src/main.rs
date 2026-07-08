@@ -25,7 +25,7 @@ async fn main() -> anyhow::Result<()> {
     codex_webui::logs::mark_process_start();
 
     let cfg = Config::from_env()?;
-    let (_log_guard, _otel_guard) = logging::init(&cfg.log_level, cfg.otlp_endpoint.as_deref());
+    let _guards = logging::init(&cfg.log_level, cfg.otlp_endpoint.as_deref());
 
     tracing::info!(
         port = cfg.port,

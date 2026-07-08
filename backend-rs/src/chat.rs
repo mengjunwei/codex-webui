@@ -29,7 +29,11 @@ pub async fn upload_attachment(
     let max_bytes = state.settings_reader().get_upload_max_bytes();
     let upload_root = ensure_upload_root()?;
     // 周期性清理超过 TTL 的陈旧上传（对齐 TS，节流到每小时一次）。
-    maybe_sweep_uploads(&upload_root);
+    // 用 spawn_blocking 包裹同步目录遍历，避免阻塞 tokio worker。
+    {
+        let sweep_root = upload_root.clone();
+        let _ = tokio::task::spawn_blocking(move || maybe_sweep_uploads(&sweep_root)).await;
+    }
 
     // 只读取一个文件 part（字段名为 "file"）。
     while let Ok(Some(mut field)) = multipart.next_field().await {
