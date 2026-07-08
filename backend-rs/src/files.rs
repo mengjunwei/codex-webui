@@ -380,16 +380,19 @@ pub async fn read_tree(
             .map(|d| d.as_millis() as i64)
             .unwrap_or(0);
         // 目录省略 size/mtime（对齐 TS readDirectory）；文件携带二者。
+        // 剥离 Windows 长路径前缀 `\\?\`，避免前端文件树因路径格式不识别而不展示。
+        let path_str = path.to_string_lossy();
+        let display_path = path_str.strip_prefix("\\\\?\\").unwrap_or(&path_str);
         let entry = if meta.is_dir() {
             json!({
                 "name": name,
-                "path": path.to_string_lossy().to_string(),
+                "path": display_path.to_string(),
                 "type": ty,
             })
         } else {
             json!({
                 "name": name,
-                "path": path.to_string_lossy().to_string(),
+                "path": display_path.to_string(),
                 "type": ty,
                 "size": meta.len(),
                 "mtime": mtime_ms,
@@ -411,7 +414,7 @@ pub async fn read_tree(
                 .cmp(b.get("name").and_then(serde_json::Value::as_str).unwrap_or("")),
         }
     });
-    Ok(Json(json!({ "entries": entries })))
+    Ok(Json(json!(entries)))
 }
 
 /// GET /api/files/read?path=… → 文本内容（≤5MB）。

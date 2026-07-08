@@ -225,7 +225,9 @@ impl TerminalService {
         if !cwd_canonical.is_dir() {
             return Err(bad_request(ErrorCode::TerminalCwdNotDirectory, "cwd is not a directory".to_string()));
         }
-        let cwd = cwd_canonical.to_string_lossy().to_string();
+        let cwd_raw = cwd_canonical.to_string_lossy();
+        // 剥离 Windows 长路径前缀 `\\?\`，避免 PowerShell prompt 显示 `Microsoft.PowerShell.Core\FileSystem::\\?\...`。
+        let cwd = cwd_raw.strip_prefix("\\\\?\\").unwrap_or(&cwd_raw);
 
         let display_title = title.filter(|s| !s.trim().is_empty())
             .map(String::from)
@@ -347,7 +349,7 @@ impl TerminalService {
 
         let mut session = Session {
             id: id.clone(), context_key: context_key.to_string(), attached,
-            title: display_title, cwd: cwd.clone(), shell: std::path::Path::new(&shell)
+            title: display_title, cwd: cwd.to_string(), shell: std::path::Path::new(&shell)
                 .file_name().unwrap_or_default().to_string_lossy().to_string(),
             status: TerminalStatus::Running, exit_code: None, signal: None,
             cols, rows, created_at: created_at.clone(),
