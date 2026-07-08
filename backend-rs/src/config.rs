@@ -17,6 +17,11 @@ pub struct Config {
     pub codex_bin: String,
     pub codex_home: Option<String>,
     pub db_path: String,
+    /// OTLP collector endpoint (e.g. `http://localhost:4317`). When set,
+    /// tracing spans are exported via gRPC to an OpenTelemetry-compatible
+    /// backend (Jaeger, Tempo, Grafana, Datadog, OTel Collector, ...).
+    /// When `None`, the OTLP layer is not installed (zero overhead).
+    pub otlp_endpoint: Option<String>,
 }
 
 const DEFAULT_DB_FILENAME: &str = "codex-webui.sqlite";
@@ -57,6 +62,13 @@ impl Config {
         });
         let codex_bin = env::var("CODEX_BIN").unwrap_or_else(|_| "codex".to_string());
 
+        // Optional: OTLP collector endpoint for distributed tracing export.
+        // Standard env var name recognized by OpenTelemetry SDKs.
+        let otlp_endpoint = env::var("OTEL_EXPORTER_OTLP_ENDPOINT")
+            .ok()
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty());
+
         Ok(Self {
             webui_api_key,
             port,
@@ -65,6 +77,7 @@ impl Config {
             codex_bin,
             codex_home: codex_home.clone(),
             db_path: resolve_db_path(env::var("WEBUI_DB_PATH").ok(), codex_home.as_deref()),
+            otlp_endpoint,
         })
     }
 }

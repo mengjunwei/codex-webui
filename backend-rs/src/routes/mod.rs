@@ -63,18 +63,18 @@ pub fn build_router(state: AppState) -> Router {
         .route("/chat/upload", post(chat_mod::upload_attachment).layer(axum::extract::DefaultBodyLimit::disable()))
         // ── settings 增删改查(CRUD)──
         .route("/settings", get(s::list).patch(s::update_batch))
-        .route("/settings/:key", get(s::get_one).patch(s::update_one).delete(s::delete_one))
+        .route("/settings/{key}", get(s::get_one).patch(s::update_one).delete(s::delete_one))
         // ── auth 登出(受保护,与 TS 对齐)──
         .route("/auth/logout", post(auth::logout))
         // ── 线程维度读取 ──
-        .route("/threads/:threadId/token-usage/latest", get(sq::read_latest_token_usage))
-        .route("/threads/:threadId/token-usage", get(sq::read_token_usage))
-        .route("/threads/:threadId/turn-diffs", get(sq::read_turn_diffs))
-        .route("/threads/:threadId/turn-errors", get(sq::read_turn_errors))
+        .route("/threads/{threadId}/token-usage/latest", get(sq::read_latest_token_usage))
+        .route("/threads/{threadId}/token-usage", get(sq::read_token_usage))
+        .route("/threads/{threadId}/turn-diffs", get(sq::read_turn_diffs))
+        .route("/threads/{threadId}/turn-errors", get(sq::read_turn_errors))
         // ── 待审批(读取 + 响应)──
         .route("/pending-approvals", get(sq::list_pending))
         .route(
-            "/pending-approvals/:requestId/respond",
+            "/pending-approvals/{requestId}/respond",
             post(sq::respond_to_request),
         )
         // ── 日志 ──
@@ -104,17 +104,17 @@ pub fn build_router(state: AppState) -> Router {
         // ── threads + turns(codex 代理)──
         .route("/threads", post(th::create_thread).get(th::list_threads))
         .route("/threads/loaded", get(th::list_loaded_threads))
-        .route("/threads/:threadId", get(th::read_thread))
-        .route("/threads/:threadId/resume", post(th::resume_thread))
-        .route("/threads/:threadId/turns", post(th::start_turn))
-        .route("/threads/:threadId/turns/:turnId/steer", post(th::steer_turn))
-        .route("/threads/:threadId/turns/:turnId/interrupt", post(th::interrupt_turn))
-        .route("/threads/:threadId/archive", post(th::archive_thread))
-        .route("/threads/:threadId/unarchive", post(th::unarchive_thread))
-        .route("/threads/:threadId/compact", post(th::compact_thread))
-        .route("/threads/:threadId/fork", post(th::fork_thread))
-        .route("/threads/:threadId/rollback", post(th::rollback_thread))
-        .route("/threads/:threadId/name", axum::routing::patch(th::set_thread_name))
+        .route("/threads/{threadId}", get(th::read_thread))
+        .route("/threads/{threadId}/resume", post(th::resume_thread))
+        .route("/threads/{threadId}/turns", post(th::start_turn))
+        .route("/threads/{threadId}/turns/{turnId}/steer", post(th::steer_turn))
+        .route("/threads/{threadId}/turns/{turnId}/interrupt", post(th::interrupt_turn))
+        .route("/threads/{threadId}/archive", post(th::archive_thread))
+        .route("/threads/{threadId}/unarchive", post(th::unarchive_thread))
+        .route("/threads/{threadId}/compact", post(th::compact_thread))
+        .route("/threads/{threadId}/fork", post(th::fork_thread))
+        .route("/threads/{threadId}/rollback", post(th::rollback_thread))
+        .route("/threads/{threadId}/name", axum::routing::patch(th::set_thread_name))
         // ── codex 状态 + 配置 ──
         .route("/codex/status", get(csc::status))
         .route("/codex/approval-policy", post(csc::update_approval_policy))

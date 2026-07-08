@@ -1,9 +1,12 @@
 //! tracing 初始化（按大小滚动文件 + 标准输出）以及 URL 脱敏。
 //!
-//! 两个 layer：
+//! 三个 layer（第三个可选）：
 //! - **stdout**：人类可读的格式（适合开发控制台 / `docker logs`）
 //! - **file**（`logs/app`，按大小滚动 10MB × 5 个）：**JSON** 格式，以便 `logs`
 //!   模块能将条目解析为结构化的 `LogEntry` 记录。
+//! - **otlp**（可选）：当 `OTEL_EXPORTER_OTLP_ENDPOINT` 环境变量非空时启用，
+//!   通过 gRPC 将 tracing span 导出到 OpenTelemetry 兼容后端
+//!   （Jaeger / Tempo / Grafana / Datadog / OTel Collector）。
 //!
 //! 对齐 pino-roll：按大小滚动（10MB × 5 个文件），由自建 `RollingWriter` 实现
 //! （tracing-appender 仅支持按时间滚动）。参见 spec §6.7。
@@ -15,20 +18,59 @@ use tracing_appender::non_blocking::WorkerGuard;
 use tracing_subscriber::fmt::format::{self, JsonFields};
 use tracing_subscriber::{filter::EnvFilter, fmt, prelude::*};
 
-/// 初始化 tracing：stdout（人类可读）+ 滚动文件（JSON）。
-/// 返回 `WorkerGuard` —— **必须持有**到进程退出，否则非阻塞写入器的后台线程
-/// 会被丢弃，尚未写出的日志行会丢失。
-pub fn init(level: &str) -> WorkerGuard {
+/// 初始化 tracing：stdout（人类可读）+ 滚动文件（JSON）+ 可选 OTLP 导出。
+///
+/// 返回 `(WorkerGuard, Option<OtelGuard>)` —— **必须持有**到进程退出：
+/// - `WorkerGuard` 保证非阻塞写入器的后台线程不被丢弃
+/// - `OtelGuard` 在 OTLP 启用时持有 tracer provider，drop 时 flush 未完成的 span
+pub fn init(level: &str, otlp_endpoint: Option<&str>) -> (WorkerGuard, Option<OtelGuard>) {
     let file_appender = RollingWriter::new(PathBuf::from("logs").join("app"), 10 * 1024 * 1024, 5);
     let (non_blocking, guard) = tracing_appender::non_blocking(file_appender);
 
     let filter = EnvFilter::try_new(level).unwrap_or_else(|_| EnvFilter::new("info"));
 
+    // 每条 subscriber 链必须从头完整构建 —— fmt/OTLP layer 的 S 参数会被各自
+    // 的合成类型推断，无法预先抽出复用。按是否启用 OTLP 分两路构造。
+    let otel_guard = match otlp_endpoint.map(str::trim).filter(|s| !s.is_empty()) {
+        Some(endpoint) => match build_tracer_provider(endpoint) {
+            Ok(provider) => {
+                use opentelemetry::trace::TracerProvider as _;
+                let tracer = provider.tracer("codex-webui");
+                opentelemetry::global::set_tracer_provider(provider.clone());
+                tracing_subscriber::registry()
+                    .with(filter)
+                    .with(fmt::layer().with_writer(std::io::stdout))
+                    .with(
+                        fmt::layer()
+                            .with_writer(non_blocking)
+                            .fmt_fields(JsonFields::default())
+                            .event_format(format::Format::default().json()),
+                    )
+                    .with(tracing_opentelemetry::layer().with_tracer(tracer))
+                    .init();
+                tracing::info!(endpoint, "OTLP tracing exporter enabled");
+                Some(OtelGuard(provider))
+            }
+            Err(e) => {
+                eprintln!("OTLP init failed (endpoint={endpoint}): {e}; continuing without OTLP");
+                init_plain(filter, non_blocking);
+                None
+            }
+        },
+        None => {
+            init_plain(filter, non_blocking);
+            None
+        }
+    };
+
+    (guard, otel_guard)
+}
+
+/// 无 OTLP 的标准初始化路径（stdout + 滚动 JSON 文件）。
+fn init_plain(filter: EnvFilter, non_blocking: tracing_appender::non_blocking::NonBlocking) {
     tracing_subscriber::registry()
         .with(filter)
-        // stdout：人类可读，带 ANSI 颜色
         .with(fmt::layer().with_writer(std::io::stdout))
-        // file：JSON 格式，供 logs 模块做结构化解析
         .with(
             fmt::layer()
                 .with_writer(non_blocking)
@@ -36,8 +78,37 @@ pub fn init(level: &str) -> WorkerGuard {
                 .event_format(format::Format::default().json()),
         )
         .init();
+}
 
-    guard
+/// 构建 OTLP gRPC tracer provider（对齐 opentelemetry 0.27 API）。
+fn build_tracer_provider(
+    endpoint: &str,
+) -> Result<opentelemetry_sdk::trace::TracerProvider, Box<dyn std::error::Error + Send + Sync>> {
+    use opentelemetry_otlp::{SpanExporter, WithExportConfig};
+
+    let exporter = SpanExporter::builder()
+        .with_tonic()
+        .with_endpoint(endpoint)
+        .build()?;
+
+    Ok(opentelemetry_sdk::trace::TracerProvider::builder()
+        .with_batch_exporter(exporter, opentelemetry_sdk::runtime::Tokio)
+        .with_resource(opentelemetry_sdk::Resource::new(vec![
+            opentelemetry::KeyValue::new("service.name", "codex-webui"),
+        ]))
+        .build())
+}
+
+/// OTLP tracer provider 的 RAII guard —— drop 时 flush 所有未完成的 span。
+pub struct OtelGuard(opentelemetry_sdk::trace::TracerProvider);
+
+impl Drop for OtelGuard {
+    fn drop(&mut self) {
+        if let Err(e) = self.0.shutdown() {
+            eprintln!("OTLP tracer shutdown error: {e}");
+        }
+        opentelemetry::global::shutdown_tracer_provider();
+    }
 }
 
 /// 按大小滚动的日志 writer（对齐 spec §6.7：10MB × 5 个文件 / logs/app）。

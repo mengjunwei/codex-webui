@@ -377,9 +377,9 @@ fn spawn_notification_emit(io: SocketIo, codex: Arc<CodexProcessManager>) {
                         .map(|s| s.to_string());
                     let Some(ns) = io.of("/ws") else { continue };
                     let res = if let Some(tid) = thread_id.as_deref() {
-                        ns.within(format!("thread:{tid}")).emit("codex.notification", &msg)
+                        ns.within(format!("thread:{tid}")).emit("codex.notification", &msg).await
                     } else {
-                        ns.broadcast().emit("codex.notification", &msg)
+                        ns.broadcast().emit("codex.notification", &msg).await
                     };
                     if let Err(e) = res {
                         tracing::warn!("emit codex.notification failed: {e}");
@@ -419,9 +419,9 @@ fn spawn_server_request_record_and_emit(io: SocketIo, codex: Arc<CodexProcessMan
                     });
                     let Some(ns) = io.of("/ws") else { continue };
                     let res = if let Some(tid) = thread_id.as_deref() {
-                        ns.within(format!("thread:{tid}")).emit("codex.serverRequest", &out)
+                        ns.within(format!("thread:{tid}")).emit("codex.serverRequest", &out).await
                     } else {
-                        ns.broadcast().emit("codex.serverRequest", &out)
+                        ns.broadcast().emit("codex.serverRequest", &out).await
                     };
                     if let Err(e) = res {
                         tracing::warn!("emit codex.serverRequest failed: {e}");
@@ -463,7 +463,7 @@ fn spawn_lifecycle_emit(
                         ),
                     };
                     if let Some(ns) = io.of("/ws") {
-                        if let Err(e) = ns.broadcast().emit("codex.lifecycle", &payload) {
+                        if let Err(e) = ns.broadcast().emit("codex.lifecycle", &payload).await {
                             tracing::warn!("emit codex.lifecycle failed: {e}");
                         }
                     }
@@ -502,7 +502,7 @@ fn spawn_lifecycle_emit(
                             "failedThreadIds": failed,
                         });
                         if let Some(ns) = io.of("/ws") {
-                            if let Err(e) = ns.broadcast().emit("codex.lifecycle", &done) {
+                            if let Err(e) = ns.broadcast().emit("codex.lifecycle", &done).await {
                                 tracing::warn!("emit autoResumeCompleted failed: {e}");
                             }
                         }
@@ -526,7 +526,7 @@ fn spawn_terminal_output_emit(io: SocketIo, terminal: Arc<TerminalService>) {
                     let Some(_ns) = io.of("/ws") else { continue };
                     let payload = json!({ "terminalId": event.terminal_id, "data": event.data });
                     for sid in &event.socket_ids {
-                        if let Some(ns) = io.of("/ws") { let _ = ns.within(sid.clone()).emit("terminal.output", &payload); }
+                        if let Some(ns) = io.of("/ws") { let _ = ns.within(sid.clone()).emit("terminal.output", &payload).await; }
                     }
                 }
                 Err(RecvError::Lagged(n)) => tracing::warn!("terminal output emit lagged {n}"),
@@ -545,7 +545,7 @@ fn spawn_terminal_exit_emit(io: SocketIo, terminal: Arc<TerminalService>) {
                     let Some(_ns) = io.of("/ws") else { continue };
                     let payload = json!({ "terminal": event.terminal, "closed": false });
                     for sid in &event.socket_ids {
-                        if let Some(ns) = io.of("/ws") { let _ = ns.within(sid.clone()).emit("terminal.exit", &payload); }
+                        if let Some(ns) = io.of("/ws") { let _ = ns.within(sid.clone()).emit("terminal.exit", &payload).await; }
                     }
                 }
                 Err(RecvError::Lagged(n)) => tracing::warn!("terminal exit emit lagged {n}"),
@@ -567,7 +567,7 @@ fn spawn_terminal_closed_emit(io: SocketIo, terminal: Arc<TerminalService>) {
                         "closed": true,
                     });
                     for sid in &event.socket_ids {
-                        if let Some(ns) = io.of("/ws") { let _ = ns.within(sid.clone()).emit("terminal.exit", &payload); }
+                        if let Some(ns) = io.of("/ws") { let _ = ns.within(sid.clone()).emit("terminal.exit", &payload).await; }
                     }
                 }
                 Err(RecvError::Lagged(n)) => tracing::warn!("terminal closed emit lagged {n}"),
@@ -587,7 +587,7 @@ fn spawn_terminal_metadata_emit(io: SocketIo, terminal: Arc<TerminalService>) {
                     let TerminalMetadataEvent { terminal: meta, socket_ids } = event;
                     let payload = json!({ "terminal": meta });
                     for sid in &socket_ids {
-                        if let Some(ns) = io.of("/ws") { let _ = ns.within(sid.clone()).emit("terminal.metadata", &payload); }
+                        if let Some(ns) = io.of("/ws") { let _ = ns.within(sid.clone()).emit("terminal.metadata", &payload).await; }
                     }
                 }
                 Err(RecvError::Lagged(n)) => tracing::warn!("terminal metadata emit lagged {n}"),

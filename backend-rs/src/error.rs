@@ -493,18 +493,20 @@ where
     S: Send + Sync,
 {
     type Rejection = AppError;
-    async fn from_request(
+    fn from_request(
         req: axum::extract::Request,
         state: &S,
-    ) -> Result<Self, Self::Rejection> {
-        match axum::Json::<T>::from_request(req, state).await {
-            Ok(axum::Json(value)) => Ok(Json(value)),
-            Err(_) => Err(AppError::business(
-                ErrorCode::ValidationFieldInvalid,
-                StatusCode::BAD_REQUEST,
-                "Invalid JSON request body".into(),
-                None,
-            )),
+    ) -> impl std::future::Future<Output = Result<Self, Self::Rejection>> + Send {
+        async move {
+            match axum::Json::<T>::from_request(req, state).await {
+                Ok(axum::Json(value)) => Ok(Json(value)),
+                Err(_) => Err(AppError::business(
+                    ErrorCode::ValidationFieldInvalid,
+                    StatusCode::BAD_REQUEST,
+                    "Invalid JSON request body".into(),
+                    None,
+                )),
+            }
         }
     }
 }

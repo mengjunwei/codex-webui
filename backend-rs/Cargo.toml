@@ -4,20 +4,24 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-axum = { version = "0.7", features = ["multipart"] }
+axum = { version = "0.8", features = ["multipart"] }
 async-trait = "0.1"
 tokio = { version = "1", features = ["full"] }
 tokio-util = { version = "0.7", features = ["io"] }
 tower = { version = "0.5", features = ["util"] }
-tower-http = { version = "0.6", features = ["fs", "trace"] }
+tower-http = { version = "0.7", features = ["fs", "trace"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-rusqlite = { version = "0.32", features = ["bundled"] }
-thiserror = "1"
+rusqlite = { version = "0.36", features = ["bundled"] }
+thiserror = "2"
 anyhow = "1"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
 tracing-appender = "0.2"
+opentelemetry = "0.27"
+opentelemetry_sdk = { version = "0.27", features = ["rt-tokio"] }
+opentelemetry-otlp = { version = "0.27", features = ["grpc-tonic"] }
+tracing-opentelemetry = "0.28"
 jsonwebtoken = "9"
 hmac = "0.12"
 sha2 = "0.10"
@@ -31,7 +35,7 @@ portable-pty = "0.8"
 wezterm-term = { git = "https://github.com/wez/wezterm", branch = "main" }
 regex = "1"
 reqwest = { version = "0.12", features = ["json", "stream"] }
-socketioxide = { version = "0.15", features = ["state"] }
+socketioxide = { version = "0.16", features = ["state"] }
 tar = "0.4"
 flate2 = "1"
 utoipa = "5"
