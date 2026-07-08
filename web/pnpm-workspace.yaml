@@ -1,2 +1,4 @@
+allowBuilds:
+  msw: true
 onlyBuiltDependencies:
   - msw
