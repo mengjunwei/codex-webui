@@ -337,8 +337,9 @@ impl CodexProcessManager {
 /// `cmd.exe /c` 启动这些垫片不会将 stdio 管道继承到内部的 node 孙进程
 /// （stdout 会立即关闭）。因此，对于 npm 垫片，我们解析出底层的
 /// `node + codex.js` 并直接启动 `node` —— node 直接继承管道，没有孙进程。
-/// 非 npm 的 `.cmd`/`.bat` 退回到 `cmd.exe /c`。真正的 `.exe` 可执行文件
-/// 以及非 Windows 平台直接启动。
+/// 非 npm 的 `.cmd`/`.bat` 退回到 `cmd.exe /c`（使用绝对路径避免在
+/// Git Bash 等进程 PATH 不含 system32 的环境下找不到 cmd.exe）。
+/// 真正的 `.exe` 可执行文件以及非 Windows 平台直接启动。
 #[cfg(windows)]
 fn build_codex_command(bin: &str) -> Command {
     let lower = bin.to_ascii_lowercase();
@@ -346,7 +347,18 @@ fn build_codex_command(bin: &str) -> Command {
         if let Some(cmd) = resolve_node_script(bin) {
             return cmd;
         }
-        let mut c = Command::new("cmd.exe");
+        // 兜底：使用绝对路径的 cmd.exe，避免 Rust 在 PATH 不含
+        // C:\Windows\system32 的环境（Git Bash、msys2 等）中找不到。
+        let comspec = std::env::var("COMSPEC")
+            .ok()
+            .filter(|s| !s.trim().is_empty())
+            .unwrap_or_else(|| "C:\\Windows\\system32\\cmd.exe".to_string());
+        tracing::warn!(
+            bin = bin,
+            comspec = %comspec,
+            "falling back to cmd.exe /c (could not resolve npm shim to node script)"
+        );
+        let mut c = Command::new(comspec);
         c.arg("/c").arg(bin);
         c
     } else {
@@ -358,18 +370,36 @@ fn build_codex_command(bin: &str) -> Command {
 /// 查找标准 npm 目录布局 `<cmd_dir>/node_modules/@openai/codex/bin/codex.js`。
 #[cfg(windows)]
 fn resolve_node_script(cmd_path: &str) -> Option<Command> {
-    let dir = std::path::Path::new(cmd_path).parent()?;
+    // Git Bash 启动的进程可能传入正斜杠混合的 Windows 路径，先做轻量规范化
+    // 让 Path::parent 与 exists 行为稳定。失败时返回 None。
+    let p = std::path::Path::new(cmd_path);
+    let dir = p.parent()?;
     let script = dir
         .join("node_modules")
         .join("@openai")
         .join("codex")
         .join("bin")
         .join("codex.js");
+    tracing::debug!(
+        cmd_path = cmd_path,
+        dir = %dir.display(),
+        script = %script.display(),
+        exists = script.exists(),
+        "resolve_node_script probe"
+    );
     if !script.exists() {
         return None;
     }
-    tracing::info!("resolved npm shim {} -> node {}", cmd_path, script.display());
-    let mut c = Command::new("node");
+    // 优先用绝对路径调用 node.exe，避免 Git Bash 启动的进程在
+    // PATH 中找不到 node 时 `Command::new("node")` 报 program not found。
+    let node_bin = locate_node_binary().unwrap_or_else(|| "node".to_string());
+    tracing::info!(
+        "resolved npm shim {} -> {} {}",
+        cmd_path,
+        node_bin,
+        script.display()
+    );
+    let mut c = Command::new(node_bin);
     c.arg(script);
     Some(c)
 }
@@ -377,4 +407,89 @@ fn resolve_node_script(cmd_path: &str) -> Option<Command> {
 #[cfg(not(windows))]
 fn build_codex_command(bin: &str) -> Command {
     Command::new(bin)
+}
+
+/// 查找 `node` 可执行文件的绝对路径。
+///
+/// Windows 上 Rust 的 `Command::new("node")` 走 `CreateProcess`，需要
+/// `node.exe` 出现在当前进程 PATH 中。Git Bash / MSYS2 / 某些 CI 启动
+/// 的进程可能不满足该条件，导致 "program not found"。这里显式探测：
+/// 1. 尝试 `where node.exe` 抓取 PATH 中第一个匹配；
+/// 2. 回退到几个常见安装目录（`D:\Program Files\nodejs\node.exe`、
+///    `C:\Program Files\nodejs\node.exe`）；
+/// 3. 最后用 `which node`（来自 Git Bash）抓绝对路径；
+/// 4. 全部失败返回 None，调用方兜底用 `"node"`。
+fn locate_node_binary() -> Option<String> {
+    #[cfg(windows)]
+    {
+        // 1) where node.exe
+        if let Some(p) = run_where_first("node.exe") {
+            return Some(p);
+        }
+        // 2) 常见安装目录
+        for cand in [
+            r"D:\Program Files\nodejs\node.exe",
+            r"C:\Program Files\nodejs\node.exe",
+            r"C:\Program Files (x86)\nodejs\node.exe",
+        ] {
+            if std::path::Path::new(cand).exists() {
+                return Some(cand.to_string());
+            }
+        }
+        // 3) which node（Git Bash 提供）
+        if let Some(p) = run_cmd_capture("which node") {
+            let p = p.trim().replace("/", "\\");
+            if !p.is_empty() && std::path::Path::new(&p).exists() {
+                return Some(p);
+            }
+        }
+        // 4) NVM 风格：%APPDATA%\nvm\<version>\node.exe
+        if let Ok(appdata) = std::env::var("APPDATA") {
+            let nvm = std::path::Path::new(&appdata).join("nvm");
+            if let Ok(rd) = std::fs::read_dir(&nvm) {
+                for entry in rd.flatten() {
+                    let p = entry.path().join("node.exe");
+                    if p.exists() {
+                        return Some(p.to_string_lossy().into_owned());
+                    }
+                }
+            }
+        }
+        None
+    }
+    #[cfg(not(windows))]
+    {
+        // 类 Unix 平台 which 通常可用
+        if let Ok(out) = std::process::Command::new("which").arg("node").output() {
+            if out.status.success() {
+                let s = String::from_utf8_lossy(&out.stdout).trim().to_string();
+                if !s.is_empty() {
+                    return Some(s);
+                }
+            }
+        }
+        None
+    }
+}
+
+#[cfg(windows)]
+fn run_where_first(name: &str) -> Option<String> {
+    let out = std::process::Command::new("where").arg(name).output().ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    let s = String::from_utf8_lossy(&out.stdout);
+    s.lines().next().map(|l| l.trim().to_string()).filter(|l| !l.is_empty())
+}
+
+#[cfg(windows)]
+fn run_cmd_capture(cmd: &str) -> Option<String> {
+    let out = std::process::Command::new("cmd")
+        .args(["/C", cmd])
+        .output()
+        .ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    Some(String::from_utf8_lossy(&out.stdout).into_owned())
 }
