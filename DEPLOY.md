@@ -4,23 +4,41 @@
 
 ## 目录结构
 
+### 打包产物（tar.gz 内容）
+
+```
+codex-webui-deploy.tar.gz
+├── install.sh                    # 一键安装脚本（目标机器执行）
+├── example_provider.md           # cc-switch provider 添加指南
+├── bin/
+│   └── start.sh                  # 启动/停止/重启脚本
+└── target/
+    ├── codex-webui               # 后端 Rust 二进制（端口 8172）
+    ├── codex                     # Codex CLI（由 codex-webui 启动子进程）
+    ├── cc-switch                 # API 代理（端口 15722）
+    └── public/                   # 前端 vite build 产物
+        ├── index.html
+        └── assets/               # ~630 个 JS/CSS chunk
+```
+
+### 部署后完整目录（运行时）
+
 ```
 /home/master/Mnet/
-├── .env                          # 配置文件（WEBUI_API_KEY 等）
+├── .env                          # 配置文件（install.sh 自动生成）
 ├── bin/
 │   └── start.sh                  # 启动/停止/重启脚本
 ├── target/
-│   ├── codex-webui               # 后端 Rust 二进制（端口 8172）
-│   ├── codex                     # Codex CLI（由 codex-webui 启动子进程）
-│   ├── cc-switch                 # API 代理（端口 15722）
-│   └── public/                   # 前端 vite build 产物
-│       ├── index.html
-│       └── assets/               # ~630 个 JS/CSS chunk
-├── logs/                         # 运行日志 + PID 文件
+│   ├── codex-webui               # 后端二进制
+│   ├── codex                     # codex CLI
+│   ├── cc-switch                 # API 代理
+│   └── public/                   # 前端产物
+├── logs/                         # 运行时生成
 │   ├── codex-webui.log
 │   └── codex-webui.pid
-├── install.sh                    # 一键安装脚本（目标机器执行）
-└── pack.sh                       # 打包脚本（WSL 中执行）
+├── example_provider.md           # provider 添加指南
+├── install.sh                    # 安装脚本
+└── pack.sh                       # 打包脚本（WSL 开发机用）
 ```
 
 ## 一、打包（WSL 中执行）
