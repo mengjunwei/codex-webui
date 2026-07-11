@@ -11,6 +11,7 @@ use std::path::PathBuf;
 
 pub struct Config {
     pub webui_api_key: String,
+    pub host: String,
     pub port: u16,
     pub openai_api_key: Option<String>,
     pub log_level: String,
@@ -51,6 +52,12 @@ impl Config {
             .transpose()?
             .unwrap_or(8172);
 
+        let host = env::var("HOST")
+            .ok()
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+            .unwrap_or_else(|| "0.0.0.0".to_string());
+
         let codex_home = env::var("CODEX_HOME")
             .ok()
             .map(|s| s.trim().to_string())
@@ -80,6 +87,7 @@ impl Config {
 
         Ok(Self {
             webui_api_key,
+            host,
             port,
             openai_api_key,
             log_level,
@@ -138,6 +146,7 @@ mod tests {
         "CODEX_HOME",
         "WEBUI_API_KEY",
         "PORT",
+        "HOST",
         "LOG_LEVEL",
         "CODEX_BIN",
         "OPENAI_API_KEY",
@@ -215,5 +224,22 @@ mod tests {
         unsafe { env::set_var("WEBUI_API_KEY", "0123456789abcdef"); }
         unsafe { env::set_var("PORT", "9000"); }
         assert_eq!(Config::from_env().unwrap().port, 9000);
+    }
+
+    #[test]
+    fn host_defaults_to_0_0_0_0() {
+        let _g = ENV_LOCK.lock().unwrap();
+        clear();
+        unsafe { env::set_var("WEBUI_API_KEY", "0123456789abcdef"); }
+        assert_eq!(Config::from_env().unwrap().host, "0.0.0.0");
+    }
+
+    #[test]
+    fn host_parses_when_set() {
+        let _g = ENV_LOCK.lock().unwrap();
+        clear();
+        unsafe { env::set_var("WEBUI_API_KEY", "0123456789abcdef"); }
+        unsafe { env::set_var("HOST", "127.0.0.1"); }
+        assert_eq!(Config::from_env().unwrap().host, "127.0.0.1");
     }
 }

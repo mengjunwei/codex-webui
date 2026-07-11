@@ -108,8 +108,8 @@ async fn main() -> anyhow::Result<()> {
     let codex_for_shutdown = state.codex.clone();
     let app = build_router(state).layer(ws_layer);
 
-    let listener = tokio::net::TcpListener::bind(("0.0.0.0", cfg.port)).await?;
-    tracing::info!("listening on 0.0.0.0:{}", cfg.port);
+    let listener = tokio::net::TcpListener::bind((cfg.host.as_str(), cfg.port)).await?;
+    tracing::info!("listening on {}:{}", cfg.host, cfg.port);
 
     let server = axum::serve(listener, app).with_graceful_shutdown(shutdown_signal());
     server.await?;
