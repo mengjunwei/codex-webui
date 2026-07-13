@@ -90,7 +90,7 @@ fn parse_optional_bool_json(value: &Value, field: &str) -> Result<Option<bool>, 
     path = "/api/account",
     tag = "account",
     responses(
-        (status = 200, description = "账户信息 + provider 元数据（codex account/read 透传）", content_type = "application/json"),
+        (status = 200, description = "账户信息 + provider 元数据（codex account/read 透传）", body = crate::error::GenericJson),
         (status = 401, description = "未认证", body = crate::error::ErrorResponse),
     )
 )]
@@ -129,7 +129,7 @@ pub struct LoginBody {
     tag = "account",
     request_body = LoginBody,
     responses(
-        (status = 200, description = "登录流程已启动（codex account/login/start 透传）", content_type = "application/json"),
+        (status = 200, description = "登录流程已启动（codex account/login/start 透传）", body = crate::error::GenericJson),
         (status = 400, description = "login type 非法/必填字段缺失", body = crate::error::ErrorResponse),
         (status = 401, description = "未认证", body = crate::error::ErrorResponse),
     )
@@ -249,7 +249,7 @@ pub async fn account_logout(State(state): State<AppState>) -> Result<StatusCode,
     path = "/api/account/rate-limits",
     tag = "account",
     responses(
-        (status = 200, description = "速率限制（codex account/rate-limits 透传）", content_type = "application/json"),
+        (status = 200, description = "速率限制（codex account/rate-limits 透传）", body = crate::error::GenericJson),
         (status = 401, description = "未认证", body = crate::error::ErrorResponse),
     )
 )]
@@ -283,7 +283,7 @@ pub struct AppsQuery {
     tag = "apps",
     params(AppsQuery),
     responses(
-        (status = 200, description = "应用列表（codex app/list 透传）", content_type = "application/json"),
+        (status = 200, description = "应用列表（codex app/list 透传）", body = crate::error::GenericJson),
         (status = 400, description = "limit/forceRefetch 非法", body = crate::error::ErrorResponse),
         (status = 401, description = "未认证", body = crate::error::ErrorResponse),
     )
@@ -330,7 +330,7 @@ pub struct ModelsQuery {
     tag = "models",
     params(ModelsQuery),
     responses(
-        (status = 200, description = "模型列表（codex model/list 透传）", content_type = "application/json"),
+        (status = 200, description = "模型列表（codex model/list 透传）", body = crate::error::GenericJson),
         (status = 401, description = "未认证", body = crate::error::ErrorResponse),
     )
 )]
@@ -376,7 +376,7 @@ pub struct McpListQuery {
     tag = "mcp-servers",
     params(McpListQuery),
     responses(
-        (status = 200, description = "MCP 服务端状态列表（codex mcpServerStatus/list 透传）", content_type = "application/json"),
+        (status = 200, description = "MCP 服务端状态列表（codex mcpServerStatus/list 透传）", body = crate::error::GenericJson),
         (status = 400, description = "limit/detail 非法", body = crate::error::ErrorResponse),
         (status = 401, description = "未认证", body = crate::error::ErrorResponse),
     )
@@ -444,7 +444,7 @@ pub struct McpOauthBody {
     tag = "mcp-servers",
     request_body = McpOauthBody,
     responses(
-        (status = 200, description = "OAuth 登录已启动（codex mcpServer/oauth/login 透传）", content_type = "application/json"),
+        (status = 200, description = "OAuth 登录已启动（codex mcpServer/oauth/login 透传）", body = crate::error::GenericJson),
         (status = 400, description = "name/scopes/timeoutSecs 非法", body = crate::error::ErrorResponse),
         (status = 401, description = "未认证", body = crate::error::ErrorResponse),
     )
@@ -541,7 +541,7 @@ pub struct SkillsListQuery {
     tag = "skills",
     params(SkillsListQuery),
     responses(
-        (status = 200, description = "技能列表（codex skills/list 透传）", content_type = "application/json"),
+        (status = 200, description = "技能列表（codex skills/list 透传）", body = crate::error::GenericJson),
         (status = 400, description = "cwd 缺失", body = crate::error::ErrorResponse),
         (status = 401, description = "未认证", body = crate::error::ErrorResponse),
     )
@@ -581,7 +581,7 @@ pub struct SkillConfigBody {
     tag = "skills",
     request_body = SkillConfigBody,
     responses(
-        (status = 200, description = "技能配置已写入（codex skills/config/write 透传）", content_type = "application/json"),
+        (status = 200, description = "技能配置已写入（codex skills/config/write 透传）", body = crate::error::GenericJson),
         (status = 400, description = "path/name 缺失", body = crate::error::ErrorResponse),
         (status = 401, description = "未认证", body = crate::error::ErrorResponse),
     )
@@ -633,7 +633,7 @@ pub struct PluginsListQuery {
     tag = "plugins",
     params(PluginsListQuery),
     responses(
-        (status = 200, description = "插件列表（codex plugin/list 透传）", content_type = "application/json"),
+        (status = 200, description = "插件列表（codex plugin/list 透传）", body = crate::error::GenericJson),
         (status = 400, description = "forceRemoteSync 非法", body = crate::error::ErrorResponse),
         (status = 401, description = "未认证", body = crate::error::ErrorResponse),
     )
@@ -680,7 +680,7 @@ pub struct PluginDetailQuery {
     tag = "plugins",
     params(PluginDetailQuery),
     responses(
-        (status = 200, description = "插件详情（codex plugin/read 透传）", content_type = "application/json"),
+        (status = 200, description = "插件详情（codex plugin/read 透传）", body = crate::error::GenericJson),
         (status = 400, description = "marketplacePath/pluginName 缺失", body = crate::error::ErrorResponse),
         (status = 401, description = "未认证", body = crate::error::ErrorResponse),
     )
@@ -718,7 +718,7 @@ pub struct PluginInstallBody {
     tag = "plugins",
     request_body = PluginInstallBody,
     responses(
-        (status = 200, description = "插件已安装（codex plugin/install 透传）", content_type = "application/json"),
+        (status = 200, description = "插件已安装（codex plugin/install 透传）", body = crate::error::GenericJson),
         (status = 400, description = "marketplacePath/pluginName 缺失", body = crate::error::ErrorResponse),
         (status = 401, description = "未认证", body = crate::error::ErrorResponse),
     )
@@ -759,7 +759,7 @@ pub struct PluginUninstallBody {
     tag = "plugins",
     request_body = PluginUninstallBody,
     responses(
-        (status = 200, description = "插件已卸载（codex plugin/uninstall 透传）", content_type = "application/json"),
+        (status = 200, description = "插件已卸载（codex plugin/uninstall 透传）", body = crate::error::GenericJson),
         (status = 400, description = "pluginId 缺失", body = crate::error::ErrorResponse),
         (status = 401, description = "未认证", body = crate::error::ErrorResponse),
     )

@@ -27,7 +27,7 @@ fn bad_request(code: ErrorCode, msg: impl Into<String>) -> AppError {
     path = "/api/chat/upload",
     tag = "chat",
     responses(
-        (status = 200, description = "上传成功 {path, size, mimeType}。请求体为 multipart/form-data，字段名 file", content_type = "application/json"),
+        (status = 200, description = "上传成功 {path, size, mimeType}。请求体为 multipart/form-data，字段名 file", body = crate::error::GenericJson),
         (status = 400, description = "文件缺失/文件名非法", body = crate::error::ErrorResponse),
         (status = 401, description = "未认证", body = crate::error::ErrorResponse),
         (status = 413, description = "超出上传上限", body = crate::error::ErrorResponse),

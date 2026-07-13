@@ -27,6 +27,7 @@ use utoipa_swagger_ui::SwaggerUi;
     ),
     components(schemas(
         crate::error::ErrorResponse,
+        crate::error::GenericJson,
         // auth
         crate::auth::LoginRequest,
         crate::auth::LoginResponse,

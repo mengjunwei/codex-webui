@@ -360,6 +360,26 @@ impl ErrorCode {
 /// 与 TS 的 `ErrorParams = Record<string, string | number>` 对齐。
 pub type Params = BTreeMap<String, serde_json::Value>;
 
+/// codex JSON-RPC 透传的通用 JSON 响应。
+/// 手动实现 ToSchema（避开 derive 在 unit struct 上对 schema attribute 的限制）。
+/// Swagger UI 中展示为可展开的 object。
+pub struct GenericJson;
+
+impl utoipa::PartialSchema for GenericJson {
+    fn schema() -> utoipa::openapi::RefOr<utoipa::openapi::schema::Schema> {
+        // 显式标注 additional_properties 为 ArrayBuilder（空 schema）→ 在 Swagger UI 中
+        // 显示为"object with no defined properties，可任意扩展"。
+        let any_props: utoipa::openapi::schema::AdditionalProperties<utoipa::openapi::schema::Schema> =
+            utoipa::openapi::schema::Object::builder().into();
+        utoipa::openapi::schema::Object::builder()
+            .description(Some("codex JSON-RPC 透传响应（任意结构，字段由上游 codex app-server 定义）"))
+            .additional_properties(Some(any_props))
+            .into()
+    }
+}
+
+impl utoipa::ToSchema for GenericJson {}
+
 /// 统一错误响应体（对齐 `AppError::into_response` 的输出）。
 /// 所有 handler 的 4xx/5xx 在 OpenAPI 文档中复用此 schema。
 #[derive(Debug, Clone, serde::Serialize, utoipa::ToSchema)]

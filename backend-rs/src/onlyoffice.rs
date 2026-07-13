@@ -55,7 +55,7 @@ pub struct ConfigQuery {
     tag = "onlyoffice",
     params(ConfigQuery),
     responses(
-        (status = 200, description = "OnlyOffice 编辑器配置（含 JWT 签名）", content_type = "application/json"),
+        (status = 200, description = "OnlyOffice 编辑器配置（含 JWT 签名）", body = crate::error::GenericJson),
         (status = 400, description = "未配置/URL 非法/格式不支持/edit 模式缺 secret", body = crate::error::ErrorResponse),
         (status = 401, description = "未认证", body = crate::error::ErrorResponse),
         (status = 404, description = "文件不存在", body = crate::error::ErrorResponse),
@@ -358,7 +358,7 @@ struct CallbackJwtPayload {
     params(CallbackQuery),
     request_body = CallbackBody,
     responses(
-        (status = 200, description = "回调处理结果 {error: 0|1}（公开端点，用 JWT 校验）", content_type = "application/json"),
+        (status = 200, description = "回调处理结果 {error: 0|1}（公开端点，用 JWT 校验）", body = crate::error::GenericJson),
         (status = 400, description = "回调 JWT/state 非法/下载 URL 校验失败", body = crate::error::ErrorResponse),
         (status = 413, description = "保存内容超过上限", body = crate::error::ErrorResponse),
     )

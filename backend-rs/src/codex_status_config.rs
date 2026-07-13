@@ -78,7 +78,7 @@ static SENSITIVE_KEY_RE: Lazy<Regex> =
     path = "/api/codex/status",
     tag = "codex",
     responses(
-        (status = 200, description = "聚合就绪状态（appServer/initialize/account/config/provider/models/runtime）", content_type = "application/json"),
+        (status = 200, description = "聚合就绪状态（appServer/initialize/account/config/provider/models/runtime）", body = crate::error::GenericJson),
         (status = 401, description = "未认证", body = crate::error::ErrorResponse),
     )
 )]
@@ -182,7 +182,7 @@ pub async fn update_sandbox_mode(
     path = "/api/codex/config",
     tag = "codex",
     responses(
-        (status = 200, description = "结构化配置（含 layers；敏感字段已脱敏）", content_type = "application/json"),
+        (status = 200, description = "结构化配置（含 layers；敏感字段已脱敏）", body = crate::error::GenericJson),
         (status = 401, description = "未认证", body = crate::error::ErrorResponse),
     )
 )]
@@ -218,7 +218,7 @@ pub struct ConfigEdit {
     tag = "codex",
     request_body = UpdateConfigBody,
     responses(
-        (status = 200, description = "精选字段已更新，返回最新配置（白名单校验）", content_type = "application/json"),
+        (status = 200, description = "精选字段已更新，返回最新配置（白名单校验）", body = crate::error::GenericJson),
         (status = 400, description = "edit/key/value 非法", body = crate::error::ErrorResponse),
         (status = 401, description = "未认证", body = crate::error::ErrorResponse),
     )
@@ -294,7 +294,7 @@ fn is_json_value(v: &Value) -> bool {
     path = "/api/codex/config/raw",
     tag = "codex",
     responses(
-        (status = 200, description = "用户 config.toml 原始内容（filePath + content）", content_type = "application/json"),
+        (status = 200, description = "用户 config.toml 原始内容（filePath + content）", body = crate::error::GenericJson),
         (status = 401, description = "未认证", body = crate::error::ErrorResponse),
     )
 )]
@@ -315,7 +315,7 @@ pub struct UpdateRawConfigBody {
     tag = "codex",
     request_body = UpdateRawConfigBody,
     responses(
-        (status = 200, description = "config.toml 已写入并热重载", content_type = "application/json"),
+        (status = 200, description = "config.toml 已写入并热重载", body = crate::error::GenericJson),
         (status = 400, description = "content 非字符串", body = crate::error::ErrorResponse),
         (status = 401, description = "未认证", body = crate::error::ErrorResponse),
         (status = 413, description = "content 超过 1MB 上限", body = crate::error::ErrorResponse),

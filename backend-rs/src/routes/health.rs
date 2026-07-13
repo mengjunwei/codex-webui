@@ -14,8 +14,7 @@ use serde_json::{json, Value};
     path = "/api/status",
     tag = "system",
     responses(
-        (status = 200, description = "服务存活", content_type = "application/json",
-         example = json!({ "ok": true })),
+        (status = 200, description = "服务存活", body = crate::error::GenericJson),
         (status = 401, description = "未认证", body = crate::error::ErrorResponse),
     )
 )]

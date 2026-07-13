@@ -42,7 +42,7 @@ pub struct CreateThreadBody {
     tag = "threads",
     request_body = CreateThreadBody,
     responses(
-        (status = 201, description = "线程已创建（codex thread/start 透传）", content_type = "application/json"),
+        (status = 201, description = "线程已创建（codex thread/start 透传）", body = crate::error::GenericJson),
         (status = 400, description = "参数非法", body = crate::error::ErrorResponse),
         (status = 401, description = "未认证", body = crate::error::ErrorResponse),
     )
@@ -96,7 +96,7 @@ pub struct ListThreadsQuery {
     tag = "threads",
     params(ListThreadsQuery),
     responses(
-        (status = 200, description = "线程列表（codex thread/list 透传）", content_type = "application/json"),
+        (status = 200, description = "线程列表（codex thread/list 透传）", body = crate::error::GenericJson),
         (status = 400, description = "limit/sortKey 非法", body = crate::error::ErrorResponse),
         (status = 401, description = "未认证", body = crate::error::ErrorResponse),
     )
@@ -158,7 +158,7 @@ pub struct LoadedQuery {
     tag = "threads",
     params(LoadedQuery),
     responses(
-        (status = 200, description = "已加载线程列表（codex thread/loaded/list 透传）", content_type = "application/json"),
+        (status = 200, description = "已加载线程列表（codex thread/loaded/list 透传）", body = crate::error::GenericJson),
         (status = 400, description = "limit 非法", body = crate::error::ErrorResponse),
         (status = 401, description = "未认证", body = crate::error::ErrorResponse),
     )
@@ -201,7 +201,7 @@ pub struct ReadQuery {
         ReadQuery,
     ),
     responses(
-        (status = 200, description = "线程详情（codex thread/read 透传；未具现化时 turns 为空）", content_type = "application/json"),
+        (status = 200, description = "线程详情（codex thread/read 透传；未具现化时 turns 为空）", body = crate::error::GenericJson),
         (status = 401, description = "未认证", body = crate::error::ErrorResponse),
     )
 )]
@@ -261,7 +261,7 @@ fn is_not_materialized(e: &RpcError) -> bool {
     tag = "threads",
     params(("threadId" = String, Path, description = "线程 ID")),
     responses(
-        (status = 201, description = "线程已恢复（codex thread/resume 透传；含并发去重缓存）", content_type = "application/json"),
+        (status = 201, description = "线程已恢复（codex thread/resume 透传；含并发去重缓存）", body = crate::error::GenericJson),
         (status = 401, description = "未认证", body = crate::error::ErrorResponse),
     )
 )]
@@ -349,7 +349,7 @@ pub struct StartTurnBody {
     params(("threadId" = String, Path, description = "线程 ID")),
     request_body = StartTurnBody,
     responses(
-        (status = 201, description = "turn 已启动（codex turn/start 透传）", content_type = "application/json"),
+        (status = 201, description = "turn 已启动（codex turn/start 透传）", body = crate::error::GenericJson),
         (status = 400, description = "input/model/effort 非法或 mention 路径越界", body = crate::error::ErrorResponse),
         (status = 401, description = "未认证", body = crate::error::ErrorResponse),
     )
@@ -405,7 +405,7 @@ pub async fn start_turn(
     ),
     request_body = StartTurnBody,
     responses(
-        (status = 201, description = "turn 已转向（codex turn/steer 透传）", content_type = "application/json"),
+        (status = 201, description = "turn 已转向（codex turn/steer 透传）", body = crate::error::GenericJson),
         (status = 400, description = "input 非法或 mention 路径越界", body = crate::error::ErrorResponse),
         (status = 401, description = "未认证", body = crate::error::ErrorResponse),
     )
@@ -440,7 +440,7 @@ pub async fn steer_turn(
         ("turnId" = String, Path, description = "要中断的 turn ID"),
     ),
     responses(
-        (status = 201, description = "turn 已中断（codex turn/interrupt 透传）", content_type = "application/json"),
+        (status = 201, description = "turn 已中断（codex turn/interrupt 透传）", body = crate::error::GenericJson),
         (status = 401, description = "未认证", body = crate::error::ErrorResponse),
     )
 )]
@@ -488,7 +488,7 @@ pub async fn archive_thread(
     tag = "threads",
     params(("threadId" = String, Path, description = "线程 ID")),
     responses(
-        (status = 201, description = "已取消归档（codex thread/unarchive 透传）", content_type = "application/json"),
+        (status = 201, description = "已取消归档（codex thread/unarchive 透传）", body = crate::error::GenericJson),
         (status = 401, description = "未认证", body = crate::error::ErrorResponse),
     )
 )]
@@ -532,7 +532,7 @@ pub async fn compact_thread(
     tag = "threads",
     params(("threadId" = String, Path, description = "线程 ID")),
     responses(
-        (status = 201, description = "已分叉出新线程（codex thread/fork 透传）", content_type = "application/json"),
+        (status = 201, description = "已分叉出新线程（codex thread/fork 透传）", body = crate::error::GenericJson),
         (status = 401, description = "未认证", body = crate::error::ErrorResponse),
     )
 )]
@@ -568,7 +568,7 @@ pub struct RollbackBody {
     params(("threadId" = String, Path, description = "线程 ID")),
     request_body = RollbackBody,
     responses(
-        (status = 201, description = "已回滚（codex thread/rollback 透传）", content_type = "application/json"),
+        (status = 201, description = "已回滚（codex thread/rollback 透传）", body = crate::error::GenericJson),
         (status = 400, description = "numTurns 非正整数", body = crate::error::ErrorResponse),
         (status = 401, description = "未认证", body = crate::error::ErrorResponse),
     )
