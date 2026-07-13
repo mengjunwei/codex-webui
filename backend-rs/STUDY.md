@@ -21,6 +21,7 @@
 12. [数据库 Schema 与迁移](#12-数据库-schema-与迁移)
 13. [开发与调试指南](#13-开发与调试指南)
 14. [常见陷阱与 FAQ](#14-常见陷阱与-faq)
+15. [OpenAPI / Swagger UI 接口文档](#15-openapi--swagger-ui-接口文档)
 
 ---
 
@@ -720,6 +721,149 @@ RUST_LOG=debug cargo run     # 覆盖 LOG_LEVEL
 ### Q10：什么时候应该 invalidate settings cache？
 
 答：所有 settings 写路径（PATCH /api/settings、PATCH /api/settings/{key}、DELETE /api/settings/{key}）之后必须调用 `state.invalidate_settings_cache()`，否则下次读取命中 stale。
+
+---
+
+## 15. OpenAPI / Swagger UI 接口文档
+
+本项目用 [`utoipa`](https://docs.rs/utoipa) + [`utoipa-swagger-ui`](https://docs.rs/utoipa-swagger-ui) 自动生成 OpenAPI 3.1 规格并提供交互式 Swagger UI。全部 73 个 HTTP handler 均已注解，覆盖 15 个 tag 分组。
+
+### 15.1 访问方式
+
+启动服务后：
+
+- **Swagger UI（交互式）**：浏览器打开 `http://localhost:8172/api/docs/`
+  - 右上角 **Authorize** 按钮，填 `WEBUI_API_KEY`（或先 `POST /api/auth/login` 拿 JWT）即可在页面内直接调用受保护端点。
+- **OpenAPI JSON**：`GET /api/docs-json`（公开，用于 SDK 生成或导入其他工具）
+- **Swagger UI 内部 spec**：`GET /api/openapi.json`（由 `SwaggerUi::url(...)` 自动挂载）
+
+> `/api/docs/` 与 `/api/docs-json` 都是**公开端点**（不经过 `require_auth`），与 `/api/auth/login` 同级。
+
+### 15.2 三类注解
+
+每个端点需要三处注解配合：
+
+**handler 上的 `#[utoipa::path]`**（声明 HTTP 方法、路径、参数、请求体、响应）：
+
+```rust
+#[utoipa::path(
+    post,
+    path = "/api/auth/login",
+    tag = "auth",
+    request_body = LoginRequest,
+    responses(
+        (status = 200, description = "登录成功，返回短期 JWT", body = LoginResponse),
+        (status = 401, description = "API key 无效", body = crate::error::ErrorResponse),
+    )
+)]
+pub async fn login(...) -> Result<Json<LoginResponse>, AppError> { ... }
+```
+
+**请求体 / 响应体 DTO**：加 `#[derive(utoipa::ToSchema)]`
+
+```rust
+#[derive(Serialize, utoipa::ToSchema)]
+pub struct LoginResponse {
+    #[serde(rename = "accessToken")]
+    pub access_token: String,
+    ...
+}
+```
+
+**查询参数 struct**：加 `#[derive(utoipa::IntoParams)]` + `#[into_params(parameter_in = Query)]`
+
+```rust
+#[derive(Deserialize, utoipa::IntoParams)]
+#[into_params(parameter_in = Query)]
+pub struct LogsQuery { pub offset: Option<String>, ... }
+```
+
+### 15.3 ApiDoc 注册（routes/mod.rs）
+
+所有注解完的 handler 与 schema 必须在 `ApiDoc` 的 `#[openapi(...)]` 里显式列出：
+
+```rust
+#[derive(OpenApi)]
+#[openapi(
+    info(...),
+    components(schemas(
+        crate::error::ErrorResponse,
+        crate::auth::LoginRequest, crate::auth::LoginResponse,
+        // ... 全部 ToSchema 类型
+    )),
+    paths(
+        crate::routes::health::ping,
+        crate::routes::auth::login,
+        // ... 全部 #[utoipa::path] handler
+    ),
+    tags(
+        (name = "auth", description = "认证 / 授权"),
+        // ... 15 个 tag
+    )
+)]
+struct ApiDoc;
+```
+
+> **注意**：`IntoParams` 的 Query struct **不需要**在 `components(schemas(...))` 注册（它们作为 inline params 展开）；只有 `ToSchema` 的请求体/响应体类型需要注册。
+
+### 15.4 构建注意事项：utoipa-swagger-ui 的下载问题
+
+`utoipa-swagger-ui` 的 build script 构建时会从 GitHub 下载 swagger-ui 前端资源包（`v5.17.14.zip`，约 4.4MB）。**国内网络访问 github.com 会被 reset，导致构建失败**：
+
+```
+curl: (35) Recv failure: Connection was reset
+failed to download Swagger UI
+```
+
+**解决方案**：启用 `cache` feature + 手动放置 zip。
+
+1. `Cargo.toml`：`utoipa-swagger-ui = { version = "9", features = ["axum", "cache"] }`
+2. 手动下载 `https://github.com/swagger-api/swagger-ui/archive/refs/tags/v5.17.14.zip`（GitHub archive 格式，顶层是 `swagger-ui-5.17.14/dist/`）
+3. 计算缓存目录哈希：`sha256(url + utoipa_swagger_ui_version)`，即
+   `sha256("https://github.com/swagger-api/swagger-ui/archive/refs/tags/v5.17.14.zip" + "9.0.2")`
+4. 把 zip 放到 `%LOCALAPPDATA%\utoipa-swagger-ui\swagger-ui\<HASH大写>\v5.17.14.zip`
+
+启用 `cache` feature 后，build.rs 优先在该目录查 zip，命中即跳过下载。该位置在 `AppData\Local`，**跨 `cargo clean` 持久**，且 hash 由 URL + utoipa-swagger-ui 版本锁定。
+
+> 当前机器的缓存路径：`C:\Users\<user>\AppData\Local\utoipa-swagger-ui\swagger-ui\9257BC023F5E5AA9BDDDB907D5F2E6D53F8F20E36FDEB179708E205BDA139ADD\v5.17.14.zip`
+>
+> 升级 utoipa-swagger-ui 版本时 hash 会变，需重新计算并放置。
+
+### 15.5 新增端点时如何补注解
+
+加新 handler 时，4 步：
+
+1. handler 上加 `#[utoipa::path(method, path = "/api/...", tag = "...", responses(...))]`
+2. 若有请求体/响应体 DTO，加 `#[derive(utoipa::ToSchema)]`，并在 `ApiDoc` 的 `components(schemas(...))` 注册
+3. 若有查询参数，加 `#[derive(utoipa::IntoParams)] #[into_params(parameter_in = Query)]`，在 `#[utoipa::path]` 的 `params(XxxQuery)` 引用
+4. 在 `ApiDoc` 的 `paths(...)` 加一行 `crate::模块::handler,`
+
+### 15.6 关键设计决策
+
+- **保持 axum Router 不重构**：手动在 `ApiDoc` 列 paths，而非改用 `utoipa-axum` 的 `OpenApiRouter`。原因：`build_router` 的 layer 顺序（`require_auth` + `DefaultBodyLimit` + `ws_layer` + `static_files` fallback + `request_logger`）重构风险高。代价是新增端点要手动加一行 path。
+- **codex 透传端点（49 个 `Json<Value>` 响应）用 generic json**：不为透传响应造会过期的 schema，只在 `description` 里说明"codex RPC 透传，结构由上游 app-server 决定"。
+- **统一 `ErrorResponse` schema**（`error.rs`）：对齐 `AppError::into_response` 的 `{statusCode, errorCode, message, params?}`，所有 4xx/5xx 复用。
+- **不用 `example = json!(...)`**：`example` 在 `#[utoipa::path]` 宏内不被 rustc 识别为 import 使用，会触发 `unused import: serde_json::json` warning且全路径 `serde_json::json!` utoipa 不识别。故响应不附 example，靠 schema 本身说明。
+- **路径参数用 inline `params`**：如 `params(("threadId" = String, Path, description = "线程 ID"))`，而非额外 struct。
+
+### 15.7 已覆盖端点统计
+
+| 模块 | tag | 端点数 |
+|---|---|---|
+| system | system | 1 |
+| auth | auth | 2 |
+| logs | logs | 2 |
+| sqlite_handlers | threads / approvals | 6 |
+| settings | settings | 5 |
+| files | files | 17 |
+| threads | threads | 14 |
+| proxies | account / apps / models / mcp-servers / skills / plugins | 16 |
+| codex_status_config | codex | 7 |
+| onlyoffice | onlyoffice | 2 |
+| chat | chat | 1 |
+| **合计** | | **73** |
+
+OpenAPI 视角下为 **66 个 path key**（多 method 的 URL 按 OpenAPI 标准合并，如 `/api/settings` 合并了 GET + PATCH，`/api/settings/{key}` 合并了 GET + PATCH + DELETE）。
 
 ---
 
