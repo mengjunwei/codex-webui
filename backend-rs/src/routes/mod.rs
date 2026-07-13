@@ -53,6 +53,13 @@ use utoipa_swagger_ui::SwaggerUi;
         crate::settings::handlers::SettingBatchEntry,
         crate::settings::handlers::SettingBatchUpdateBody,
         crate::settings::handlers::UpdatePayload,
+        // files
+        crate::files::AddRootBody,
+        crate::files::CreateFileBody,
+        crate::files::CreateDirBody,
+        crate::files::WriteFileBody,
+        crate::files::RenameBody,
+        crate::files::CopyMoveBody,
     )),
     paths(
         // system
@@ -76,6 +83,24 @@ use utoipa_swagger_ui::SwaggerUi;
         crate::settings::handlers::update_batch,
         crate::settings::handlers::update_one,
         crate::settings::handlers::delete_one,
+        // files
+        crate::files::get_roots,
+        crate::files::add_root,
+        crate::files::read_tree,
+        crate::files::read_file,
+        crate::files::get_metadata,
+        crate::files::delete_path,
+        crate::files::create_file,
+        crate::files::create_directory,
+        crate::files::write_file,
+        crate::files::serve_file,
+        crate::files::download_file,
+        crate::files::rename_path,
+        crate::files::copy_path,
+        crate::files::move_path,
+        crate::files::upload_files,
+        crate::files::archive_list,
+        crate::files::archive_entry,
     ),
     tags(
         (name = "system", description = "健康检查 / 探针"),
@@ -84,6 +109,7 @@ use utoipa_swagger_ui::SwaggerUi;
         (name = "threads", description = "会话与 turn（含 token 用量 / 差异 / 错误）"),
         (name = "approvals", description = "待处理审批"),
         (name = "settings", description = "运行时设置 CRUD"),
+        (name = "files", description = "工作区文件操作（路径安全边界内）"),
     )
 )]
 struct ApiDoc;

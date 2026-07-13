@@ -309,6 +309,15 @@ pub fn resolve_terminal_cwd(
 // ── Handler（处理器）────────────────────────────────────────────────────────
 
 /// GET /api/files/roots → 已配置根目录 + 动态根目录 + 家目录。
+#[utoipa::path(
+    get,
+    path = "/api/files/roots",
+    tag = "files",
+    responses(
+        (status = 200, description = "已配置根目录 + 动态根目录 + 家目录", content_type = "application/json"),
+        (status = 401, description = "未认证", body = crate::error::ErrorResponse),
+    )
+)]
 pub async fn get_roots(State(state): State<AppState>) -> Result<Json<serde_json::Value>, AppError> {
     // roots = 配置根 ∪ 家目录 ∪ 动态根（对齐 TS rebuildWorkspaceRoots）。
     let dyn_roots: HashSet<String> = state
@@ -324,11 +333,24 @@ pub async fn get_roots(State(state): State<AppState>) -> Result<Json<serde_json:
     })))
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, utoipa::ToSchema)]
 pub struct AddRootBody {
     pub root: Option<String>,
 }
 
+#[utoipa::path(
+    post,
+    path = "/api/files/roots",
+    tag = "files",
+    request_body = AddRootBody,
+    responses(
+        (status = 200, description = "根目录已添加", content_type = "application/json"),
+        (status = 400, description = "root 缺失/非目录", body = crate::error::ErrorResponse),
+        (status = 401, description = "未认证", body = crate::error::ErrorResponse),
+        (status = 403, description = "根目录不在已有工作区内", body = crate::error::ErrorResponse),
+        (status = 404, description = "路径不存在", body = crate::error::ErrorResponse),
+    )
+)]
 pub async fn add_root(
     State(state): State<AppState>,
     Json(body): Json<AddRootBody>,
@@ -363,11 +385,24 @@ pub async fn add_root(
 }
 
 /// GET /api/files/tree?root=… → 单层目录列表。
-#[derive(Deserialize)]
+#[derive(Deserialize, utoipa::IntoParams)]
+#[into_params(parameter_in = Query)]
 pub struct TreeQuery {
     pub root: Option<String>,
 }
 
+#[utoipa::path(
+    get,
+    path = "/api/files/tree",
+    tag = "files",
+    params(TreeQuery),
+    responses(
+        (status = 200, description = "单层目录列表（目录优先、按名称排序）", content_type = "application/json"),
+        (status = 400, description = "root 非目录", body = crate::error::ErrorResponse),
+        (status = 401, description = "未认证", body = crate::error::ErrorResponse),
+        (status = 404, description = "路径不存在", body = crate::error::ErrorResponse),
+    )
+)]
 pub async fn read_tree(
     State(state): State<AppState>,
     Query(q): Query<TreeQuery>,
@@ -467,11 +502,24 @@ pub async fn read_tree(
 }
 
 /// GET /api/files/read?path=… → 文本内容（≤5MB）。
-#[derive(Deserialize)]
+#[derive(Deserialize, utoipa::IntoParams)]
+#[into_params(parameter_in = Query)]
 pub struct ReadQuery {
     pub path: Option<String>,
 }
 
+#[utoipa::path(
+    get,
+    path = "/api/files/read",
+    tag = "files",
+    params(ReadQuery),
+    responses(
+        (status = 200, description = "文本内容（≤5MB；非 UTF-8 以 U+FFFD 替换）", content_type = "application/json"),
+        (status = 400, description = "路径是目录/文件过大", body = crate::error::ErrorResponse),
+        (status = 401, description = "未认证", body = crate::error::ErrorResponse),
+        (status = 404, description = "路径不存在", body = crate::error::ErrorResponse),
+    )
+)]
 pub async fn read_file(
     State(state): State<AppState>,
     Query(q): Query<ReadQuery>,
@@ -507,11 +555,23 @@ pub async fn read_file(
 }
 
 /// GET /api/files/metadata?path=… → stat 信息。
-#[derive(Deserialize)]
+#[derive(Deserialize, utoipa::IntoParams)]
+#[into_params(parameter_in = Query)]
 pub struct MetaQuery {
     pub path: Option<String>,
 }
 
+#[utoipa::path(
+    get,
+    path = "/api/files/metadata",
+    tag = "files",
+    params(MetaQuery),
+    responses(
+        (status = 200, description = "文件/目录 stat 信息（类型/大小/mtime/权限）", content_type = "application/json"),
+        (status = 401, description = "未认证", body = crate::error::ErrorResponse),
+        (status = 404, description = "路径不存在", body = crate::error::ErrorResponse),
+    )
+)]
 pub async fn get_metadata(
     State(state): State<AppState>,
     Query(q): Query<MetaQuery>,
@@ -546,12 +606,26 @@ pub async fn get_metadata(
 }
 
 /// DELETE /api/files/delete?path=…&recursive=… → 删除文件/符号链接/目录。
-#[derive(Deserialize)]
+#[derive(Deserialize, utoipa::IntoParams)]
+#[into_params(parameter_in = Query)]
 pub struct DeleteQuery {
     pub path: Option<String>,
     pub recursive: Option<String>,
 }
 
+#[utoipa::path(
+    delete,
+    path = "/api/files/delete",
+    tag = "files",
+    params(DeleteQuery),
+    responses(
+        (status = 200, description = "已删除", content_type = "application/json"),
+        (status = 400, description = "路径缺失/目录非空", body = crate::error::ErrorResponse),
+        (status = 401, description = "未认证", body = crate::error::ErrorResponse),
+        (status = 403, description = "禁止删除工作区根", body = crate::error::ErrorResponse),
+        (status = 404, description = "路径不存在", body = crate::error::ErrorResponse),
+    )
+)]
 pub async fn delete_path(
     State(state): State<AppState>,
     Query(q): Query<DeleteQuery>,
@@ -623,13 +697,25 @@ pub async fn delete_path(
 }
 
 /// POST /api/files/create-file → 创建空文件（或带内容文件）。
-#[derive(Deserialize)]
+#[derive(Deserialize, utoipa::ToSchema)]
 pub struct CreateFileBody {
     pub path: Option<String>,
     pub content: Option<String>,
     pub overwrite: Option<bool>,
 }
 
+#[utoipa::path(
+    post,
+    path = "/api/files/create-file",
+    tag = "files",
+    request_body = CreateFileBody,
+    responses(
+        (status = 200, description = "文件已创建（返回 mtime）", content_type = "application/json"),
+        (status = 400, description = "路径缺失/已存在", body = crate::error::ErrorResponse),
+        (status = 401, description = "未认证", body = crate::error::ErrorResponse),
+        (status = 403, description = "父目录越界/符号链接逃逸", body = crate::error::ErrorResponse),
+    )
+)]
 pub async fn create_file(
     State(state): State<AppState>,
     Json(body): Json<CreateFileBody>,
@@ -691,13 +777,25 @@ pub async fn create_file(
 }
 
 /// POST /api/files/create-directory → mkdir（可选递归）。
-#[derive(Deserialize)]
+#[derive(Deserialize, utoipa::ToSchema)]
 pub struct CreateDirBody {
     pub path: Option<String>,
     pub recursive: Option<bool>,
     pub overwrite: Option<bool>,
 }
 
+#[utoipa::path(
+    post,
+    path = "/api/files/create-directory",
+    tag = "files",
+    request_body = CreateDirBody,
+    responses(
+        (status = 200, description = "目录已创建", content_type = "application/json"),
+        (status = 400, description = "路径缺失/已存在且非目录", body = crate::error::ErrorResponse),
+        (status = 401, description = "未认证", body = crate::error::ErrorResponse),
+        (status = 403, description = "祖先/目标越界", body = crate::error::ErrorResponse),
+    )
+)]
 pub async fn create_directory(
     State(state): State<AppState>,
     Json(body): Json<CreateDirBody>,
@@ -770,13 +868,26 @@ pub async fn create_directory(
 
 /// POST /api/files/write → 写入/覆盖文件（基于 expectedMtime 的乐观并发控制
 /// 延后至后续实现；基本路径已与 TS 对齐）。
-#[derive(Deserialize)]
+#[derive(Deserialize, utoipa::ToSchema)]
 pub struct WriteFileBody {
     pub path: Option<String>,
     pub content: Option<String>,
     pub expected_mtime: Option<i64>,
 }
 
+#[utoipa::path(
+    post,
+    path = "/api/files/write",
+    tag = "files",
+    request_body = WriteFileBody,
+    responses(
+        (status = 200, description = "文件已写入（返回 size/mtime）", content_type = "application/json"),
+        (status = 400, description = "content/path 缺失", body = crate::error::ErrorResponse),
+        (status = 401, description = "未认证", body = crate::error::ErrorResponse),
+        (status = 403, description = "父目录越界/符号链接逃逸", body = crate::error::ErrorResponse),
+        (status = 409, description = "expectedMtime 不匹配（读取后被修改）", body = crate::error::ErrorResponse),
+    )
+)]
 pub async fn write_file(
     State(state): State<AppState>,
     Json(body): Json<WriteFileBody>,
@@ -847,6 +958,20 @@ pub async fn write_file(
 /// 被 <img>/<video>/<pdf> 标签以及 OnlyOffice Document Server 用于获取文件。
 /// 支持 RFC 6750 `access_token` 查询参数回退（由该路径的鉴权中间件处理）。
 /// 返回 200/206/416。
+#[utoipa::path(
+    get,
+    path = "/api/files/serve",
+    tag = "files",
+    params(ReadQuery),
+    responses(
+        (status = 200, description = "内联预览（支持 Range；图片/视频/PDF/OnlyOffice）", content_type = "application/octet-stream"),
+        (status = 206, description = "部分内容（Range 请求）"),
+        (status = 416, description = "Range 不可满足"),
+        (status = 400, description = "路径是目录", body = crate::error::ErrorResponse),
+        (status = 401, description = "未认证", body = crate::error::ErrorResponse),
+        (status = 404, description = "路径不存在", body = crate::error::ErrorResponse),
+    )
+)]
 pub async fn serve_file(
     State(state): State<AppState>,
     Query(q): Query<ReadQuery>,
@@ -870,6 +995,18 @@ pub async fn serve_file(
 }
 
 /// GET /api/files/download?path=… —— 以附件形式下载（不支持 Range）。
+#[utoipa::path(
+    get,
+    path = "/api/files/download",
+    tag = "files",
+    params(ReadQuery),
+    responses(
+        (status = 200, description = "附件下载（流式，application/octet-stream，不支持 Range）", content_type = "application/octet-stream"),
+        (status = 400, description = "路径是目录", body = crate::error::ErrorResponse),
+        (status = 401, description = "未认证", body = crate::error::ErrorResponse),
+        (status = 404, description = "路径不存在", body = crate::error::ErrorResponse),
+    )
+)]
 pub async fn download_file(
     State(state): State<AppState>,
     Query(q): Query<ReadQuery>,
@@ -1138,7 +1275,7 @@ fn url_encode(s: &str) -> String {
 
 // ── rename（重命名）/ copy（复制）/ move（移动）────────────────────────────
 
-#[derive(Deserialize)]
+#[derive(Deserialize, utoipa::ToSchema)]
 pub struct RenameBody {
     pub path: Option<String>,
     #[serde(rename = "newName")]
@@ -1146,6 +1283,20 @@ pub struct RenameBody {
     pub overwrite: Option<bool>,
 }
 
+#[utoipa::path(
+    post,
+    path = "/api/files/rename",
+    tag = "files",
+    request_body = RenameBody,
+    responses(
+        (status = 200, description = "已重命名（返回 oldPath/newPath）", content_type = "application/json"),
+        (status = 400, description = "path/newName 缺失或非法", body = crate::error::ErrorResponse),
+        (status = 401, description = "未认证", body = crate::error::ErrorResponse),
+        (status = 403, description = "禁止重命名工作区根", body = crate::error::ErrorResponse),
+        (status = 404, description = "路径不存在", body = crate::error::ErrorResponse),
+        (status = 409, description = "目标已存在", body = crate::error::ErrorResponse),
+    )
+)]
 pub async fn rename_path(
     State(state): State<AppState>,
     Json(body): Json<RenameBody>,
@@ -1191,7 +1342,7 @@ pub async fn rename_path(
     })))
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, utoipa::ToSchema)]
 pub struct CopyMoveBody {
     #[serde(rename = "sourcePath")]
     pub source_path: Option<String>,
@@ -1200,6 +1351,19 @@ pub struct CopyMoveBody {
     pub overwrite: Option<bool>,
 }
 
+#[utoipa::path(
+    post,
+    path = "/api/files/copy",
+    tag = "files",
+    request_body = CopyMoveBody,
+    responses(
+        (status = 200, description = "已复制", content_type = "application/json"),
+        (status = 400, description = "source/destination 缺失", body = crate::error::ErrorResponse),
+        (status = 401, description = "未认证", body = crate::error::ErrorResponse),
+        (status = 404, description = "路径不存在", body = crate::error::ErrorResponse),
+        (status = 409, description = "目标已存在", body = crate::error::ErrorResponse),
+    )
+)]
 pub async fn copy_path(
     State(state): State<AppState>,
     Json(body): Json<CopyMoveBody>,
@@ -1207,6 +1371,19 @@ pub async fn copy_path(
     do_relocate(&state, &body, false).await
 }
 
+#[utoipa::path(
+    post,
+    path = "/api/files/move",
+    tag = "files",
+    request_body = CopyMoveBody,
+    responses(
+        (status = 200, description = "已移动", content_type = "application/json"),
+        (status = 400, description = "source/destination 缺失", body = crate::error::ErrorResponse),
+        (status = 401, description = "未认证", body = crate::error::ErrorResponse),
+        (status = 404, description = "路径不存在", body = crate::error::ErrorResponse),
+        (status = 409, description = "目标已存在", body = crate::error::ErrorResponse),
+    )
+)]
 pub async fn move_path(
     State(state): State<AppState>,
     Json(body): Json<CopyMoveBody>,
@@ -1343,13 +1520,27 @@ async fn copy_dir_recursive(src: &Path, dst: &Path) -> std::io::Result<()> {
 
 // ── multipart 上传 ─────────────────────────────────────────────────────────
 
-#[derive(Deserialize)]
+#[derive(Deserialize, utoipa::IntoParams)]
+#[into_params(parameter_in = Query)]
 pub struct UploadQuery {
     #[serde(rename = "destinationPath")]
     pub destination_path: Option<String>,
     pub overwrite: Option<String>,
 }
 
+#[utoipa::path(
+    post,
+    path = "/api/files/upload",
+    tag = "files",
+    params(UploadQuery),
+    responses(
+        (status = 200, description = "上传结果（已上传文件列表）。请求体为 multipart/form-data，字段名 files", content_type = "application/json"),
+        (status = 400, description = "destinationPath 缺失/文件名非法", body = crate::error::ErrorResponse),
+        (status = 401, description = "未认证", body = crate::error::ErrorResponse),
+        (status = 403, description = "目标越界", body = crate::error::ErrorResponse),
+        (status = 413, description = "超出上传上限", body = crate::error::ErrorResponse),
+    )
+)]
 pub async fn upload_files(
     State(state): State<AppState>,
     Query(q): Query<UploadQuery>,
@@ -1488,6 +1679,18 @@ async fn stream_upload_to_tmp(
 
 // ── 归档列表 / 条目读取（zip + tar/gz/bz2/xz）──────────────────────────────
 
+#[utoipa::path(
+    get,
+    path = "/api/files/archive/list",
+    tag = "files",
+    params(ReadQuery),
+    responses(
+        (status = 200, description = "归档条目树（zip/tar.gz/tar.bz2/tar.xz/7z）", content_type = "application/json"),
+        (status = 400, description = "路径是目录/格式不支持", body = crate::error::ErrorResponse),
+        (status = 401, description = "未认证", body = crate::error::ErrorResponse),
+        (status = 404, description = "路径不存在", body = crate::error::ErrorResponse),
+    )
+)]
 pub async fn archive_list(
     State(state): State<AppState>,
     Query(q): Query<ReadQuery>,
@@ -1506,6 +1709,21 @@ pub async fn archive_list(
     Ok(Json(json!({ "path": resolved.original, "entries": tree })))
 }
 
+#[utoipa::path(
+    get,
+    path = "/api/files/archive/entry",
+    tag = "files",
+    params(ArchiveEntryQuery),
+    responses(
+        (status = 200, description = "归档内单条目内容（流式，支持 Range）", content_type = "application/octet-stream"),
+        (status = 206, description = "部分内容（Range 请求）"),
+        (status = 416, description = "Range 不可满足"),
+        (status = 400, description = "entry 缺失/路径是目录", body = crate::error::ErrorResponse),
+        (status = 401, description = "未认证", body = crate::error::ErrorResponse),
+        (status = 404, description = "路径/条目不存在", body = crate::error::ErrorResponse),
+        (status = 413, description = "条目超出大小上限", body = crate::error::ErrorResponse),
+    )
+)]
 pub async fn archive_entry(
     State(state): State<AppState>,
     Query(q): Query<ArchiveEntryQuery>,
@@ -1594,7 +1812,8 @@ pub async fn archive_entry(
     })
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, utoipa::IntoParams)]
+#[into_params(parameter_in = Query)]
 pub struct ArchiveEntryQuery {
     pub path: Option<String>,
     pub entry: Option<String>,
