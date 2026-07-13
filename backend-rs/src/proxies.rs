@@ -85,6 +85,15 @@ fn parse_optional_bool_json(value: &Value, field: &str) -> Result<Option<bool>, 
 // account
 // ════════════════════════════════════════════════════════════════════════════
 
+#[utoipa::path(
+    get,
+    path = "/api/account",
+    tag = "account",
+    responses(
+        (status = 200, description = "账户信息 + provider 元数据（codex account/read 透传）", content_type = "application/json"),
+        (status = 401, description = "未认证", body = crate::error::ErrorResponse),
+    )
+)]
 pub async fn account_read(State(state): State<AppState>) -> Result<Json<Value>, AppError> {
     let account = state
         .codex
@@ -100,7 +109,7 @@ pub async fn account_read(State(state): State<AppState>) -> Result<Json<Value>, 
     Ok(Json(merged))
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, utoipa::ToSchema)]
 pub struct LoginBody {
     #[serde(rename = "type")]
     pub ty: String,
@@ -114,6 +123,17 @@ pub struct LoginBody {
     pub chatgpt_plan_type: Option<String>,
 }
 
+#[utoipa::path(
+    post,
+    path = "/api/account/login",
+    tag = "account",
+    request_body = LoginBody,
+    responses(
+        (status = 200, description = "登录流程已启动（codex account/login/start 透传）", content_type = "application/json"),
+        (status = 400, description = "login type 非法/必填字段缺失", body = crate::error::ErrorResponse),
+        (status = 401, description = "未认证", body = crate::error::ErrorResponse),
+    )
+)]
 pub async fn account_login(
     State(state): State<AppState>,
     Json(body): Json<LoginBody>,
@@ -169,12 +189,23 @@ pub async fn account_login(
     Ok(Json(result))
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, utoipa::ToSchema)]
 pub struct LoginCancelBody {
     #[serde(rename = "loginId")]
     pub login_id: String,
 }
 
+#[utoipa::path(
+    post,
+    path = "/api/account/login/cancel",
+    tag = "account",
+    request_body = LoginCancelBody,
+    responses(
+        (status = 204, description = "登录流程已取消"),
+        (status = 400, description = "loginId 缺失", body = crate::error::ErrorResponse),
+        (status = 401, description = "未认证", body = crate::error::ErrorResponse),
+    )
+)]
 pub async fn account_login_cancel(
     State(state): State<AppState>,
     Json(body): Json<LoginCancelBody>,
@@ -194,6 +225,15 @@ pub async fn account_login_cancel(
     Ok(StatusCode::NO_CONTENT)
 }
 
+#[utoipa::path(
+    post,
+    path = "/api/account/logout",
+    tag = "account",
+    responses(
+        (status = 204, description = "已登出（codex account/logout 透传）"),
+        (status = 401, description = "未认证", body = crate::error::ErrorResponse),
+    )
+)]
 pub async fn account_logout(State(state): State<AppState>) -> Result<StatusCode, AppError> {
     state
         .codex
@@ -204,6 +244,15 @@ pub async fn account_logout(State(state): State<AppState>) -> Result<StatusCode,
     Ok(StatusCode::NO_CONTENT)
 }
 
+#[utoipa::path(
+    get,
+    path = "/api/account/rate-limits",
+    tag = "account",
+    responses(
+        (status = 200, description = "速率限制（codex account/rate-limits 透传）", content_type = "application/json"),
+        (status = 401, description = "未认证", body = crate::error::ErrorResponse),
+    )
+)]
 pub async fn account_rate_limits(State(state): State<AppState>) -> Result<Json<Value>, AppError> {
     let result = state
         .codex
@@ -217,7 +266,8 @@ pub async fn account_rate_limits(State(state): State<AppState>) -> Result<Json<V
 // apps
 // ════════════════════════════════════════════════════════════════════════════
 
-#[derive(Deserialize)]
+#[derive(Deserialize, utoipa::IntoParams)]
+#[into_params(parameter_in = Query)]
 pub struct AppsQuery {
     pub cursor: Option<String>,
     pub limit: Option<String>,
@@ -227,6 +277,17 @@ pub struct AppsQuery {
     pub force_refetch: Option<String>,
 }
 
+#[utoipa::path(
+    get,
+    path = "/api/apps",
+    tag = "apps",
+    params(AppsQuery),
+    responses(
+        (status = 200, description = "应用列表（codex app/list 透传）", content_type = "application/json"),
+        (status = 400, description = "limit/forceRefetch 非法", body = crate::error::ErrorResponse),
+        (status = 401, description = "未认证", body = crate::error::ErrorResponse),
+    )
+)]
 pub async fn apps_list(
     State(state): State<AppState>,
     Query(q): Query<AppsQuery>,
@@ -256,12 +317,23 @@ pub async fn apps_list(
 // models
 // ════════════════════════════════════════════════════════════════════════════
 
-#[derive(Deserialize)]
+#[derive(Deserialize, utoipa::IntoParams)]
+#[into_params(parameter_in = Query)]
 pub struct ModelsQuery {
     pub cursor: Option<String>,
     pub limit: Option<String>,
 }
 
+#[utoipa::path(
+    get,
+    path = "/api/models",
+    tag = "models",
+    params(ModelsQuery),
+    responses(
+        (status = 200, description = "模型列表（codex model/list 透传）", content_type = "application/json"),
+        (status = 401, description = "未认证", body = crate::error::ErrorResponse),
+    )
+)]
 pub async fn models_list(
     State(state): State<AppState>,
     Query(q): Query<ModelsQuery>,
@@ -290,13 +362,25 @@ pub async fn models_list(
 
 const MCP_DETAIL_VALUES: &[&str] = &["full", "toolsAndAuthOnly"];
 
-#[derive(Deserialize)]
+#[derive(Deserialize, utoipa::IntoParams)]
+#[into_params(parameter_in = Query)]
 pub struct McpListQuery {
     pub cursor: Option<String>,
     pub limit: Option<String>,
     pub detail: Option<String>,
 }
 
+#[utoipa::path(
+    get,
+    path = "/api/mcp-servers",
+    tag = "mcp-servers",
+    params(McpListQuery),
+    responses(
+        (status = 200, description = "MCP 服务端状态列表（codex mcpServerStatus/list 透传）", content_type = "application/json"),
+        (status = 400, description = "limit/detail 非法", body = crate::error::ErrorResponse),
+        (status = 401, description = "未认证", body = crate::error::ErrorResponse),
+    )
+)]
 pub async fn mcp_servers_list(
     State(state): State<AppState>,
     Query(q): Query<McpListQuery>,
@@ -325,6 +409,15 @@ pub async fn mcp_servers_list(
     Ok(Json(result))
 }
 
+#[utoipa::path(
+    post,
+    path = "/api/mcp-servers/reload",
+    tag = "mcp-servers",
+    responses(
+        (status = 204, description = "MCP 配置已重载（codex config/mcpServer/reload）"),
+        (status = 401, description = "未认证", body = crate::error::ErrorResponse),
+    )
+)]
 pub async fn mcp_servers_reload(State(state): State<AppState>) -> Result<StatusCode, AppError> {
     state
         .codex
@@ -334,7 +427,7 @@ pub async fn mcp_servers_reload(State(state): State<AppState>) -> Result<StatusC
     Ok(StatusCode::NO_CONTENT)
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, utoipa::ToSchema)]
 pub struct McpOauthBody {
     pub name: Option<String>,
     /// 保留原始 JSON 值，在 mcp_servers_oauth_login 内手动校验类型，
@@ -345,6 +438,17 @@ pub struct McpOauthBody {
     pub timeout_secs: Option<Value>,
 }
 
+#[utoipa::path(
+    post,
+    path = "/api/mcp-servers/oauth/login",
+    tag = "mcp-servers",
+    request_body = McpOauthBody,
+    responses(
+        (status = 200, description = "OAuth 登录已启动（codex mcpServer/oauth/login 透传）", content_type = "application/json"),
+        (status = 400, description = "name/scopes/timeoutSecs 非法", body = crate::error::ErrorResponse),
+        (status = 401, description = "未认证", body = crate::error::ErrorResponse),
+    )
+)]
 pub async fn mcp_servers_oauth_login(
     State(state): State<AppState>,
     Json(body): Json<McpOauthBody>,
@@ -425,11 +529,23 @@ pub async fn mcp_servers_oauth_login(
 // skills
 // ════════════════════════════════════════════════════════════════════════════
 
-#[derive(Deserialize)]
+#[derive(Deserialize, utoipa::IntoParams)]
+#[into_params(parameter_in = Query)]
 pub struct SkillsListQuery {
     pub cwd: Option<String>,
 }
 
+#[utoipa::path(
+    get,
+    path = "/api/skills",
+    tag = "skills",
+    params(SkillsListQuery),
+    responses(
+        (status = 200, description = "技能列表（codex skills/list 透传）", content_type = "application/json"),
+        (status = 400, description = "cwd 缺失", body = crate::error::ErrorResponse),
+        (status = 401, description = "未认证", body = crate::error::ErrorResponse),
+    )
+)]
 pub async fn skills_list(
     State(state): State<AppState>,
     Query(q): Query<SkillsListQuery>,
@@ -452,13 +568,24 @@ pub async fn skills_list(
     Ok(Json(result))
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, utoipa::ToSchema)]
 pub struct SkillConfigBody {
     pub path: Option<String>,
     pub name: Option<String>,
     pub enabled: bool,
 }
 
+#[utoipa::path(
+    post,
+    path = "/api/skills/config",
+    tag = "skills",
+    request_body = SkillConfigBody,
+    responses(
+        (status = 200, description = "技能配置已写入（codex skills/config/write 透传）", content_type = "application/json"),
+        (status = 400, description = "path/name 缺失", body = crate::error::ErrorResponse),
+        (status = 401, description = "未认证", body = crate::error::ErrorResponse),
+    )
+)]
 pub async fn skills_config_write(
     State(state): State<AppState>,
     Json(body): Json<SkillConfigBody>,
@@ -492,13 +619,25 @@ pub async fn skills_config_write(
 // plugins
 // ════════════════════════════════════════════════════════════════════════════
 
-#[derive(Deserialize)]
+#[derive(Deserialize, utoipa::IntoParams)]
+#[into_params(parameter_in = Query)]
 pub struct PluginsListQuery {
     pub cwds: Option<String>,
     #[serde(rename = "forceRemoteSync")]
     pub force_remote_sync: Option<String>,
 }
 
+#[utoipa::path(
+    get,
+    path = "/api/plugins",
+    tag = "plugins",
+    params(PluginsListQuery),
+    responses(
+        (status = 200, description = "插件列表（codex plugin/list 透传）", content_type = "application/json"),
+        (status = 400, description = "forceRemoteSync 非法", body = crate::error::ErrorResponse),
+        (status = 401, description = "未认证", body = crate::error::ErrorResponse),
+    )
+)]
 pub async fn plugins_list(
     State(state): State<AppState>,
     Query(q): Query<PluginsListQuery>,
@@ -526,7 +665,8 @@ pub async fn plugins_list(
     Ok(Json(result))
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, utoipa::IntoParams)]
+#[into_params(parameter_in = Query)]
 pub struct PluginDetailQuery {
     #[serde(rename = "marketplacePath")]
     pub marketplace_path: Option<String>,
@@ -534,6 +674,17 @@ pub struct PluginDetailQuery {
     pub plugin_name: Option<String>,
 }
 
+#[utoipa::path(
+    get,
+    path = "/api/plugins/detail",
+    tag = "plugins",
+    params(PluginDetailQuery),
+    responses(
+        (status = 200, description = "插件详情（codex plugin/read 透传）", content_type = "application/json"),
+        (status = 400, description = "marketplacePath/pluginName 缺失", body = crate::error::ErrorResponse),
+        (status = 401, description = "未认证", body = crate::error::ErrorResponse),
+    )
+)]
 pub async fn plugins_detail(
     State(state): State<AppState>,
     Query(q): Query<PluginDetailQuery>,
@@ -551,7 +702,7 @@ pub async fn plugins_detail(
     Ok(Json(result))
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, utoipa::ToSchema)]
 pub struct PluginInstallBody {
     #[serde(rename = "marketplacePath")]
     pub marketplace_path: String,
@@ -561,6 +712,17 @@ pub struct PluginInstallBody {
     pub force_remote_sync: Option<Value>,
 }
 
+#[utoipa::path(
+    post,
+    path = "/api/plugins/install",
+    tag = "plugins",
+    request_body = PluginInstallBody,
+    responses(
+        (status = 200, description = "插件已安装（codex plugin/install 透传）", content_type = "application/json"),
+        (status = 400, description = "marketplacePath/pluginName 缺失", body = crate::error::ErrorResponse),
+        (status = 401, description = "未认证", body = crate::error::ErrorResponse),
+    )
+)]
 pub async fn plugins_install(
     State(state): State<AppState>,
     Json(body): Json<PluginInstallBody>,
@@ -583,7 +745,7 @@ pub async fn plugins_install(
     Ok(Json(result))
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, utoipa::ToSchema)]
 pub struct PluginUninstallBody {
     #[serde(rename = "pluginId")]
     pub plugin_id: String,
@@ -591,6 +753,17 @@ pub struct PluginUninstallBody {
     pub force_remote_sync: Option<Value>,
 }
 
+#[utoipa::path(
+    post,
+    path = "/api/plugins/uninstall",
+    tag = "plugins",
+    request_body = PluginUninstallBody,
+    responses(
+        (status = 200, description = "插件已卸载（codex plugin/uninstall 透传）", content_type = "application/json"),
+        (status = 400, description = "pluginId 缺失", body = crate::error::ErrorResponse),
+        (status = 401, description = "未认证", body = crate::error::ErrorResponse),
+    )
+)]
 pub async fn plugins_uninstall(
     State(state): State<AppState>,
     Json(body): Json<PluginUninstallBody>,

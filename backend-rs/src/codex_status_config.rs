@@ -73,6 +73,15 @@ static SENSITIVE_KEY_RE: Lazy<Regex> =
 
 // ── status ───────────────────────────────────────────────────────────────────
 
+#[utoipa::path(
+    get,
+    path = "/api/codex/status",
+    tag = "codex",
+    responses(
+        (status = 200, description = "聚合就绪状态（appServer/initialize/account/config/provider/models/runtime）", content_type = "application/json"),
+        (status = 401, description = "未认证", body = crate::error::ErrorResponse),
+    )
+)]
 pub async fn status(State(state): State<AppState>) -> Result<Json<Value>, AppError> {
     // 由 CodexStatusService 聚合（探针 + TTL 缓存），结构对齐 TS CodexStatusResponse。
     Ok(Json(state.status.get_status().await))
@@ -80,12 +89,23 @@ pub async fn status(State(state): State<AppState>) -> Result<Json<Value>, AppErr
 
 // ── approval-policy / sandbox-mode ───────────────────────────────────────────
 
-#[derive(Deserialize)]
+#[derive(Deserialize, utoipa::ToSchema)]
 pub struct ApprovalPolicyBody {
     #[serde(rename = "approvalPolicy")]
     pub approval_policy: Option<String>,
 }
 
+#[utoipa::path(
+    post,
+    path = "/api/codex/approval-policy",
+    tag = "codex",
+    request_body = ApprovalPolicyBody,
+    responses(
+        (status = 204, description = "approval_policy 已更新并热重载"),
+        (status = 400, description = "非法 approval policy", body = crate::error::ErrorResponse),
+        (status = 401, description = "未认证", body = crate::error::ErrorResponse),
+    )
+)]
 pub async fn update_approval_policy(
     State(state): State<AppState>,
     Json(body): Json<ApprovalPolicyBody>,
@@ -112,12 +132,23 @@ pub async fn update_approval_policy(
     Ok(StatusCode::NO_CONTENT)
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, utoipa::ToSchema)]
 pub struct SandboxModeBody {
     #[serde(rename = "sandboxMode")]
     pub sandbox_mode: Option<String>,
 }
 
+#[utoipa::path(
+    post,
+    path = "/api/codex/sandbox-mode",
+    tag = "codex",
+    request_body = SandboxModeBody,
+    responses(
+        (status = 204, description = "sandbox_mode 已更新并热重载"),
+        (status = 400, description = "非法 sandbox mode", body = crate::error::ErrorResponse),
+        (status = 401, description = "未认证", body = crate::error::ErrorResponse),
+    )
+)]
 pub async fn update_sandbox_mode(
     State(state): State<AppState>,
     Json(body): Json<SandboxModeBody>,
@@ -146,6 +177,15 @@ pub async fn update_sandbox_mode(
 
 // ── config(结构化)─────────────────────────────────────────────────────────
 
+#[utoipa::path(
+    get,
+    path = "/api/codex/config",
+    tag = "codex",
+    responses(
+        (status = 200, description = "结构化配置（含 layers；敏感字段已脱敏）", content_type = "application/json"),
+        (status = 401, description = "未认证", body = crate::error::ErrorResponse),
+    )
+)]
 pub async fn read_config(State(state): State<AppState>) -> Result<Json<Value>, AppError> {
     let response = state
         .codex
@@ -160,18 +200,29 @@ pub async fn read_config(State(state): State<AppState>) -> Result<Json<Value>, A
     })))
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, utoipa::ToSchema)]
 pub struct UpdateConfigBody {
     pub edits: Vec<ConfigEdit>,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, utoipa::ToSchema)]
 pub struct ConfigEdit {
     #[serde(rename = "keyPath")]
     pub key_path: String,
     pub value: Value,
 }
 
+#[utoipa::path(
+    patch,
+    path = "/api/codex/config",
+    tag = "codex",
+    request_body = UpdateConfigBody,
+    responses(
+        (status = 200, description = "精选字段已更新，返回最新配置（白名单校验）", content_type = "application/json"),
+        (status = 400, description = "edit/key/value 非法", body = crate::error::ErrorResponse),
+        (status = 401, description = "未认证", body = crate::error::ErrorResponse),
+    )
+)]
 pub async fn update_config(
     State(state): State<AppState>,
     Json(body): Json<UpdateConfigBody>,
@@ -238,17 +289,38 @@ fn is_json_value(v: &Value) -> bool {
 
 // ── config/raw(config.toml 文件)───────────────────────────────────────────
 
+#[utoipa::path(
+    get,
+    path = "/api/codex/config/raw",
+    tag = "codex",
+    responses(
+        (status = 200, description = "用户 config.toml 原始内容（filePath + content）", content_type = "application/json"),
+        (status = 401, description = "未认证", body = crate::error::ErrorResponse),
+    )
+)]
 pub async fn read_raw_config(State(state): State<AppState>) -> Result<Json<Value>, AppError> {
     let path = user_config_path(&state).await?;
     let content = std::fs::read_to_string(&path).unwrap_or_default();
     Ok(Json(json!({ "filePath": path, "content": content })))
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, utoipa::ToSchema)]
 pub struct UpdateRawConfigBody {
     pub content: Value,
 }
 
+#[utoipa::path(
+    put,
+    path = "/api/codex/config/raw",
+    tag = "codex",
+    request_body = UpdateRawConfigBody,
+    responses(
+        (status = 200, description = "config.toml 已写入并热重载", content_type = "application/json"),
+        (status = 400, description = "content 非字符串", body = crate::error::ErrorResponse),
+        (status = 401, description = "未认证", body = crate::error::ErrorResponse),
+        (status = 413, description = "content 超过 1MB 上限", body = crate::error::ErrorResponse),
+    )
+)]
 pub async fn update_raw_config(
     State(state): State<AppState>,
     Json(body): Json<UpdateRawConfigBody>,

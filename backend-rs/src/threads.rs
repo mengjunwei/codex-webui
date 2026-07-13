@@ -28,7 +28,7 @@ fn bad_request(code: ErrorCode, msg: impl Into<String>) -> AppError {
 
 // ── POST /threads(创建)───────────────────────────────────────────────────
 
-#[derive(Deserialize)]
+#[derive(Deserialize, utoipa::ToSchema)]
 pub struct CreateThreadBody {
     pub model: Option<String>,
     pub cwd: Option<String>,
@@ -36,6 +36,17 @@ pub struct CreateThreadBody {
     pub approval_policy: Option<Value>,
 }
 
+#[utoipa::path(
+    post,
+    path = "/api/threads",
+    tag = "threads",
+    request_body = CreateThreadBody,
+    responses(
+        (status = 201, description = "线程已创建（codex thread/start 透传）", content_type = "application/json"),
+        (status = 400, description = "参数非法", body = crate::error::ErrorResponse),
+        (status = 401, description = "未认证", body = crate::error::ErrorResponse),
+    )
+)]
 pub async fn create_thread(
     State(state): State<AppState>,
     Json(body): Json<CreateThreadBody>,
@@ -66,7 +77,8 @@ pub async fn create_thread(
 
 // ── GET /threads(列表)─────────────────────────────────────────────────────
 
-#[derive(Deserialize)]
+#[derive(Deserialize, utoipa::IntoParams)]
+#[into_params(parameter_in = Query)]
 pub struct ListThreadsQuery {
     pub cursor: Option<String>,
     pub limit: Option<String>,
@@ -78,6 +90,17 @@ pub struct ListThreadsQuery {
     pub sort_key: Option<String>,
 }
 
+#[utoipa::path(
+    get,
+    path = "/api/threads",
+    tag = "threads",
+    params(ListThreadsQuery),
+    responses(
+        (status = 200, description = "线程列表（codex thread/list 透传）", content_type = "application/json"),
+        (status = 400, description = "limit/sortKey 非法", body = crate::error::ErrorResponse),
+        (status = 401, description = "未认证", body = crate::error::ErrorResponse),
+    )
+)]
 pub async fn list_threads(
     State(state): State<AppState>,
     Query(q): Query<ListThreadsQuery>,
@@ -122,12 +145,24 @@ pub async fn list_threads(
 
 // ── GET /threads/loaded ──────────────────────────────────────────────────────
 
-#[derive(Deserialize)]
+#[derive(Deserialize, utoipa::IntoParams)]
+#[into_params(parameter_in = Query)]
 pub struct LoadedQuery {
     pub cursor: Option<String>,
     pub limit: Option<String>,
 }
 
+#[utoipa::path(
+    get,
+    path = "/api/threads/loaded",
+    tag = "threads",
+    params(LoadedQuery),
+    responses(
+        (status = 200, description = "已加载线程列表（codex thread/loaded/list 透传）", content_type = "application/json"),
+        (status = 400, description = "limit 非法", body = crate::error::ErrorResponse),
+        (status = 401, description = "未认证", body = crate::error::ErrorResponse),
+    )
+)]
 pub async fn list_loaded_threads(
     State(state): State<AppState>,
     Query(q): Query<LoadedQuery>,
@@ -150,12 +185,26 @@ pub async fn list_loaded_threads(
 
 // ── GET /threads/:threadId(读取)───────────────────────────────────────────
 
-#[derive(Deserialize)]
+#[derive(Deserialize, utoipa::IntoParams)]
+#[into_params(parameter_in = Query)]
 pub struct ReadQuery {
     #[serde(rename = "includeTurns")]
     pub include_turns: Option<String>,
 }
 
+#[utoipa::path(
+    get,
+    path = "/api/threads/{threadId}",
+    tag = "threads",
+    params(
+        ("threadId" = String, Path, description = "线程 ID"),
+        ReadQuery,
+    ),
+    responses(
+        (status = 200, description = "线程详情（codex thread/read 透传；未具现化时 turns 为空）", content_type = "application/json"),
+        (status = 401, description = "未认证", body = crate::error::ErrorResponse),
+    )
+)]
 pub async fn read_thread(
     State(state): State<AppState>,
     Path(thread_id): Path<String>,
@@ -206,6 +255,16 @@ fn is_not_materialized(e: &RpcError) -> bool {
 
 // ── POST /threads/:threadId/resume ───────────────────────────────────────────
 
+#[utoipa::path(
+    post,
+    path = "/api/threads/{threadId}/resume",
+    tag = "threads",
+    params(("threadId" = String, Path, description = "线程 ID")),
+    responses(
+        (status = 201, description = "线程已恢复（codex thread/resume 透传；含并发去重缓存）", content_type = "application/json"),
+        (status = 401, description = "未认证", body = crate::error::ErrorResponse),
+    )
+)]
 pub async fn resume_thread(
     State(state): State<AppState>,
     Path(thread_id): Path<String>,
@@ -276,13 +335,25 @@ async fn read_as_resume(state: &AppState, thread_id: &str, cached: Value) -> Val
 
 // ── POST /threads/:threadId/turns(开始 turn)──────────────────────────────
 
-#[derive(Deserialize)]
+#[derive(Deserialize, utoipa::ToSchema)]
 pub struct StartTurnBody {
     pub input: Value,
     pub model: Option<String>,
     pub effort: Option<String>,
 }
 
+#[utoipa::path(
+    post,
+    path = "/api/threads/{threadId}/turns",
+    tag = "threads",
+    params(("threadId" = String, Path, description = "线程 ID")),
+    request_body = StartTurnBody,
+    responses(
+        (status = 201, description = "turn 已启动（codex turn/start 透传）", content_type = "application/json"),
+        (status = 400, description = "input/model/effort 非法或 mention 路径越界", body = crate::error::ErrorResponse),
+        (status = 401, description = "未认证", body = crate::error::ErrorResponse),
+    )
+)]
 pub async fn start_turn(
     State(state): State<AppState>,
     Path(thread_id): Path<String>,
@@ -324,6 +395,21 @@ pub async fn start_turn(
 
 // ── POST /threads/:threadId/turns/:turnId/steer ──────────────────────────────
 
+#[utoipa::path(
+    post,
+    path = "/api/threads/{threadId}/turns/{turnId}/steer",
+    tag = "threads",
+    params(
+        ("threadId" = String, Path, description = "线程 ID"),
+        ("turnId" = String, Path, description = "目标 turn ID"),
+    ),
+    request_body = StartTurnBody,
+    responses(
+        (status = 201, description = "turn 已转向（codex turn/steer 透传）", content_type = "application/json"),
+        (status = 400, description = "input 非法或 mention 路径越界", body = crate::error::ErrorResponse),
+        (status = 401, description = "未认证", body = crate::error::ErrorResponse),
+    )
+)]
 pub async fn steer_turn(
     State(state): State<AppState>,
     Path((thread_id, turn_id)): Path<(String, String)>,
@@ -345,6 +431,19 @@ pub async fn steer_turn(
 
 // ── POST /threads/:threadId/turns/:turnId/interrupt ──────────────────────────
 
+#[utoipa::path(
+    post,
+    path = "/api/threads/{threadId}/turns/{turnId}/interrupt",
+    tag = "threads",
+    params(
+        ("threadId" = String, Path, description = "线程 ID"),
+        ("turnId" = String, Path, description = "要中断的 turn ID"),
+    ),
+    responses(
+        (status = 201, description = "turn 已中断（codex turn/interrupt 透传）", content_type = "application/json"),
+        (status = 401, description = "未认证", body = crate::error::ErrorResponse),
+    )
+)]
 pub async fn interrupt_turn(
     State(state): State<AppState>,
     Path((thread_id, turn_id)): Path<(String, String)>,
@@ -359,6 +458,16 @@ pub async fn interrupt_turn(
 
 // ── 归档 / 取消归档 / 压缩 / 分叉 / 回滚 / 重命名 ───────────────────
 
+#[utoipa::path(
+    post,
+    path = "/api/threads/{threadId}/archive",
+    tag = "threads",
+    params(("threadId" = String, Path, description = "线程 ID")),
+    responses(
+        (status = 204, description = "已归档"),
+        (status = 401, description = "未认证", body = crate::error::ErrorResponse),
+    )
+)]
 pub async fn archive_thread(
     State(state): State<AppState>,
     Path(thread_id): Path<String>,
@@ -373,6 +482,16 @@ pub async fn archive_thread(
     Ok(StatusCode::NO_CONTENT)
 }
 
+#[utoipa::path(
+    post,
+    path = "/api/threads/{threadId}/unarchive",
+    tag = "threads",
+    params(("threadId" = String, Path, description = "线程 ID")),
+    responses(
+        (status = 201, description = "已取消归档（codex thread/unarchive 透传）", content_type = "application/json"),
+        (status = 401, description = "未认证", body = crate::error::ErrorResponse),
+    )
+)]
 pub async fn unarchive_thread(
     State(state): State<AppState>,
     Path(thread_id): Path<String>,
@@ -385,6 +504,16 @@ pub async fn unarchive_thread(
     Ok((StatusCode::CREATED, Json(result)))
 }
 
+#[utoipa::path(
+    post,
+    path = "/api/threads/{threadId}/compact",
+    tag = "threads",
+    params(("threadId" = String, Path, description = "线程 ID")),
+    responses(
+        (status = 204, description = "压缩已启动"),
+        (status = 401, description = "未认证", body = crate::error::ErrorResponse),
+    )
+)]
 pub async fn compact_thread(
     State(state): State<AppState>,
     Path(thread_id): Path<String>,
@@ -397,6 +526,16 @@ pub async fn compact_thread(
     Ok(StatusCode::NO_CONTENT)
 }
 
+#[utoipa::path(
+    post,
+    path = "/api/threads/{threadId}/fork",
+    tag = "threads",
+    params(("threadId" = String, Path, description = "线程 ID")),
+    responses(
+        (status = 201, description = "已分叉出新线程（codex thread/fork 透传）", content_type = "application/json"),
+        (status = 401, description = "未认证", body = crate::error::ErrorResponse),
+    )
+)]
 pub async fn fork_thread(
     State(state): State<AppState>,
     Path(thread_id): Path<String>,
@@ -416,12 +555,24 @@ pub async fn fork_thread(
     Ok((StatusCode::CREATED, Json(result)))
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, utoipa::ToSchema)]
 pub struct RollbackBody {
     #[serde(rename = "numTurns")]
     pub num_turns: i64,
 }
 
+#[utoipa::path(
+    post,
+    path = "/api/threads/{threadId}/rollback",
+    tag = "threads",
+    params(("threadId" = String, Path, description = "线程 ID")),
+    request_body = RollbackBody,
+    responses(
+        (status = 201, description = "已回滚（codex thread/rollback 透传）", content_type = "application/json"),
+        (status = 400, description = "numTurns 非正整数", body = crate::error::ErrorResponse),
+        (status = 401, description = "未认证", body = crate::error::ErrorResponse),
+    )
+)]
 pub async fn rollback_thread(
     State(state): State<AppState>,
     Path(thread_id): Path<String>,
@@ -444,11 +595,23 @@ pub async fn rollback_thread(
     Ok((StatusCode::CREATED, Json(result)))
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, utoipa::ToSchema)]
 pub struct SetNameBody {
     pub name: String,
 }
 
+#[utoipa::path(
+    patch,
+    path = "/api/threads/{threadId}/name",
+    tag = "threads",
+    params(("threadId" = String, Path, description = "线程 ID")),
+    request_body = SetNameBody,
+    responses(
+        (status = 204, description = "名称已设置"),
+        (status = 400, description = "name 为空", body = crate::error::ErrorResponse),
+        (status = 401, description = "未认证", body = crate::error::ErrorResponse),
+    )
+)]
 pub async fn set_thread_name(
     State(state): State<AppState>,
     Path(thread_id): Path<String>,
