@@ -27,13 +27,63 @@ use utoipa_swagger_ui::SwaggerUi;
     ),
     components(schemas(
         crate::error::ErrorResponse,
+        // auth
+        crate::auth::LoginRequest,
+        crate::auth::LoginResponse,
+        // logs
+        crate::logs::LogEntry,
+        crate::logs::LogsResponse,
+        crate::logs::LogsExportResponse,
+        crate::logs::SystemInfo,
+        // sqlite_handlers
+        crate::sqlite_handlers::BreakdownDto,
+        crate::sqlite_handlers::TurnUsageDto,
+        crate::sqlite_handlers::TurnTokenUsageDto,
+        crate::sqlite_handlers::ThreadTokenUsageResponse,
+        crate::sqlite_handlers::TurnDiffDto,
+        crate::sqlite_handlers::ThreadTurnDiffsResponse,
+        crate::sqlite_handlers::TurnErrorDto,
+        crate::sqlite_handlers::ThreadTurnErrorsResponse,
+        crate::sqlite_handlers::PendingServerRequestDto,
+        crate::sqlite_handlers::ListPendingResponse,
+        crate::sqlite_handlers::RespondRequestBody,
+        // settings
+        crate::settings::handlers::SettingDto,
+        crate::settings::handlers::SettingListResponse,
+        crate::settings::handlers::SettingBatchEntry,
+        crate::settings::handlers::SettingBatchUpdateBody,
+        crate::settings::handlers::UpdatePayload,
     )),
     paths(
         // system
         crate::routes::health::ping,
+        // auth
+        crate::routes::auth::login,
+        crate::routes::auth::logout,
+        // logs
+        crate::logs::list_logs,
+        crate::logs::export_diagnostics,
+        // sqlite_handlers
+        crate::sqlite_handlers::read_token_usage,
+        crate::sqlite_handlers::read_latest_token_usage,
+        crate::sqlite_handlers::read_turn_diffs,
+        crate::sqlite_handlers::read_turn_errors,
+        crate::sqlite_handlers::list_pending,
+        crate::sqlite_handlers::respond_to_request,
+        // settings
+        crate::settings::handlers::list,
+        crate::settings::handlers::get_one,
+        crate::settings::handlers::update_batch,
+        crate::settings::handlers::update_one,
+        crate::settings::handlers::delete_one,
     ),
     tags(
         (name = "system", description = "健康检查 / 探针"),
+        (name = "auth", description = "认证 / 授权（JWT + API key）"),
+        (name = "logs", description = "日志读取与诊断导出"),
+        (name = "threads", description = "会话与 turn（含 token 用量 / 差异 / 错误）"),
+        (name = "approvals", description = "待处理审批"),
+        (name = "settings", description = "运行时设置 CRUD"),
     )
 )]
 struct ApiDoc;

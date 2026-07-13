@@ -15,7 +15,7 @@ use serde::{Deserialize, Serialize};
 
 // ── token 用量 ──────────────────────────────────────────────────────────────
 
-#[derive(Serialize, Clone)]
+#[derive(Serialize, Clone, utoipa::ToSchema)]
 pub struct BreakdownDto {
     #[serde(rename = "totalTokens")]
     pub total_tokens: i64,
@@ -29,7 +29,7 @@ pub struct BreakdownDto {
     pub reasoning_output_tokens: i64,
 }
 
-#[derive(Serialize, Clone)]
+#[derive(Serialize, Clone, utoipa::ToSchema)]
 pub struct TurnUsageDto {
     #[serde(rename = "modelContextWindow")]
     pub model_context_window: Option<i64>,
@@ -37,7 +37,7 @@ pub struct TurnUsageDto {
     pub last: BreakdownDto,
 }
 
-#[derive(Serialize, Clone)]
+#[derive(Serialize, Clone, utoipa::ToSchema)]
 pub struct TurnTokenUsageDto {
     #[serde(rename = "turnId")]
     pub turn_id: String,
@@ -46,7 +46,7 @@ pub struct TurnTokenUsageDto {
     pub updated_at: i64,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, utoipa::ToSchema)]
 pub struct ThreadTokenUsageResponse {
     #[serde(rename = "threadId")]
     pub thread_id: String,
@@ -54,6 +54,16 @@ pub struct ThreadTokenUsageResponse {
     pub latest: Option<TurnTokenUsageDto>,
 }
 
+#[utoipa::path(
+    get,
+    path = "/api/threads/{threadId}/token-usage",
+    tag = "threads",
+    params(("threadId" = String, Path, description = "线程 ID")),
+    responses(
+        (status = 200, description = "线程下所有 turn 的 token 用量", body = ThreadTokenUsageResponse),
+        (status = 401, description = "未认证", body = crate::error::ErrorResponse),
+    )
+)]
 pub async fn read_token_usage(
     State(state): State<AppState>,
     Path(thread_id): Path<String>,
@@ -112,6 +122,16 @@ pub async fn read_token_usage(
 
 /// H10 修复：新增仅读取最新一条 token usage 的端点（对齐 TS
 /// `TokenUsageService.readLatestThreadUsage`），比全量查询更高效。
+#[utoipa::path(
+    get,
+    path = "/api/threads/{threadId}/token-usage/latest",
+    tag = "threads",
+    params(("threadId" = String, Path, description = "线程 ID")),
+    responses(
+        (status = 200, description = "最新一条 token 用量（无则 null）", body = Option<TurnTokenUsageDto>),
+        (status = 401, description = "未认证", body = crate::error::ErrorResponse),
+    )
+)]
 pub async fn read_latest_token_usage(
     State(state): State<AppState>,
     Path(thread_id): Path<String>,
@@ -165,7 +185,7 @@ pub async fn read_latest_token_usage(
 
 // ── turn 差异 ────────────────────────────────────────────────────────────────
 
-#[derive(Serialize)]
+#[derive(Serialize, utoipa::ToSchema)]
 pub struct TurnDiffDto {
     #[serde(rename = "turnId")]
     pub turn_id: String,
@@ -174,13 +194,23 @@ pub struct TurnDiffDto {
     pub updated_at: i64,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, utoipa::ToSchema)]
 pub struct ThreadTurnDiffsResponse {
     #[serde(rename = "threadId")]
     pub thread_id: String,
     pub turns: Vec<TurnDiffDto>,
 }
 
+#[utoipa::path(
+    get,
+    path = "/api/threads/{threadId}/turn-diffs",
+    tag = "threads",
+    params(("threadId" = String, Path, description = "线程 ID")),
+    responses(
+        (status = 200, description = "线程下所有 turn 的差异", body = ThreadTurnDiffsResponse),
+        (status = 401, description = "未认证", body = crate::error::ErrorResponse),
+    )
+)]
 pub async fn read_turn_diffs(
     State(state): State<AppState>,
     Path(thread_id): Path<String>,
@@ -218,7 +248,7 @@ pub async fn read_turn_diffs(
 
 // ── turn 错误 ────────────────────────────────────────────────────────────────
 
-#[derive(Serialize)]
+#[derive(Serialize, utoipa::ToSchema)]
 pub struct TurnErrorDto {
     #[serde(rename = "turnId")]
     pub turn_id: String,
@@ -227,13 +257,23 @@ pub struct TurnErrorDto {
     pub created_at: i64,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, utoipa::ToSchema)]
 pub struct ThreadTurnErrorsResponse {
     #[serde(rename = "threadId")]
     pub thread_id: String,
     pub errors: Vec<TurnErrorDto>,
 }
 
+#[utoipa::path(
+    get,
+    path = "/api/threads/{threadId}/turn-errors",
+    tag = "threads",
+    params(("threadId" = String, Path, description = "线程 ID")),
+    responses(
+        (status = 200, description = "线程下所有 turn 的错误", body = ThreadTurnErrorsResponse),
+        (status = 401, description = "未认证", body = crate::error::ErrorResponse),
+    )
+)]
 pub async fn read_turn_errors(
     State(state): State<AppState>,
     Path(thread_id): Path<String>,
@@ -271,7 +311,7 @@ pub async fn read_turn_errors(
 
 // ── 待处理审批（列表）─────────────────────────────────────────────────────────
 
-#[derive(Serialize)]
+#[derive(Serialize, utoipa::ToSchema)]
 pub struct PendingServerRequestDto {
     pub generation: i64,
     #[serde(rename = "requestId")]
@@ -293,17 +333,28 @@ pub struct PendingServerRequestDto {
     // pending-approvals.dto.ts / toDto 保持一致（TS 端从不序列化这两个字段）。
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, utoipa::ToSchema)]
 pub struct ListPendingResponse {
     pub requests: Vec<PendingServerRequestDto>,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, utoipa::IntoParams)]
+#[into_params(parameter_in = Query)]
 pub struct PendingQuery {
     #[serde(rename = "threadIds")]
     pub thread_ids: Option<String>, // 以逗号分隔
 }
 
+#[utoipa::path(
+    get,
+    path = "/api/pending-approvals",
+    tag = "approvals",
+    params(PendingQuery),
+    responses(
+        (status = 200, description = "待处理审批列表", body = ListPendingResponse),
+        (status = 401, description = "未认证", body = crate::error::ErrorResponse),
+    )
+)]
 pub async fn list_pending(
     State(state): State<AppState>,
     Query(q): Query<PendingQuery>,
@@ -391,6 +442,31 @@ fn parse_pending_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<PendingServerReq
 
 // ── 响应待处理请求：POST /pending-approvals/:requestId/respond ──────────────
 
+/// `respond_to_request` 的请求体（仅用于 OpenAPI 文档；handler 实际用原始
+/// `serde_json::Value` 提取，此处给出结构化 schema 供前端参考）。
+#[derive(Deserialize, utoipa::ToSchema)]
+pub struct RespondRequestBody {
+    /// 审批结果（任意 JSON：approve/deny 的具体结构由 codex 上游决定）。
+    pub result: serde_json::Value,
+    /// 可选：发起响应的客户端标识（记录到 resolved_by）。
+    #[serde(rename = "clientId")]
+    pub client_id: Option<String>,
+}
+
+#[utoipa::path(
+    post,
+    path = "/api/pending-approvals/{requestId}/respond",
+    tag = "approvals",
+    params(("requestId" = String, Path, description = "待处理请求 ID")),
+    request_body = RespondRequestBody,
+    responses(
+        (status = 200, description = "已响应，返回更新后的请求", body = PendingServerRequestDto),
+        (status = 400, description = "缺少 result 字段", body = crate::error::ErrorResponse),
+        (status = 401, description = "未认证", body = crate::error::ErrorResponse),
+        (status = 404, description = "请求不存在", body = crate::error::ErrorResponse),
+        (status = 409, description = "请求已响应/已处理/服务端未连接", body = crate::error::ErrorResponse),
+    )
+)]
 pub async fn respond_to_request(
     State(state): State<AppState>,
     Path(request_id): Path<String>,

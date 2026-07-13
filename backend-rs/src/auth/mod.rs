@@ -41,13 +41,13 @@ pub struct AuthResult {
 
 // ── DTO（与 auth/dto/auth.dto.ts 对齐）──────────────────────────────────
 
-#[derive(Deserialize)]
+#[derive(Deserialize, utoipa::ToSchema)]
 pub struct LoginRequest {
     #[serde(rename = "apiKey")]
     pub api_key: String,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, utoipa::ToSchema)]
 pub struct LoginResponse {
     #[serde(rename = "accessToken")]
     pub access_token: String,

@@ -22,7 +22,7 @@ use serde::{Deserialize, Serialize};
 
 // ── DTO ─────────────────────────────────────────────────────────────────────
 
-#[derive(Serialize)]
+#[derive(Serialize, utoipa::ToSchema)]
 pub struct SettingDto {
     pub key: String,
     pub value: serde_json::Value,
@@ -58,18 +58,52 @@ impl SettingDto {
     }
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, utoipa::ToSchema)]
 pub struct UpdatePayload {
     pub value: Option<serde_json::Value>,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, utoipa::IntoParams)]
+#[into_params(parameter_in = Query)]
 pub struct ListQuery {
     pub category: Option<String>,
 }
 
+// ── 仅用于 OpenAPI 文档的请求/响应包装 ──────────────────────────────────────
+// handler 实际用原始 serde_json::Value 提取/返回；这里给出结构化 schema 供前端参考。
+
+/// `GET /settings` 与 `PATCH /settings` 的响应包装。
+#[derive(Serialize, utoipa::ToSchema)]
+pub struct SettingListResponse {
+    pub settings: Vec<SettingDto>,
+}
+
+/// `PATCH /settings` 批量更新中的一条 entry。
+#[derive(Deserialize, utoipa::ToSchema)]
+pub struct SettingBatchEntry {
+    pub key: String,
+    pub value: Option<serde_json::Value>,
+}
+
+/// `PATCH /settings` 的请求体。
+#[derive(Deserialize, utoipa::ToSchema)]
+pub struct SettingBatchUpdateBody {
+    pub updates: Vec<SettingBatchEntry>,
+}
+
 // ── Handler ─────────────────────────────────────────────────────────────────
 
+#[utoipa::path(
+    get,
+    path = "/api/settings",
+    tag = "settings",
+    params(ListQuery),
+    responses(
+        (status = 200, description = "所有设置（可按 category 过滤）", body = SettingListResponse),
+        (status = 400, description = "非法 category", body = crate::error::ErrorResponse),
+        (status = 401, description = "未认证", body = crate::error::ErrorResponse),
+    )
+)]
 pub async fn list(
     State(state): State<AppState>,
     axum::extract::Query(q): axum::extract::Query<ListQuery>,
@@ -94,6 +128,17 @@ pub async fn list(
     Ok(Json(serde_json::json!({ "settings": dtos })))
 }
 
+#[utoipa::path(
+    get,
+    path = "/api/settings/{key}",
+    tag = "settings",
+    params(("key" = String, Path, description = "设置项 key")),
+    responses(
+        (status = 200, description = "单个设置", body = SettingDto),
+        (status = 401, description = "未认证", body = crate::error::ErrorResponse),
+        (status = 404, description = "未知 key", body = crate::error::ErrorResponse),
+    )
+)]
 pub async fn get_one(
     State(state): State<AppState>,
     Path(key): Path<String>,
@@ -121,6 +166,18 @@ pub async fn get_one(
     )))
 }
 
+#[utoipa::path(
+    patch,
+    path = "/api/settings",
+    tag = "settings",
+    request_body = SettingBatchUpdateBody,
+    responses(
+        (status = 200, description = "更新后的设置列表", body = SettingListResponse),
+        (status = 400, description = "updates 缺失/重复 key/值非法", body = crate::error::ErrorResponse),
+        (status = 401, description = "未认证", body = crate::error::ErrorResponse),
+        (status = 404, description = "未知 key", body = crate::error::ErrorResponse),
+    )
+)]
 pub async fn update_batch(
     State(state): State<AppState>,
     Json(body): Json<serde_json::Value>,
@@ -248,6 +305,19 @@ pub async fn update_batch(
     Ok(Json(serde_json::json!({ "settings": dtos })))
 }
 
+#[utoipa::path(
+    patch,
+    path = "/api/settings/{key}",
+    tag = "settings",
+    params(("key" = String, Path, description = "设置项 key")),
+    request_body = UpdatePayload,
+    responses(
+        (status = 200, description = "更新后的设置（value 为 null 表示重置）", body = SettingDto),
+        (status = 400, description = "value 缺失/非法", body = crate::error::ErrorResponse),
+        (status = 401, description = "未认证", body = crate::error::ErrorResponse),
+        (status = 404, description = "未知 key", body = crate::error::ErrorResponse),
+    )
+)]
 pub async fn update_one(
     State(state): State<AppState>,
     Path(key): Path<String>,
@@ -307,6 +377,17 @@ pub async fn update_one(
     )))
 }
 
+#[utoipa::path(
+    delete,
+    path = "/api/settings/{key}",
+    tag = "settings",
+    params(("key" = String, Path, description = "设置项 key")),
+    responses(
+        (status = 200, description = "重置后的设置（回到 env/default）", body = SettingDto),
+        (status = 401, description = "未认证", body = crate::error::ErrorResponse),
+        (status = 404, description = "未知 key", body = crate::error::ErrorResponse),
+    )
+)]
 pub async fn delete_one(
     State(state): State<AppState>,
     Path(key): Path<String>,

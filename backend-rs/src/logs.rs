@@ -36,7 +36,7 @@ static PROCESS_START: OnceLock<Instant> = OnceLock::new();
 
 // ── 数据传输对象（DTOs）─────────────────────────────────────────────────────
 
-#[derive(Serialize, Clone, Debug)]
+#[derive(Serialize, Clone, Debug, utoipa::ToSchema)]
 pub struct LogEntry {
     pub timestamp: String,
     pub level: String,
@@ -45,7 +45,8 @@ pub struct LogEntry {
     pub fields: Value,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, utoipa::IntoParams)]
+#[into_params(parameter_in = Query)]
 pub struct LogsQuery {
     pub offset: Option<String>,
     pub limit: Option<String>,
@@ -53,7 +54,7 @@ pub struct LogsQuery {
     pub source: Option<String>,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, utoipa::ToSchema)]
 pub struct LogsResponse {
     pub data: Vec<LogEntry>,
     pub offset: usize,
@@ -63,7 +64,7 @@ pub struct LogsResponse {
     pub has_more: bool,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, utoipa::ToSchema)]
 pub struct LogsExportResponse {
     #[serde(rename = "exportedAt")]
     pub exported_at: String,
@@ -73,7 +74,7 @@ pub struct LogsExportResponse {
     pub logs: Vec<LogEntry>,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, utoipa::ToSchema)]
 pub struct SystemInfo {
     #[serde(rename = "nodeVersion")]
     pub node_version: String,
@@ -87,6 +88,16 @@ pub struct SystemInfo {
 
 // ── 处理函数 ─────────────────────────────────────────────────────────────────
 
+#[utoipa::path(
+    get,
+    path = "/api/logs",
+    tag = "logs",
+    params(LogsQuery),
+    responses(
+        (status = 200, description = "日志列表（按时间倒序，分页）", body = LogsResponse),
+        (status = 401, description = "未认证", body = crate::error::ErrorResponse),
+    )
+)]
 pub async fn list_logs(
     State(_state): State<AppState>,
     Query(q): Query<LogsQuery>,
@@ -124,6 +135,15 @@ pub async fn list_logs(
     }))
 }
 
+#[utoipa::path(
+    get,
+    path = "/api/logs/export",
+    tag = "logs",
+    responses(
+        (status = 200, description = "诊断信息导出（系统信息 + 运行时状态 + 最近日志）", body = LogsExportResponse),
+        (status = 401, description = "未认证", body = crate::error::ErrorResponse),
+    )
+)]
 pub async fn export_diagnostics(
     State(state): State<AppState>,
 ) -> Result<Json<LogsExportResponse>, AppError> {
