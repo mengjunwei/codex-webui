@@ -22,6 +22,17 @@ fn bad_request(code: ErrorCode, msg: impl Into<String>) -> AppError {
 }
 
 /// POST /api/chat/upload —— 单文件 multipart 附件上传。
+#[utoipa::path(
+    post,
+    path = "/api/chat/upload",
+    tag = "chat",
+    responses(
+        (status = 200, description = "上传成功 {path, size, mimeType}。请求体为 multipart/form-data，字段名 file", content_type = "application/json"),
+        (status = 400, description = "文件缺失/文件名非法", body = crate::error::ErrorResponse),
+        (status = 401, description = "未认证", body = crate::error::ErrorResponse),
+        (status = 413, description = "超出上传上限", body = crate::error::ErrorResponse),
+    )
+)]
 pub async fn upload_attachment(
     State(state): State<AppState>,
     mut multipart: axum::extract::Multipart,

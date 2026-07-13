@@ -78,6 +78,8 @@ use utoipa_swagger_ui::SwaggerUi;
         crate::codex_status_config::UpdateConfigBody,
         crate::codex_status_config::ConfigEdit,
         crate::codex_status_config::UpdateRawConfigBody,
+        // onlyoffice
+        crate::onlyoffice::CallbackBody,
     )),
     paths(
         // system
@@ -159,6 +161,10 @@ use utoipa_swagger_ui::SwaggerUi;
         crate::codex_status_config::update_config,
         crate::codex_status_config::read_raw_config,
         crate::codex_status_config::update_raw_config,
+        // onlyoffice + chat
+        crate::onlyoffice::get_config,
+        crate::onlyoffice::handle_callback,
+        crate::chat::upload_attachment,
     ),
     tags(
         (name = "system", description = "健康检查 / 探针"),
@@ -175,6 +181,8 @@ use utoipa_swagger_ui::SwaggerUi;
         (name = "skills", description = "技能（codex 代理）"),
         (name = "plugins", description = "插件（codex 代理）"),
         (name = "codex", description = "codex 就绪状态与配置"),
+        (name = "onlyoffice", description = "OnlyOffice 文档编辑集成"),
+        (name = "chat", description = "聊天附件上传"),
     )
 )]
 struct ApiDoc;

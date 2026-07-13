@@ -42,12 +42,25 @@ fn payload_too_large(code: ErrorCode, msg: impl Into<String>) -> AppError {
 
 // ── GET /onlyoffice/config?path=…&mode=… ────────────────────────────────────
 
-#[derive(Deserialize)]
+#[derive(Deserialize, utoipa::IntoParams)]
+#[into_params(parameter_in = Query)]
 pub struct ConfigQuery {
     pub path: Option<String>,
     pub mode: Option<String>,
 }
 
+#[utoipa::path(
+    get,
+    path = "/api/onlyoffice/config",
+    tag = "onlyoffice",
+    params(ConfigQuery),
+    responses(
+        (status = 200, description = "OnlyOffice 编辑器配置（含 JWT 签名）", content_type = "application/json"),
+        (status = 400, description = "未配置/URL 非法/格式不支持/edit 模式缺 secret", body = crate::error::ErrorResponse),
+        (status = 401, description = "未认证", body = crate::error::ErrorResponse),
+        (status = 404, description = "文件不存在", body = crate::error::ErrorResponse),
+    )
+)]
 pub async fn get_config(
     State(state): State<AppState>,
     Query(q): Query<ConfigQuery>,
@@ -311,7 +324,7 @@ pub async fn get_config(
 const SAVE_TIMEOUT_SECS: u64 = 60;
 const DEFAULT_MAX_SAVE_BYTES: u64 = 104_857_600; // 100 MB
 
-#[derive(Deserialize, Default)]
+#[derive(Deserialize, Default, utoipa::ToSchema)]
 pub struct CallbackBody {
     pub status: Option<i64>,
     pub url: Option<String>,
@@ -319,7 +332,8 @@ pub struct CallbackBody {
     pub token: Option<String>,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, utoipa::IntoParams)]
+#[into_params(parameter_in = Query)]
 pub struct CallbackQuery {
     pub path: Option<String>,
     pub state: Option<String>, // 已签名的 JWT state token
@@ -337,6 +351,18 @@ struct CallbackJwtPayload {
     _extra: std::collections::HashMap<String, Value>,
 }
 
+#[utoipa::path(
+    post,
+    path = "/api/onlyoffice/callback",
+    tag = "onlyoffice",
+    params(CallbackQuery),
+    request_body = CallbackBody,
+    responses(
+        (status = 200, description = "回调处理结果 {error: 0|1}（公开端点，用 JWT 校验）", content_type = "application/json"),
+        (status = 400, description = "回调 JWT/state 非法/下载 URL 校验失败", body = crate::error::ErrorResponse),
+        (status = 413, description = "保存内容超过上限", body = crate::error::ErrorResponse),
+    )
+)]
 pub async fn handle_callback(
     State(state): State<AppState>,
     Query(q): Query<CallbackQuery>,
