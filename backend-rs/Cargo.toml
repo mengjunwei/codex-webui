@@ -38,7 +38,8 @@ reqwest = { version = "0.12", features = ["json", "stream", "rustls-tls", "chars
 socketioxide = { version = "0.16", features = ["state"] }
 tar = "0.4"
 flate2 = "1"
-utoipa = "5"
+utoipa = { version = "5", features = ["axum_extras"] }
+utoipa-swagger-ui = { version = "9", features = ["axum", "cache"] }
 url = "2"
 uuid = { version = "1", features = ["v4"] }
 zip = "2"

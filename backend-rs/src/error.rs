@@ -360,6 +360,20 @@ impl ErrorCode {
 /// 与 TS 的 `ErrorParams = Record<string, string | number>` 对齐。
 pub type Params = BTreeMap<String, serde_json::Value>;
 
+/// 统一错误响应体（对齐 `AppError::into_response` 的输出）。
+/// 所有 handler 的 4xx/5xx 在 OpenAPI 文档中复用此 schema。
+#[derive(Debug, Clone, serde::Serialize, utoipa::ToSchema)]
+pub struct ErrorResponse {
+    #[serde(rename = "statusCode")]
+    pub status_code: u16,
+    #[serde(rename = "errorCode")]
+    pub error_code: String,
+    pub message: serde_json::Value,
+    /// 可选的 i18n 插值参数；仅在有值时序列化（对齐 IntoResponse 的行为）。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub params: Option<serde_json::Value>,
+}
+
 /// 统一的应用错误类型。
 #[derive(Debug)]
 pub enum AppError {

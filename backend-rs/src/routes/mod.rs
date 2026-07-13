@@ -15,8 +15,9 @@ use axum::{
 use crate::error::Json;
 use tower_http::services::{ServeDir, ServeFile};
 use utoipa::OpenApi;
+use utoipa_swagger_ui::SwaggerUi;
 
-/// OpenAPI 文档(基础规格;各端点的注解可后续补充)。
+/// OpenAPI 文档规格。paths / schemas 随各 Phase 逐步补全。
 #[derive(OpenApi)]
 #[openapi(
     info(
@@ -24,6 +25,16 @@ use utoipa::OpenApi;
         version = "0.1.0",
         description = "Codex WebUI API — Rust backend (migrated from NestJS)",
     ),
+    components(schemas(
+        crate::error::ErrorResponse,
+    )),
+    paths(
+        // system
+        crate::routes::health::ping,
+    ),
+    tags(
+        (name = "system", description = "健康检查 / 探针"),
+    )
 )]
 struct ApiDoc;
 
@@ -160,6 +171,8 @@ pub fn build_router(state: AppState) -> Router {
         .route("/api/auth/login", post(auth::login))
         .route("/api/onlyoffice/callback", post(oo::handle_callback))
         .route("/api/docs-json", get(openapi_json))
+        // Swagger UI（公开，不经过 require_auth）；spec 由 ApiDoc 内联提供。
+        .merge(SwaggerUi::new("/api/docs").url("/api/openapi.json", ApiDoc::openapi()))
         .nest("/api", api)
         .fallback_service(static_files)
         .layer(from_fn(request_logger))

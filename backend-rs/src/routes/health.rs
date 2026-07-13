@@ -6,6 +6,19 @@
 use crate::error::Json;
 use serde_json::{json, Value};
 
+/// 健康检查 / 探针。返回 `{ "ok": true }`。
+///
+/// 同时绑定到 `GET /api/status` 与 `GET /api/_ping`（此处文档只登记前者）。
+#[utoipa::path(
+    get,
+    path = "/api/status",
+    tag = "system",
+    responses(
+        (status = 200, description = "服务存活", content_type = "application/json",
+         example = json!({ "ok": true })),
+        (status = 401, description = "未认证", body = crate::error::ErrorResponse),
+    )
+)]
 pub async fn ping() -> Json<Value> {
     Json(json!({ "ok": true }))
 }
