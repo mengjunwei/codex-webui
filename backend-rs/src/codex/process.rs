@@ -109,6 +109,20 @@ impl CodexProcessManager {
 
     /// 启动 + 初始化。任何失败都会调度一次重启。基于 `restarting`
     /// 标志的幂等保护由调用方 / `restart` 处理。
+    ///
+    /// ## 三阶段启动（防"初始化期间关闭"竞态）
+    ///
+    /// 1. **spawn_child**：仅启动子进程 + 创建 JSON-RPC 客户端（不初始化）。
+    /// 2. **attach_forwarders + spawn_close_watcher**：在初始化之前就挂上
+    ///    通知/服务端请求转发器 + 关闭监视器 —— 否则子进程若在握手期间退出，
+    ///    监视器可能错过该事件。
+    /// 3. **initialize_client**：发 `initialize` + `initialized` 通知。
+    ///
+    /// ## 写 `current` 与 destroy 的原子性
+    ///
+    /// 写 `current` 字段前先检查 `destroyed`：
+    /// - spawn 之后、写 `current` 之前若 destroy 被调用，destroy 会 take 到 None；
+    /// - 此刻在锁内重检 destroyed=true → 立即销毁刚刚启动的客户端，避免孤儿进程。
     pub async fn start(self: Arc<Self>) {
         if self.destroyed.load(Ordering::SeqCst) {
             return;
@@ -295,6 +309,20 @@ impl CodexProcessManager {
         }
     }
 
+    /// 指数退避重启逻辑。
+    ///
+    /// ## 退避公式
+    ///
+    /// `delay_ms = min(3000 × 2^attempt, 60_000)`，其中 attempt 是连续失败次数。
+    /// 上限 60 秒防止长时间空转，下限 3 秒防止代码抖动。
+    ///
+    /// ## 关键不变量
+    ///
+    /// - `restarting` 标志：`swap(true)` 原子抢占，第二个并发重启调用立即返回。
+    /// - `destroyed` 检查：避免优雅关闭后还试图重启。
+    /// - `Box::pin(self.start()).await`：start 是 async fn，直接 await 会
+    ///   形成 start ↔ restart 的无穷递归（restart → start → fail → restart）。
+    ///   用 `Box::pin` 装箱后强制分配到堆上，栈帧不再是无限递归。
     async fn restart(self: Arc<Self>) {
         if self.restarting.swap(true, Ordering::SeqCst) || self.destroyed.load(Ordering::SeqCst) {
             return;
@@ -333,12 +361,13 @@ impl CodexProcessManager {
 
 /// 构造用于启动 codex 的 Command。
 ///
-/// 在 Windows 上，npm 安装的 CLI 以 `.cmd`/`.bat` 垫片形式发布。通过
-/// `cmd.exe /c` 启动这些垫片不会将 stdio 管道继承到内部的 node 孙进程
-/// （stdout 会立即关闭）。因此，对于 npm 垫片，我们解析出底层的
-/// `node + codex.js` 并直接启动 `node` —— node 直接继承管道，没有孙进程。
-/// 非 npm 的 `.cmd`/`.bat` 退回到 `cmd.exe /c`（使用绝对路径避免在
-/// Git Bash 等进程 PATH 不含 system32 的环境下找不到 cmd.exe）。
+/// ## Windows 上的两层特判（npm 垫片陷阱）
+///
+/// npm 安装的 CLI 以 `.cmd`/`.bat` 垫片形式发布。通过 `cmd.exe /c` 启动这些
+/// 垫片不会将 stdio 管道继承到内部的 node 孙进程（stdout 会立即关闭）。
+/// 因此，对于 npm 垫片，我们解析出底层的 `node + codex.js` 并直接启动 `node`
+/// —— node 直接继承管道，没有孙进程。非 npm 的 `.cmd`/`.bat` 退回到 `cmd.exe /c`
+/// （使用绝对路径避免在 Git Bash 等进程 PATH 不含 system32 的环境下找不到 cmd.exe）。
 /// 真正的 `.exe` 可执行文件以及非 Windows 平台直接启动。
 #[cfg(windows)]
 fn build_codex_command(bin: &str) -> Command {

@@ -21,8 +21,19 @@ use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
 use tokio::sync::broadcast::error::RecvError;
 
-/// 活跃线程注册表:跟踪 socket↔thread 订阅,供 codex 重启后只恢复仍被订阅的线程
-/// (对齐 TS ActiveThreadRegistryService)。
+/// 活跃线程订阅表（双向索引）：socket ↔ thread。
+///
+/// ## 用途
+///
+/// codex 重启后由 `spawn_lifecycle_emit` 读取 `snapshot()`，
+/// 仅 resume 仍被订阅的线程，避免无谓的恢复开销。
+///
+/// ## 索引双向性
+///
+/// `socket_threads`: socket → 它订阅的 thread 集合；用于 disconnect 时批量 unsubscribe。
+/// `thread_sockets`: thread → 订阅它的 socket 集合；用于 snapshot() 列出所有活跃线程。
+///
+/// 双向索引的两份数据必须同步 —— 读写通过同一把 `std::sync::Mutex` 串行化。
 pub struct ActiveThreadRegistry {
     socket_threads: Mutex<HashMap<String, HashSet<String>>>,
     thread_sockets: Mutex<HashMap<String, HashSet<String>>>,
@@ -113,8 +124,22 @@ pub fn build(rt_state: RealtimeState) -> (socketioxide::layer::SocketIoLayer, So
     (layer, io)
 }
 
-/// 单连接处理器:鉴权并注册消息处理器。
-/// `Data<Value>` 提取连接 auth 负载(客户端发送 `{token}`)。
+/// 单连接处理器：鉴权 + 注册消息处理器。
+/// `Data<Value>` 提取连接 auth 负载（客户端发送 `{token}`）。
+///
+/// ## 鉴权流程（双重 token 提取）
+///
+/// 1. **首选**：从 auth 负载 `data.token` 取出（前端通常通过 socket.io auth 传入）。
+/// 2. **回退**：从 HTTP `Authorization` 请求头取出（兼容浏览器跨域不便传 auth 字段）。
+///
+/// 取出后用 `AuthService.authenticate_token` 校验（先 JWT，再 API key），
+/// 失败则立即 `disconnect()` 拒入。
+///
+/// ## socketioxide 0.15 的关键差异
+///
+/// JS socket.io 会自动把 socket 加入以自身 SID 命名的房间；socketioxide 不会。
+/// 必须显式 `s.join(s.id)`，否则终端 output/exit/closed 事件按单 socket emit
+/// 时会指向空房间并被静默丢弃。
 fn on_connect(
     s: SocketRef,
     State(state): State<RealtimeState>,
@@ -396,6 +421,23 @@ fn spawn_notification_emit(io: SocketIo, codex: Arc<CodexProcessManager>) {
 }
 
 /// M1 修复:记录与 emit 合并 — DB 记录在 WS 投递之前完成。
+/// M1 修复：server-request 持久化与 emit 合并在同一个任务内，避免 TOCTOU。
+///
+/// ## TOCTOU 风险
+///
+/// 原来拆为两个订阅者：DB 记录 → WS emit。两者异步并发时，WS 可能先于 DB 写入到达，
+/// 客户端立刻 respond 时 DB 还查不到行 → 404 `approvals.not_found`。
+///
+/// ## 当前顺序保证
+///
+/// 1. **先写 DB**：INSERT pending_server_requests 行（关键资源已就绪）。
+///    - 若 DB 失败 → **完全跳过 emit**（防止出现无法响应的"幽灵请求"）。
+/// 2. **再 emit WS**：客户端收到后必然能 respond 成功。
+///
+/// ## broadcast 失败
+///
+/// WS emit 失败仅记录 warn，不影响 DB 记录 —— 客户端下次刷新 `GET /pending-approvals`
+/// 即可恢复。
 fn spawn_server_request_record_and_emit(io: SocketIo, codex: Arc<CodexProcessManager>, db: Arc<crate::db::Db>) {
     let mut rx = codex.subscribe_server_requests();
     tokio::spawn(async move {
@@ -437,6 +479,30 @@ fn spawn_server_request_record_and_emit(io: SocketIo, codex: Arc<CodexProcessMan
     });
 }
 
+/// 监听 codex 生命周期事件 → 广播 `codex.lifecycle` 给所有 socket → 在重启完成时
+/// 自动 resume 仍被订阅的线程。
+///
+/// ## 三个生命周期事件
+///
+/// - `Restarting { generation, delay_ms }`：codex 即将重启。客户端可显示"即将重启"提示。
+/// - `Ready { generation, restarted }`：新 generation 已就绪。
+///   - 同时推进 `ThreadResumeRegistry` 的 generation（清空陈旧缓存）。
+///   - 若 `restarted == true`（非首次启动），并行 auto-resume 所有活跃线程。
+/// - `Unavailable { generation, message }`：当前 generation 不可用，等待 Restarting 触发。
+///
+/// ## H2 修复：generation 推进在同任务内
+///
+/// 旧实现把 `advance_generation` 放在 main.rs 的独立任务里，与本任务的
+/// auto-resume 形成跨任务调度顺序无保证的竞态（旧 H7 修复只堵了"advance 之后"，
+/// 仍有"resume 比 advance 早"的窗口）。现在直接在收到 Ready 事件后立即推进，
+/// 保证后续 auto-resume 拿到的 generation 与 Ready 推送的新 generation 一致。
+///
+/// ## 并发 resume（T11）
+///
+/// 旧实现串行 resume 所有活跃线程，N×T 阻塞 lifecycle 任务，broadcast 通道 Lagged
+/// 连锁会丢后续 Restarting/Ready 事件。现改用 `futures_util::future::join_all`：
+/// `ThreadResumeRegistry::ensure_resumed` 内部已用 per-key 锁保证同线程串行，
+/// 跨线程并发安全。
 fn spawn_lifecycle_emit(
     io: SocketIo,
     codex: Arc<CodexProcessManager>,

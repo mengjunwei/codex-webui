@@ -152,6 +152,16 @@ impl CodexJsonRpcClient {
     }
 
     /// 发送 JSON-RPC 请求并等待关联的响应。
+    ///
+    /// ## 时序与并发保证
+    ///
+    /// 1. **id 分配**：`fetch_add` 原子递增，从 1 开始（与 Codex 协议预期一致）。
+    /// 2. **pending 插入**：oneshot 发送端先放进 `pending`，再投递到写队列。
+    ///    顺序必须如此 —— 否则读端可能在 pending 插入前收到响应，导致响应"丢失"。
+    /// 3. **写队列**：`mpsc::unbounded_channel` 无容量限制（写端是单线程串行化）。
+    ///    写队列 send 失败意味着 writer task 已退出 → 立刻回退并清理 pending。
+    /// 4. **超时**：`tokio::time::timeout` 包裹 `oneshot::Receiver`。
+    ///    超时发生时主动从 pending 移除，避免后续到达的响应误派发。
     pub async fn request(
         &self,
         method: &str,
@@ -357,6 +367,20 @@ fn jsonl_log(jsonl_tx: &mpsc::Sender<String>, dir: &str, raw_line: &str) {
 }
 
 /// 解析单条入站行并路由。为单元测试而抽取出来。
+///
+/// ## 判别优先级（重要）
+///
+/// 1. `id + result/error` → 响应：必须用 `as_u64` 取出数字 id（hash 查找）。
+/// 2. `id + method` → 服务端请求：保留原始 id（含类型）原样转发。
+/// 3. 仅 `method` → 通知。
+/// 4. JSON 解析失败 → 截断 200 字符（按 chars 而非 bytes 截断，避免多字节 UTF-8
+///    落点 panic）后 warn，继续读下一行。
+/// 5. 都无法分类的奇怪结构 → 静默忽略。
+///
+/// ## 注意
+///
+/// `has_error` 使用 `is_null()` 判定 —— codex 协议中 `error: null` 等价于缺省，
+/// 视为"非错误响应"。同样，`has_id` 仅判定字段是否存在而非非空（响应中 id 必为数值）。
 async fn dispatch_line(
     line: &str,
     pending: &PendingMap,

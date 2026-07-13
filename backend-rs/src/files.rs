@@ -11,6 +11,26 @@
 //!
 //! 已实现：multipart 上传、serve-Range（PDF/视频流式播放）、
 //! rename/copy/move、download、归档预览（zip/tar.gz/tar.bz2/tar.xz/7z；rar 不支持）。
+//!
+//! ## 工作区根目录的三种来源（按权威性叠加）
+//!
+//! 1. **配置根目录**：从 settings 表 `security.workspaceRoots` 读取（逗号分隔）。
+//! 2. **家目录**：始终包含在内；用 `OnceCell` 缓存规范化路径以加速路径校验。
+//! 3. **动态根目录**：通过 `POST /api/files/roots` 在运行时新增；本身必须落在
+//!    已配置的工作区根目录之内（防止任意扩大访问边界）。
+//!
+//! ## 路径解析的两道安全关卡
+//!
+//! - **第一关**：直接拒绝包含 NUL 字节的路径、规范化后的路径必须位于工作区根目录之内。
+//! - **第二关**：写入/创建类操作除校验"父目录在工作区"外，还要校验"目标本身若是
+//!   既存符号链接，链接目标必须位于工作区内"——对抗"工作区内符号链接 → 工作区外目标"
+//!   这种 TOCTOU 攻击向量。
+//!
+//! ## 典型文件操作的安全检查模式
+//!
+//! ```text
+//! raw → trim → NUL 检查 → canonicalize → 包含性校验 → 类型/大小校验 → 实际操作
+//! ```
 
 use crate::error::{AppError, ErrorCode};
 use crate::state::AppState;
@@ -77,6 +97,27 @@ pub async fn resolve_safe_path(
     Ok(resolved.resolved)
 }
 
+/// 解析路径 + 工作区根目录强制校验的"心脏"函数。
+///
+/// ## 流程
+///
+/// 1. 修剪两端空白；空路径 → `files.path_required` 400。
+/// 2. 拒绝 NUL 字节（操作系统路径允许 NUL 终止符之后的任意字节，
+///    Rust Path 的解析可能在字节边界产生歧义）。
+/// 3. 调用 `tokio::fs::canonicalize`：跟随符号链接，得到真实路径。
+///    - 若路径不存在 → `files.path_not_found` 404。
+/// 4. 校验真实路径是否位于任一工作区根目录之内（包含等于）。
+///    - 否 → `files.path_outside_workspace` 403。
+/// 5. 读取元数据并归类（File / Directory / Other）。
+///    - 注意：因 canonicalize 已跟随链接，`is_symlink()` 在此处恒为 false，
+///      故 `kind` 实际只会有 `File` / `Directory` 两类；`Symlink` 保留
+///      以备将来在 canonicalize 之前用 `symlink_metadata` 区分。
+/// 6. 返回 `ResolvedTarget`：原始路径 + 规范化路径 + 类型 + 大小 + mtime。
+///
+/// ## 调用方
+///
+/// 所有文件操作 handler（read / write / create / delete 等）以及
+/// `threads` 模块中的 `mention` 路径校验都依赖此函数作为统一入口。
 async fn resolve(state: &AppState, input: &str) -> Result<ResolvedTarget, AppError> {
     let raw = input.trim();
     if raw.is_empty() {
@@ -141,6 +182,14 @@ fn is_workspace_root(state: &AppState, p: &Path) -> bool {
 
 /// 计算工作区根目录集合（配置根 + 家目录 + 动态根），供路径校验复用。
 /// 从 `workspace_roots(state)` 抽出，以便终端 cwd 沙箱等无 AppState 的调用方复用。
+///
+/// ## 重要设计：家目录的 `OnceCell` 缓存
+///
+/// 平台差异：Windows 上 `USERPROFILE` 经 `canonicalize` 后会带上 `\\?\` 长路径前缀；
+/// 在路径包含性比较时若不做规范化，前端回传的 `C:\Users\xxx\file.txt` 与
+/// `\\?\C:\Users\xxx` 不会按字符串前缀匹配。家目录在运行时不会变化，因此用
+/// `OnceCell` 一次性规范化并缓存 —— 每次路径校验都重新 canonicalize
+/// 浪费系统调用且可能因为短期进程差异导致结果不一致。
 pub fn compute_workspace_roots(db: &crate::db::Db, dynamic_roots: &HashSet<String>) -> Vec<String> {
     let mut out: HashSet<String> = HashSet::new();
     // 家目录 —— 规范化以匹配 Windows 上规范化后文件路径的逐字前缀（\\?\）

@@ -478,6 +478,25 @@ const REASONING_EFFORT_VALUES: &[&str] = &["none", "minimal", "low", "medium", "
 /// 线程 resume 注册表：缓存最近一次 resume/start/fork 的响应，按 generation 去重。
 /// codex 重启（generation 变化）时通过 `advance_generation()` 清空缓存（对齐 TS
 /// resumeRegistry 在 appServerReady 时按 generation 重建）。
+///
+/// ## 三个并发难题与对应解决方案
+///
+/// 1. **H7**：旧实现中条目无 generation，advance 与 auto-resume 跨任务调度顺序
+///    无保证 → 旧 generation 的陈旧缓存可能命中新 generation 的 resume。
+///    **修复**：条目绑定写入时的 generation；读侧按当前 generation 过滤。
+///
+/// 2. **TS 对齐**：并发 resume 同线程会触发非幂等的 `thread/resume` RPC 多次。
+///    **修复**：per-key 锁槽（std Mutex 取槽 + tokio Mutex 跨 await），保证
+///    同线程串行；不同线程并发安全。
+///
+/// 3. **T7**：锁槽无限增长。**修复**：`reap_inflight_slot` 仅在 `strong_count == 1`
+///    时移除 —— 调用方先 drop 自己的 Arc clone，再检查 strong_count。
+///
+/// ## 数据布局
+///
+/// - `generation`：当前 generation（启动时为 0）。
+/// - `entries`：HashMap<thread_id, (generation, response)>。
+/// - `inflight`：HashMap<thread_id, Arc<tokio::Mutex<()>>>。
 #[derive(Debug, Default)]
 pub struct ThreadResumeRegistry {
     generation: std::sync::Mutex<u64>,
@@ -539,6 +558,22 @@ impl ThreadResumeRegistry {
     /// 锁内重检缓存（前一个 in-flight 可能已完成），仍未命中才执行 RPC 并写缓存。
     /// 返回 `(响应, 是否来自缓存)`。对齐 TS `resumeRegistry` 的 inFlight + resumed 去重，
     /// 避免对非幂等的 `thread/resume` 并发重复调用。
+    ///
+    /// ## 完整流程
+    ///
+    /// 1. **快路径**：`get_cached` 命中（generation 过滤）→ 直接返回 `(v, true)`。
+    /// 2. **取锁槽**：std Mutex 短持有获取或创建 per-key tokio Mutex。
+    /// 3. **异步加锁**：`lock.await` —— 此处跨 await，tokio Mutex 不会被 worker 线程独占。
+    /// 4. **锁内重检**：可能前一个 in-flight 已完成 → 命中后释放锁槽再返回。
+    /// 5. **执行 RPC**：失败路径也必须释放锁槽 + reap（否则泄漏）。
+    /// 6. **写缓存**：成功后 `mark_resumed`。
+    /// 7. **释放 + reap**：先 drop 自己的 guard 与 Arc clone，再 `reap_inflight_slot`
+    ///    —— 检查 `strong_count == 1` 时移除锁槽。
+    ///
+    /// ## 为什么 `reap_inflight_slot` 在 drop 之后
+    ///
+    /// 若 drop 之前检查 strong_count，本地 Arc + HashMap 里的 Arc 至少 2，
+    /// 永远不会被回收。drop 之后本表成为唯一持有者才能正确判定孤立。
     pub async fn ensure_resumed<F, Fut>(
         &self,
         thread_id: &str,
@@ -609,6 +644,16 @@ impl ThreadResumeRegistry {
 /// 提取文本中内联的绝对路径 @mention（对齐 TS `validateInlineTextMentions` 的正则
 /// `/(^|\s)@(\/(?:\\ |[^\s])+)/g`）：前导为行首或空白，路径以 `/` 开头，
 /// 其中 `\ ` 转义为真实空格。返回去重后的路径列表（含前导 `/`）。
+///
+/// ## 字符级扫描（而非正则）
+///
+/// Rust 的 `regex` crate 不支持"反斜杠转义空格"的灵活分组；改为手动字符扫描：
+///
+/// - 前导条件：`i == 0` 或 `chars[i - 1]` 是空白。
+/// - 起始：`@` + `/`。
+/// - 路径字符：跳过 `\ `（写入真实空格），遇其他空白终止。
+///
+/// 去重通过 `HashSet` 跟踪，确保同一路径多次出现也只返回一次。
 fn extract_inline_mentions(text: &str) -> Vec<String> {
     let chars: Vec<char> = text.chars().collect();
     let n = chars.len();
