@@ -1,24 +1,23 @@
 # backend-rs
 
-Rust rewrite of the codex-webui backend (replaces the NestJS backend in `../src`).
+codex-webui 后端的 Rust 重写版（替代 `../src` 中的 NestJS 后端）。
 
-## Status
+## 当前状态
 
-Placeholder. The Cargo workspace scaffolding lands in **Phase 0** of the
-implementation plan.
+占位说明。Cargo 工作区脚手架在实现计划的 **Phase 0** 落地。
 
-## Reference
+## 参考资料
 
-- Design spec: `../docs/superpowers/specs/2026-07-06-codex-webui-rust-migration-design.md`
-- Existing TS backend (reference oracle during migration): `../src`
+- 设计规格文档：`../docs/superpowers/specs/2026-07-06-codex-webui-rust-migration-design.md`
+- 现有 TS 后端（迁移期间的参考基准）：`../src`
+- 项目学习文档：`./STUDY.md`
 
-## Goals (per spec)
+## 目标（依据设计规格）
 
-- **A** Performance / resource footprint
-- **B** Single self-contained binary
-- **C** Type safety + long-term maintainability
-- Bar: production-usable, behavioral parity with the TS backend.
+- **A** 性能与资源占用
+- **B** 单一自包含二进制
+- **C** 类型安全 + 长期可维护性
+- 验收标准：可投入生产使用，行为与 TS 后端完全对齐。
 
-The API contract (REST routes, Socket.IO namespace/events, OpenAPI operationIds,
-error-code strings) is preserved verbatim so the React frontend in `../web`
-needs no changes.
+API 契约（REST 路由、Socket.IO 命名空间与事件、OpenAPI operationId、错误码字符串）
+逐字保留，因此 `../web` 中的 React 前端无需改动。

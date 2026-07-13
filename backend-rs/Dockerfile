@@ -1,15 +1,15 @@
-# ── Stage 1: Build Rust backend ────────────────────────────────────────
+# ── 阶段 1：构建 Rust 后端 ────────────────────────────────────────────
 FROM rust:1-bookworm AS rust-builder
 
 WORKDIR /app
 COPY backend-rs/Cargo.toml backend-rs/Cargo.lock ./
-# Cache dependency compilation by creating a dummy main first.
+# 先创建一个占位 main.rs 以缓存依赖编译（依赖不变时后续构建直接命中缓存）。
 RUN mkdir src && echo 'fn main() {}' > src/main.rs && cargo build --release && rm -rf src
 COPY backend-rs/src ./src
-# Touch main.rs so cargo knows to rebuild the binary (not just deps).
+# 触碰 main.rs，让 cargo 重新编译真正的二进制（而不只是依赖）。
 RUN touch src/main.rs && cargo build --release
 
-# ── Stage 2: Build frontend ───────────────────────────────────────────
+# ── 阶段 2：构建前端 ──────────────────────────────────────────────────
 FROM node:22-bookworm-slim AS frontend-builder
 
 RUN npm install -g pnpm@10
@@ -19,14 +19,14 @@ RUN pnpm install --frozen-lockfile
 COPY web/ ./
 RUN pnpm build
 
-# ── Stage 3: Runtime ──────────────────────────────────────────────────
+# ── 阶段 3：运行时镜像 ────────────────────────────────────────────────
 FROM debian:bookworm-slim
 
 ENV DEBIAN_FRONTEND=noninteractive
 ENV HOME=/root
 
-# System dependencies needed by codex CLI (Node.js tool).
-# The Rust binary itself needs nothing beyond libc + libssl.
+# codex CLI（Node.js 工具）所需的系统依赖。
+# Rust 二进制本身只需要 libc + libssl，无需额外运行时。
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates \
     curl \
@@ -46,18 +46,18 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     npm \
  && rm -rf /var/lib/apt/lists/*
 
-# Install codex CLI
+# 安装 codex CLI
 ARG CODEX_CLI_VERSION=0.142.5
 RUN npm install -g @openai/codex@${CODEX_CLI_VERSION}
 
-# Create app directories
+# 创建应用目录
 RUN mkdir -p /root/.codex /workspaces /app/logs
 
-# Copy the Rust binary (single self-contained executable — no Node runtime
-# for the backend itself; only the codex CLI needs Node.js).
+# 拷贝 Rust 二进制（单一自包含可执行文件 —— 后端本身不依赖 Node 运行时；
+# 只有 codex CLI 需要 Node.js）。
 COPY --from=rust-builder /app/target/release/codex-webui /usr/local/bin/codex-webui
 
-# Copy the frontend build output (served as static files by the Rust backend).
+# 拷贝前端构建产物（由 Rust 后端作为静态文件对外提供）。
 COPY --from=frontend-builder /app/public /app/public
 
 WORKDIR /app
