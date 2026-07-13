@@ -71,6 +71,125 @@ fn is_editable_key(key: &str) -> bool {
 static SENSITIVE_KEY_RE: Lazy<Regex> =
     Lazy::new(|| Regex::new("(?i)(token|password|api[_-]?key|secret|authorization)").unwrap());
 
+// ── status 响应 DTO（仅用于 OpenAPI 文档；运行时仍返回 Json<Value>）────────
+
+/// 单个 Codex 状态探针的错误元数据（对齐 TS CodexStatusErrorDto）。
+#[derive(serde::Serialize, utoipa::ToSchema)]
+pub struct CodexStatusError {
+    pub message: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub code: Option<String>,
+}
+
+/// app-server 进程与初始化状态（对齐 TS CodexAppServerStatusDto）。
+#[derive(serde::Serialize, utoipa::ToSchema)]
+pub struct CodexAppServerProbe {
+    pub ok: bool,
+    pub connected: bool,
+    pub initialized: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<CodexStatusError>,
+}
+
+/// initialize 探针结果（对齐 TS CodexInitializeStatusDto；data 为 app-server 返回的任意 JSON）。
+#[derive(serde::Serialize, utoipa::ToSchema)]
+pub struct CodexInitializeProbe {
+    pub ok: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub data: Option<serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<CodexStatusError>,
+}
+
+/// 通用状态探针结果（对齐 TS CodexAccountStatusDto；用于 account 段）。
+#[derive(serde::Serialize, utoipa::ToSchema)]
+pub struct CodexStatusProbe {
+    pub ok: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub data: Option<serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<CodexStatusError>,
+}
+
+/// 脱敏后的 config/read 摘要（对齐 TS CodexConfigSummaryDto）。
+#[derive(serde::Serialize, utoipa::ToSchema)]
+pub struct CodexConfigSummary {
+    #[serde(rename = "sandboxMode", skip_serializing_if = "Option::is_none")]
+    pub sandbox_mode: Option<String>,
+    #[serde(rename = "sandboxNetworkAccess", skip_serializing_if = "Option::is_none")]
+    pub sandbox_network_access: Option<bool>,
+    #[serde(rename = "approvalPolicy", skip_serializing_if = "Option::is_none")]
+    pub approval_policy: Option<serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+    #[serde(rename = "modelProvider", skip_serializing_if = "Option::is_none")]
+    pub model_provider: Option<String>,
+}
+
+/// config 探针结果（对齐 TS CodexConfigStatusDto）。
+#[derive(serde::Serialize, utoipa::ToSchema)]
+pub struct CodexConfigProbe {
+    pub ok: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub data: Option<CodexConfigSummary>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<CodexStatusError>,
+}
+
+/// provider 凭证可见性（对齐 TS CodexProviderStatusDto）。
+#[derive(serde::Serialize, utoipa::ToSchema)]
+pub struct CodexProviderProbe {
+    pub ok: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    #[serde(rename = "baseUrlMasked", skip_serializing_if = "Option::is_none")]
+    pub base_url_masked: Option<String>,
+    #[serde(rename = "envKey", skip_serializing_if = "Option::is_none")]
+    pub env_key: Option<String>,
+    #[serde(rename = "envPresent", skip_serializing_if = "Option::is_none")]
+    pub env_present: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<CodexStatusError>,
+}
+
+/// model/list 探针摘要（对齐 TS CodexModelsStatusDto；完整列表见 GET /api/models）。
+#[derive(serde::Serialize, utoipa::ToSchema)]
+pub struct CodexModelsProbe {
+    pub ok: bool,
+    pub listable: bool,
+    #[serde(rename = "defaultModel", skip_serializing_if = "Option::is_none")]
+    pub default_model: Option<String>,
+    pub count: i64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<CodexStatusError>,
+}
+
+/// 运行时聚合状态（对齐 TS CodexRuntimeStatusDto）。
+#[derive(serde::Serialize, utoipa::ToSchema)]
+pub struct CodexRuntimeProbe {
+    pub status: String,
+    pub reasons: Vec<String>,
+    #[serde(rename = "checkedAt")]
+    pub checked_at: String,
+    #[serde(rename = "cacheTtlMs")]
+    pub cache_ttl_ms: i64,
+}
+
+/// 聚合就绪状态响应（对齐 TS CodexStatusResponseDto）。
+#[derive(serde::Serialize, utoipa::ToSchema)]
+pub struct CodexStatusResponse {
+    #[serde(rename = "appServer")]
+    pub app_server: CodexAppServerProbe,
+    pub initialize: CodexInitializeProbe,
+    pub account: CodexStatusProbe,
+    pub config: CodexConfigProbe,
+    pub provider: CodexProviderProbe,
+    pub models: CodexModelsProbe,
+    pub runtime: CodexRuntimeProbe,
+}
+
 // ── status ───────────────────────────────────────────────────────────────────
 
 #[utoipa::path(
@@ -78,7 +197,7 @@ static SENSITIVE_KEY_RE: Lazy<Regex> =
     path = "/api/codex/status",
     tag = "codex",
     responses(
-        (status = 200, description = "聚合就绪状态（appServer/initialize/account/config/provider/models/runtime）", body = crate::error::GenericJson),
+        (status = 200, description = "聚合就绪状态（appServer/initialize/account/config/provider/models/runtime）", body = CodexStatusResponse),
         (status = 401, description = "未认证", body = crate::error::ErrorResponse),
     )
 )]
@@ -177,12 +296,19 @@ pub async fn update_sandbox_mode(
 
 // ── config(结构化)─────────────────────────────────────────────────────────
 
+/// 结构化配置响应（对齐 TS CodexConfigResponseDto；脱敏后的任意 JSON）。
+#[derive(serde::Serialize, utoipa::ToSchema)]
+pub struct CodexConfigResponse {
+    pub config: serde_json::Value,
+    pub origins: serde_json::Value,
+}
+
 #[utoipa::path(
     get,
     path = "/api/codex/config",
     tag = "codex",
     responses(
-        (status = 200, description = "结构化配置（含 layers；敏感字段已脱敏）", body = crate::error::GenericJson),
+        (status = 200, description = "结构化配置（含 layers；敏感字段已脱敏）", body = CodexConfigResponse),
         (status = 401, description = "未认证", body = crate::error::ErrorResponse),
     )
 )]
@@ -218,7 +344,7 @@ pub struct ConfigEdit {
     tag = "codex",
     request_body = UpdateConfigBody,
     responses(
-        (status = 200, description = "精选字段已更新，返回最新配置（白名单校验）", body = crate::error::GenericJson),
+        (status = 200, description = "精选字段已更新，返回最新配置（白名单校验）", body = CodexConfigResponse),
         (status = 400, description = "edit/key/value 非法", body = crate::error::ErrorResponse),
         (status = 401, description = "未认证", body = crate::error::ErrorResponse),
     )
@@ -289,12 +415,27 @@ fn is_json_value(v: &Value) -> bool {
 
 // ── config/raw(config.toml 文件)───────────────────────────────────────────
 
+/// 用户 config.toml 原始内容（对齐 TS RawConfigResponseDto）。
+#[derive(serde::Serialize, utoipa::ToSchema)]
+pub struct RawConfigResponse {
+    #[serde(rename = "filePath")]
+    pub file_path: String,
+    pub content: String,
+}
+
+/// 写入 config.toml 后的响应（对齐 TS RawConfigWriteResponseDto）。
+#[derive(serde::Serialize, utoipa::ToSchema)]
+pub struct RawConfigWriteResponse {
+    #[serde(rename = "filePath")]
+    pub file_path: String,
+}
+
 #[utoipa::path(
     get,
     path = "/api/codex/config/raw",
     tag = "codex",
     responses(
-        (status = 200, description = "用户 config.toml 原始内容（filePath + content）", body = crate::error::GenericJson),
+        (status = 200, description = "用户 config.toml 原始内容（filePath + content）", body = RawConfigResponse),
         (status = 401, description = "未认证", body = crate::error::ErrorResponse),
     )
 )]
@@ -315,7 +456,7 @@ pub struct UpdateRawConfigBody {
     tag = "codex",
     request_body = UpdateRawConfigBody,
     responses(
-        (status = 200, description = "config.toml 已写入并热重载", body = crate::error::GenericJson),
+        (status = 200, description = "config.toml 已写入并热重载", body = RawConfigWriteResponse),
         (status = 400, description = "content 非字符串", body = crate::error::ErrorResponse),
         (status = 401, description = "未认证", body = crate::error::ErrorResponse),
         (status = 413, description = "content 超过 1MB 上限", body = crate::error::ErrorResponse),

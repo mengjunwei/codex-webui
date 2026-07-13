@@ -85,12 +85,124 @@ fn parse_optional_bool_json(value: &Value, field: &str) -> Result<Option<bool>, 
 // account
 // ════════════════════════════════════════════════════════════════════════════
 
+// ── account 响应 DTO（仅用于 OpenAPI 文档；运行时仍返回 Json<Value>）──────
+
+/// 账户信息（对齐 TS AccountDto）。
+#[derive(serde::Serialize, utoipa::ToSchema)]
+pub struct AccountDto {
+    #[serde(rename = "type")]
+    pub account_type: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub email: Option<String>,
+    #[serde(rename = "planType", skip_serializing_if = "Option::is_none")]
+    pub plan_type: Option<String>,
+}
+
+/// provider 错误元数据（对齐 TS AccountErrorDto）。
+#[derive(serde::Serialize, utoipa::ToSchema)]
+pub struct AccountProviderError {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub message: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub code: Option<String>,
+}
+
+/// provider 凭证可见性（对齐 TS AccountProviderDto）。
+#[derive(serde::Serialize, utoipa::ToSchema)]
+pub struct AccountProviderDto {
+    pub ok: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    #[serde(rename = "baseUrlMasked", skip_serializing_if = "Option::is_none")]
+    pub base_url_masked: Option<String>,
+    #[serde(rename = "envKey", skip_serializing_if = "Option::is_none")]
+    pub env_key: Option<String>,
+    #[serde(rename = "envPresent", skip_serializing_if = "Option::is_none")]
+    pub env_present: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<AccountProviderError>,
+}
+
+/// GET /api/account 响应（对齐 TS AccountReadResponseDto）。
+#[derive(serde::Serialize, utoipa::ToSchema)]
+pub struct AccountReadResponse {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub account: Option<AccountDto>,
+    #[serde(rename = "requiresOpenaiAuth")]
+    pub requires_openai_auth: bool,
+    pub provider: AccountProviderDto,
+}
+
+/// POST /api/account/login 响应（对齐 TS LoginAccountResponseDto）。
+#[derive(serde::Serialize, utoipa::ToSchema)]
+pub struct LoginAccountResponse {
+    #[serde(rename = "type")]
+    pub account_type: String,
+    #[serde(rename = "loginId", skip_serializing_if = "Option::is_none")]
+    pub login_id: Option<String>,
+    #[serde(rename = "authUrl", skip_serializing_if = "Option::is_none")]
+    pub auth_url: Option<String>,
+    #[serde(rename = "verificationUrl", skip_serializing_if = "Option::is_none")]
+    pub verification_url: Option<String>,
+    #[serde(rename = "userCode", skip_serializing_if = "Option::is_none")]
+    pub user_code: Option<String>,
+}
+
+/// rate-limit 窗口（对齐 TS RateLimitWindowDto）。
+#[derive(serde::Serialize, utoipa::ToSchema)]
+pub struct RateLimitWindowDto {
+    #[serde(rename = "usedPercent")]
+    pub used_percent: f64,
+    #[serde(rename = "windowDurationMins", skip_serializing_if = "Option::is_none")]
+    pub window_duration_mins: Option<i64>,
+    #[serde(rename = "resetsAt", skip_serializing_if = "Option::is_none")]
+    pub resets_at: Option<i64>,
+}
+
+/// credits 快照（对齐 TS CreditsSnapshotDto）。
+#[derive(serde::Serialize, utoipa::ToSchema)]
+pub struct CreditsSnapshotDto {
+    #[serde(rename = "hasCredits")]
+    pub has_credits: bool,
+    pub unlimited: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub balance: Option<String>,
+}
+
+/// rate-limit 快照（对齐 TS RateLimitSnapshotDto）。
+#[derive(serde::Serialize, utoipa::ToSchema)]
+pub struct RateLimitSnapshotDto {
+    #[serde(rename = "limitId", skip_serializing_if = "Option::is_none")]
+    pub limit_id: Option<String>,
+    #[serde(rename = "limitName", skip_serializing_if = "Option::is_none")]
+    pub limit_name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub primary: Option<RateLimitWindowDto>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub secondary: Option<RateLimitWindowDto>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub credits: Option<CreditsSnapshotDto>,
+    #[serde(rename = "planType", skip_serializing_if = "Option::is_none")]
+    pub plan_type: Option<String>,
+}
+
+/// GET /api/account/rate-limits 响应（对齐 TS AccountRateLimitsResponseDto）。
+#[derive(serde::Serialize, utoipa::ToSchema)]
+pub struct AccountRateLimitsResponse {
+    #[serde(rename = "rateLimits")]
+    pub rate_limits: RateLimitSnapshotDto,
+    #[serde(rename = "rateLimitsByLimitId", skip_serializing_if = "Option::is_none")]
+    pub rate_limits_by_limit_id: Option<serde_json::Value>,
+}
+
 #[utoipa::path(
     get,
     path = "/api/account",
     tag = "account",
     responses(
-        (status = 200, description = "账户信息 + provider 元数据（codex account/read 透传）", body = crate::error::GenericJson),
+        (status = 200, description = "账户信息 + provider 元数据（codex account/read 透传）", body = AccountReadResponse),
         (status = 401, description = "未认证", body = crate::error::ErrorResponse),
     )
 )]
@@ -129,7 +241,7 @@ pub struct LoginBody {
     tag = "account",
     request_body = LoginBody,
     responses(
-        (status = 200, description = "登录流程已启动（codex account/login/start 透传）", body = crate::error::GenericJson),
+        (status = 200, description = "登录流程已启动（codex account/login/start 透传）", body = LoginAccountResponse),
         (status = 400, description = "login type 非法/必填字段缺失", body = crate::error::ErrorResponse),
         (status = 401, description = "未认证", body = crate::error::ErrorResponse),
     )
@@ -249,7 +361,7 @@ pub async fn account_logout(State(state): State<AppState>) -> Result<StatusCode,
     path = "/api/account/rate-limits",
     tag = "account",
     responses(
-        (status = 200, description = "速率限制（codex account/rate-limits 透传）", body = crate::error::GenericJson),
+        (status = 200, description = "速率限制（codex account/rate-limits 透传）", body = AccountRateLimitsResponse),
         (status = 401, description = "未认证", body = crate::error::ErrorResponse),
     )
 )]
@@ -277,13 +389,115 @@ pub struct AppsQuery {
     pub force_refetch: Option<String>,
 }
 
+// ── apps 响应 DTO（仅用于 OpenAPI 文档；运行时仍返回 Json<Value>）────────
+
+/// app 品牌信息（对齐 TS AppBrandingDto）。
+#[derive(serde::Serialize, utoipa::ToSchema)]
+pub struct AppBrandingDto {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub category: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub developer: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub website: Option<String>,
+    #[serde(rename = "privacyPolicy", skip_serializing_if = "Option::is_none")]
+    pub privacy_policy: Option<String>,
+    #[serde(rename = "termsOfService", skip_serializing_if = "Option::is_none")]
+    pub terms_of_service: Option<String>,
+    #[serde(rename = "isDiscoverableApp")]
+    pub is_discoverable_app: bool,
+}
+
+/// app 审核状态（对齐 TS AppReviewDto）。
+#[derive(serde::Serialize, utoipa::ToSchema)]
+pub struct AppReviewDto {
+    pub status: String,
+}
+
+/// app 截图（对齐 TS AppScreenshotDto）。
+#[derive(serde::Serialize, utoipa::ToSchema)]
+pub struct AppScreenshotDto {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub url: Option<String>,
+    #[serde(rename = "fileId", skip_serializing_if = "Option::is_none")]
+    pub file_id: Option<String>,
+    #[serde(rename = "userPrompt")]
+    pub user_prompt: String,
+}
+
+/// app 扩展元数据（对齐 TS AppMetadataDto）。
+#[derive(serde::Serialize, utoipa::ToSchema)]
+pub struct AppMetadataDto {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub review: Option<AppReviewDto>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub categories: Option<Vec<String>>,
+    #[serde(rename = "subCategories", skip_serializing_if = "Option::is_none")]
+    pub sub_categories: Option<Vec<String>>,
+    #[serde(rename = "seoDescription", skip_serializing_if = "Option::is_none")]
+    pub seo_description: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub screenshots: Option<Vec<AppScreenshotDto>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub developer: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub version: Option<String>,
+    #[serde(rename = "versionId", skip_serializing_if = "Option::is_none")]
+    pub version_id: Option<String>,
+    #[serde(rename = "versionNotes", skip_serializing_if = "Option::is_none")]
+    pub version_notes: Option<String>,
+    #[serde(rename = "firstPartyType", skip_serializing_if = "Option::is_none")]
+    pub first_party_type: Option<String>,
+    #[serde(rename = "firstPartyRequiresInstall", skip_serializing_if = "Option::is_none")]
+    pub first_party_requires_install: Option<bool>,
+    #[serde(rename = "showInComposerWhenUnlinked", skip_serializing_if = "Option::is_none")]
+    pub show_in_composer_when_unlinked: Option<bool>,
+}
+
+/// app 信息行（对齐 TS AppInfoDto）。
+#[derive(serde::Serialize, utoipa::ToSchema)]
+pub struct AppInfoDto {
+    pub id: String,
+    pub name: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    #[serde(rename = "logoUrl", skip_serializing_if = "Option::is_none")]
+    pub logo_url: Option<String>,
+    #[serde(rename = "logoUrlDark", skip_serializing_if = "Option::is_none")]
+    pub logo_url_dark: Option<String>,
+    #[serde(rename = "distributionChannel", skip_serializing_if = "Option::is_none")]
+    pub distribution_channel: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub branding: Option<AppBrandingDto>,
+    #[serde(rename = "appMetadata", skip_serializing_if = "Option::is_none")]
+    pub app_metadata: Option<AppMetadataDto>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub labels: Option<serde_json::Value>,
+    #[serde(rename = "installUrl", skip_serializing_if = "Option::is_none")]
+    pub install_url: Option<String>,
+    #[serde(rename = "isAccessible")]
+    pub is_accessible: bool,
+    #[serde(rename = "isEnabled")]
+    pub is_enabled: bool,
+    #[serde(rename = "pluginDisplayNames")]
+    pub plugin_display_names: Vec<String>,
+}
+
+/// GET /api/apps 响应（对齐 TS AppsListResponseDto）。
+#[derive(serde::Serialize, utoipa::ToSchema)]
+pub struct AppsListResponse {
+    pub data: Vec<AppInfoDto>,
+    #[serde(rename = "nextCursor", skip_serializing_if = "Option::is_none")]
+    pub next_cursor: Option<String>,
+}
+
 #[utoipa::path(
     get,
     path = "/api/apps",
     tag = "apps",
     params(AppsQuery),
     responses(
-        (status = 200, description = "应用列表（codex app/list 透传）", body = crate::error::GenericJson),
+        (status = 200, description = "应用列表（codex app/list 透传）", body = AppsListResponse),
         (status = 400, description = "limit/forceRefetch 非法", body = crate::error::ErrorResponse),
         (status = 401, description = "未认证", body = crate::error::ErrorResponse),
     )
@@ -324,13 +538,78 @@ pub struct ModelsQuery {
     pub limit: Option<String>,
 }
 
+// ── models 响应 DTO（仅用于 OpenAPI 文档；运行时仍返回 Json<Value>）───────
+
+/// model 升级信息（对齐 TS ModelUpgradeInfoDto）。
+#[derive(serde::Serialize, utoipa::ToSchema)]
+pub struct ModelUpgradeInfoDto {
+    pub model: String,
+    #[serde(rename = "upgradeCopy", skip_serializing_if = "Option::is_none")]
+    pub upgrade_copy: Option<String>,
+    #[serde(rename = "modelLink", skip_serializing_if = "Option::is_none")]
+    pub model_link: Option<String>,
+    #[serde(rename = "migrationMarkdown", skip_serializing_if = "Option::is_none")]
+    pub migration_markdown: Option<String>,
+}
+
+/// model 可用性提示（对齐 TS ModelAvailabilityNuxDto）。
+#[derive(serde::Serialize, utoipa::ToSchema)]
+pub struct ModelAvailabilityNuxDto {
+    pub message: String,
+}
+
+/// reasoning effort 选项（对齐 TS ReasoningEffortOptionDto）。
+#[derive(serde::Serialize, utoipa::ToSchema)]
+pub struct ReasoningEffortOptionDto {
+    #[serde(rename = "reasoningEffort")]
+    pub reasoning_effort: String,
+    pub description: String,
+}
+
+/// model 信息（对齐 TS ModelDto）。
+#[derive(serde::Serialize, utoipa::ToSchema)]
+pub struct ModelDto {
+    pub id: String,
+    pub model: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub upgrade: Option<String>,
+    #[serde(rename = "upgradeInfo", skip_serializing_if = "Option::is_none")]
+    pub upgrade_info: Option<ModelUpgradeInfoDto>,
+    #[serde(rename = "availabilityNux", skip_serializing_if = "Option::is_none")]
+    pub availability_nux: Option<ModelAvailabilityNuxDto>,
+    #[serde(rename = "displayName")]
+    pub display_name: String,
+    pub description: String,
+    pub hidden: bool,
+    #[serde(rename = "supportedReasoningEfforts")]
+    pub supported_reasoning_efforts: Vec<ReasoningEffortOptionDto>,
+    #[serde(rename = "defaultReasoningEffort")]
+    pub default_reasoning_effort: String,
+    #[serde(rename = "inputModalities")]
+    pub input_modalities: Vec<String>,
+    #[serde(rename = "supportsPersonality")]
+    pub supports_personality: bool,
+    #[serde(rename = "additionalSpeedTiers")]
+    pub additional_speed_tiers: Vec<String>,
+    #[serde(rename = "isDefault")]
+    pub is_default: bool,
+}
+
+/// GET /api/models 响应（对齐 TS ModelListResponseDto）。
+#[derive(serde::Serialize, utoipa::ToSchema)]
+pub struct ModelListResponse {
+    pub data: Vec<ModelDto>,
+    #[serde(rename = "nextCursor", skip_serializing_if = "Option::is_none")]
+    pub next_cursor: Option<String>,
+}
+
 #[utoipa::path(
     get,
     path = "/api/models",
     tag = "models",
     params(ModelsQuery),
     responses(
-        (status = 200, description = "模型列表（codex model/list 透传）", body = crate::error::GenericJson),
+        (status = 200, description = "模型列表（codex model/list 透传）", body = ModelListResponse),
         (status = 401, description = "未认证", body = crate::error::ErrorResponse),
     )
 )]
@@ -370,13 +649,30 @@ pub struct McpListQuery {
     pub detail: Option<String>,
 }
 
+// ── mcp-servers 响应 DTO（仅用于 OpenAPI 文档；运行时仍返回 Json<Value>）──
+
+/// GET /api/mcp-servers 响应（对齐 TS McpServersListResponseDto；元素透传 unknown）。
+#[derive(serde::Serialize, utoipa::ToSchema)]
+pub struct McpServersListResponse {
+    pub data: Vec<serde_json::Value>,
+    #[serde(rename = "nextCursor", skip_serializing_if = "Option::is_none")]
+    pub next_cursor: Option<String>,
+}
+
+/// POST /api/mcp-servers/oauth/login 响应（对齐 TS McpServerOauthLoginResponseDto）。
+#[derive(serde::Serialize, utoipa::ToSchema)]
+pub struct McpServerOauthLoginResponse {
+    #[serde(rename = "authorizationUrl")]
+    pub authorization_url: String,
+}
+
 #[utoipa::path(
     get,
     path = "/api/mcp-servers",
     tag = "mcp-servers",
     params(McpListQuery),
     responses(
-        (status = 200, description = "MCP 服务端状态列表（codex mcpServerStatus/list 透传）", body = crate::error::GenericJson),
+        (status = 200, description = "MCP 服务端状态列表（codex mcpServerStatus/list 透传）", body = McpServersListResponse),
         (status = 400, description = "limit/detail 非法", body = crate::error::ErrorResponse),
         (status = 401, description = "未认证", body = crate::error::ErrorResponse),
     )
@@ -444,7 +740,7 @@ pub struct McpOauthBody {
     tag = "mcp-servers",
     request_body = McpOauthBody,
     responses(
-        (status = 200, description = "OAuth 登录已启动（codex mcpServer/oauth/login 透传）", body = crate::error::GenericJson),
+        (status = 200, description = "OAuth 登录已启动（codex mcpServer/oauth/login 透传）", body = McpServerOauthLoginResponse),
         (status = 400, description = "name/scopes/timeoutSecs 非法", body = crate::error::ErrorResponse),
         (status = 401, description = "未认证", body = crate::error::ErrorResponse),
     )
@@ -535,13 +831,28 @@ pub struct SkillsListQuery {
     pub cwd: Option<String>,
 }
 
+// ── skills 响应 DTO（仅用于 OpenAPI 文档；运行时仍返回 Json<Value>）──────
+
+/// GET /api/skills 响应（对齐 TS SkillsListResponseDto；元素透传 unknown）。
+#[derive(serde::Serialize, utoipa::ToSchema)]
+pub struct SkillsListResponse {
+    pub data: Vec<serde_json::Value>,
+}
+
+/// POST /api/skills/config 响应（对齐 TS SkillsConfigWriteResponseDto）。
+#[derive(serde::Serialize, utoipa::ToSchema)]
+pub struct SkillsConfigWriteResponse {
+    #[serde(rename = "effectiveEnabled")]
+    pub effective_enabled: bool,
+}
+
 #[utoipa::path(
     get,
     path = "/api/skills",
     tag = "skills",
     params(SkillsListQuery),
     responses(
-        (status = 200, description = "技能列表（codex skills/list 透传）", body = crate::error::GenericJson),
+        (status = 200, description = "技能列表（codex skills/list 透传）", body = SkillsListResponse),
         (status = 400, description = "cwd 缺失", body = crate::error::ErrorResponse),
         (status = 401, description = "未认证", body = crate::error::ErrorResponse),
     )
@@ -581,7 +892,7 @@ pub struct SkillConfigBody {
     tag = "skills",
     request_body = SkillConfigBody,
     responses(
-        (status = 200, description = "技能配置已写入（codex skills/config/write 透传）", body = crate::error::GenericJson),
+        (status = 200, description = "技能配置已写入（codex skills/config/write 透传）", body = SkillsConfigWriteResponse),
         (status = 400, description = "path/name 缺失", body = crate::error::ErrorResponse),
         (status = 401, description = "未认证", body = crate::error::ErrorResponse),
     )
@@ -627,13 +938,160 @@ pub struct PluginsListQuery {
     pub force_remote_sync: Option<String>,
 }
 
+// ── plugins 响应 DTO（仅用于 OpenAPI 文档；运行时仍返回 Json<Value>）────
+
+/// marketplace 接口信息（对齐 TS MarketplaceInterfaceDto）。
+#[derive(serde::Serialize, utoipa::ToSchema)]
+pub struct MarketplaceInterfaceDto {
+    #[serde(rename = "displayName", skip_serializing_if = "Option::is_none")]
+    pub display_name: Option<String>,
+}
+
+/// marketplace 加载错误（对齐 TS MarketplaceLoadErrorInfoDto）。
+#[derive(serde::Serialize, utoipa::ToSchema)]
+pub struct MarketplaceLoadErrorInfoDto {
+    #[serde(rename = "marketplacePath")]
+    pub marketplace_path: String,
+    pub message: String,
+}
+
+/// plugin 展示元数据（对齐 TS PluginInterfaceDto）。
+#[derive(serde::Serialize, utoipa::ToSchema)]
+pub struct PluginInterfaceDto {
+    #[serde(rename = "displayName", skip_serializing_if = "Option::is_none")]
+    pub display_name: Option<String>,
+    #[serde(rename = "shortDescription", skip_serializing_if = "Option::is_none")]
+    pub short_description: Option<String>,
+    #[serde(rename = "longDescription", skip_serializing_if = "Option::is_none")]
+    pub long_description: Option<String>,
+    #[serde(rename = "developerName", skip_serializing_if = "Option::is_none")]
+    pub developer_name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub category: Option<String>,
+    pub capabilities: Vec<String>,
+    #[serde(rename = "websiteUrl", skip_serializing_if = "Option::is_none")]
+    pub website_url: Option<String>,
+    #[serde(rename = "privacyPolicyUrl", skip_serializing_if = "Option::is_none")]
+    pub privacy_policy_url: Option<String>,
+    #[serde(rename = "termsOfServiceUrl", skip_serializing_if = "Option::is_none")]
+    pub terms_of_service_url: Option<String>,
+    #[serde(rename = "defaultPrompt", skip_serializing_if = "Option::is_none")]
+    pub default_prompt: Option<Vec<String>>,
+    #[serde(rename = "brandColor", skip_serializing_if = "Option::is_none")]
+    pub brand_color: Option<String>,
+    #[serde(rename = "composerIcon", skip_serializing_if = "Option::is_none")]
+    pub composer_icon: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub logo: Option<String>,
+    pub screenshots: Vec<String>,
+}
+
+/// plugin 摘要行（对齐 TS PluginSummaryDto）。
+#[derive(serde::Serialize, utoipa::ToSchema)]
+pub struct PluginSummaryDto {
+    pub id: String,
+    pub name: String,
+    pub source: serde_json::Value,
+    pub installed: bool,
+    pub enabled: bool,
+    #[serde(rename = "installPolicy")]
+    pub install_policy: String,
+    #[serde(rename = "authPolicy")]
+    pub auth_policy: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub interface: Option<PluginInterfaceDto>,
+}
+
+/// marketplace 条目（对齐 TS PluginMarketplaceEntryDto）。
+#[derive(serde::Serialize, utoipa::ToSchema)]
+pub struct PluginMarketplaceEntryDto {
+    pub name: String,
+    pub path: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub interface: Option<MarketplaceInterfaceDto>,
+    pub plugins: Vec<PluginSummaryDto>,
+}
+
+/// GET /api/plugins 响应（对齐 TS PluginListResponseDto）。
+#[derive(serde::Serialize, utoipa::ToSchema)]
+pub struct PluginListResponse {
+    pub marketplaces: Vec<PluginMarketplaceEntryDto>,
+    #[serde(rename = "marketplaceLoadErrors")]
+    pub marketplace_load_errors: Vec<MarketplaceLoadErrorInfoDto>,
+    #[serde(rename = "remoteSyncError", skip_serializing_if = "Option::is_none")]
+    pub remote_sync_error: Option<String>,
+    #[serde(rename = "featuredPluginIds")]
+    pub featured_plugin_ids: Vec<String>,
+}
+
+/// plugin skill 摘要（对齐 TS PluginSkillSummaryDto）。
+#[derive(serde::Serialize, utoipa::ToSchema)]
+pub struct PluginSkillSummaryDto {
+    pub name: String,
+    pub description: String,
+    #[serde(rename = "shortDescription", skip_serializing_if = "Option::is_none")]
+    pub short_description: Option<String>,
+    pub path: String,
+    pub enabled: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub interface: Option<serde_json::Value>,
+}
+
+/// plugin app 摘要（对齐 TS PluginAppSummaryDto）。
+#[derive(serde::Serialize, utoipa::ToSchema)]
+pub struct PluginAppSummaryDto {
+    pub id: String,
+    pub name: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    #[serde(rename = "installUrl", skip_serializing_if = "Option::is_none")]
+    pub install_url: Option<String>,
+    #[serde(rename = "needsAuth")]
+    pub needs_auth: bool,
+}
+
+/// plugin 详情（对齐 TS PluginDetailDto）。
+#[derive(serde::Serialize, utoipa::ToSchema)]
+pub struct PluginDetailDto {
+    #[serde(rename = "marketplaceName")]
+    pub marketplace_name: String,
+    #[serde(rename = "marketplacePath")]
+    pub marketplace_path: String,
+    pub summary: PluginSummaryDto,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    pub skills: Vec<PluginSkillSummaryDto>,
+    pub apps: Vec<PluginAppSummaryDto>,
+    #[serde(rename = "mcpServers")]
+    pub mcp_servers: Vec<String>,
+}
+
+/// GET /api/plugins/detail 响应（对齐 TS PluginReadResponseDto）。
+#[derive(serde::Serialize, utoipa::ToSchema)]
+pub struct PluginReadResponse {
+    pub plugin: PluginDetailDto,
+}
+
+/// POST /api/plugins/install 响应（对齐 TS PluginInstallResponseDto）。
+#[derive(serde::Serialize, utoipa::ToSchema)]
+pub struct PluginInstallResponse {
+    #[serde(rename = "authPolicy")]
+    pub auth_policy: String,
+    #[serde(rename = "appsNeedingAuth")]
+    pub apps_needing_auth: Vec<PluginAppSummaryDto>,
+}
+
+/// POST /api/plugins/uninstall 响应（对齐 TS PluginUninstallResponseDto；空对象）。
+#[derive(serde::Serialize, utoipa::ToSchema)]
+pub struct PluginUninstallResponse {}
+
 #[utoipa::path(
     get,
     path = "/api/plugins",
     tag = "plugins",
     params(PluginsListQuery),
     responses(
-        (status = 200, description = "插件列表（codex plugin/list 透传）", body = crate::error::GenericJson),
+        (status = 200, description = "插件列表（codex plugin/list 透传）", body = PluginListResponse),
         (status = 400, description = "forceRemoteSync 非法", body = crate::error::ErrorResponse),
         (status = 401, description = "未认证", body = crate::error::ErrorResponse),
     )
@@ -680,7 +1138,7 @@ pub struct PluginDetailQuery {
     tag = "plugins",
     params(PluginDetailQuery),
     responses(
-        (status = 200, description = "插件详情（codex plugin/read 透传）", body = crate::error::GenericJson),
+        (status = 200, description = "插件详情（codex plugin/read 透传）", body = PluginReadResponse),
         (status = 400, description = "marketplacePath/pluginName 缺失", body = crate::error::ErrorResponse),
         (status = 401, description = "未认证", body = crate::error::ErrorResponse),
     )
@@ -718,7 +1176,7 @@ pub struct PluginInstallBody {
     tag = "plugins",
     request_body = PluginInstallBody,
     responses(
-        (status = 200, description = "插件已安装（codex plugin/install 透传）", body = crate::error::GenericJson),
+        (status = 200, description = "插件已安装（codex plugin/install 透传）", body = PluginInstallResponse),
         (status = 400, description = "marketplacePath/pluginName 缺失", body = crate::error::ErrorResponse),
         (status = 401, description = "未认证", body = crate::error::ErrorResponse),
     )
@@ -759,7 +1217,7 @@ pub struct PluginUninstallBody {
     tag = "plugins",
     request_body = PluginUninstallBody,
     responses(
-        (status = 200, description = "插件已卸载（codex plugin/uninstall 透传）", body = crate::error::GenericJson),
+        (status = 200, description = "插件已卸载（codex plugin/uninstall 透传）", body = PluginUninstallResponse),
         (status = 400, description = "pluginId 缺失", body = crate::error::ErrorResponse),
         (status = 401, description = "未认证", body = crate::error::ErrorResponse),
     )

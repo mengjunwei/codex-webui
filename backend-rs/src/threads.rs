@@ -42,7 +42,7 @@ pub struct CreateThreadBody {
     tag = "threads",
     request_body = CreateThreadBody,
     responses(
-        (status = 201, description = "线程已创建（codex thread/start 透传）", body = crate::error::GenericJson),
+        (status = 201, description = "线程已创建（codex thread/start 透传）", body = ThreadStartResponse),
         (status = 400, description = "参数非法", body = crate::error::ErrorResponse),
         (status = 401, description = "未认证", body = crate::error::ErrorResponse),
     )
@@ -96,7 +96,7 @@ pub struct ListThreadsQuery {
     tag = "threads",
     params(ListThreadsQuery),
     responses(
-        (status = 200, description = "线程列表（codex thread/list 透传）", body = crate::error::GenericJson),
+        (status = 200, description = "线程列表（codex thread/list 透传）", body = ThreadListResponse),
         (status = 400, description = "limit/sortKey 非法", body = crate::error::ErrorResponse),
         (status = 401, description = "未认证", body = crate::error::ErrorResponse),
     )
@@ -158,7 +158,7 @@ pub struct LoadedQuery {
     tag = "threads",
     params(LoadedQuery),
     responses(
-        (status = 200, description = "已加载线程列表（codex thread/loaded/list 透传）", body = crate::error::GenericJson),
+        (status = 200, description = "已加载线程列表（codex thread/loaded/list 透传）", body = ThreadLoadedListResponse),
         (status = 400, description = "limit 非法", body = crate::error::ErrorResponse),
         (status = 401, description = "未认证", body = crate::error::ErrorResponse),
     )
@@ -201,7 +201,7 @@ pub struct ReadQuery {
         ReadQuery,
     ),
     responses(
-        (status = 200, description = "线程详情（codex thread/read 透传；未具现化时 turns 为空）", body = crate::error::GenericJson),
+        (status = 200, description = "线程详情（codex thread/read 透传；未具现化时 turns 为空）", body = ThreadReadResponse),
         (status = 401, description = "未认证", body = crate::error::ErrorResponse),
     )
 )]
@@ -261,7 +261,7 @@ fn is_not_materialized(e: &RpcError) -> bool {
     tag = "threads",
     params(("threadId" = String, Path, description = "线程 ID")),
     responses(
-        (status = 201, description = "线程已恢复（codex thread/resume 透传；含并发去重缓存）", body = crate::error::GenericJson),
+        (status = 201, description = "线程已恢复（codex thread/resume 透传；含并发去重缓存）", body = ThreadStartResponse),
         (status = 401, description = "未认证", body = crate::error::ErrorResponse),
     )
 )]
@@ -349,7 +349,7 @@ pub struct StartTurnBody {
     params(("threadId" = String, Path, description = "线程 ID")),
     request_body = StartTurnBody,
     responses(
-        (status = 201, description = "turn 已启动（codex turn/start 透传）", body = crate::error::GenericJson),
+        (status = 201, description = "turn 已启动（codex turn/start 透传）", body = TurnStartResponse),
         (status = 400, description = "input/model/effort 非法或 mention 路径越界", body = crate::error::ErrorResponse),
         (status = 401, description = "未认证", body = crate::error::ErrorResponse),
     )
@@ -405,7 +405,7 @@ pub async fn start_turn(
     ),
     request_body = StartTurnBody,
     responses(
-        (status = 201, description = "turn 已转向（codex turn/steer 透传）", body = crate::error::GenericJson),
+        (status = 201, description = "turn 已转向（codex turn/steer 透传）", body = TurnSteerResponse),
         (status = 400, description = "input 非法或 mention 路径越界", body = crate::error::ErrorResponse),
         (status = 401, description = "未认证", body = crate::error::ErrorResponse),
     )
@@ -440,7 +440,7 @@ pub async fn steer_turn(
         ("turnId" = String, Path, description = "要中断的 turn ID"),
     ),
     responses(
-        (status = 201, description = "turn 已中断（codex turn/interrupt 透传）", body = crate::error::GenericJson),
+        (status = 201, description = "turn 已中断（codex turn/interrupt 透传）", body = crate::files::OkResponse),
         (status = 401, description = "未认证", body = crate::error::ErrorResponse),
     )
 )]
@@ -488,7 +488,7 @@ pub async fn archive_thread(
     tag = "threads",
     params(("threadId" = String, Path, description = "线程 ID")),
     responses(
-        (status = 201, description = "已取消归档（codex thread/unarchive 透传）", body = crate::error::GenericJson),
+        (status = 201, description = "已取消归档（codex thread/unarchive 透传）", body = ThreadUnarchiveResponse),
         (status = 401, description = "未认证", body = crate::error::ErrorResponse),
     )
 )]
@@ -532,7 +532,7 @@ pub async fn compact_thread(
     tag = "threads",
     params(("threadId" = String, Path, description = "线程 ID")),
     responses(
-        (status = 201, description = "已分叉出新线程（codex thread/fork 透传）", body = crate::error::GenericJson),
+        (status = 201, description = "已分叉出新线程（codex thread/fork 透传）", body = ThreadStartResponse),
         (status = 401, description = "未认证", body = crate::error::ErrorResponse),
     )
 )]
@@ -568,7 +568,7 @@ pub struct RollbackBody {
     params(("threadId" = String, Path, description = "线程 ID")),
     request_body = RollbackBody,
     responses(
-        (status = 201, description = "已回滚（codex thread/rollback 透传）", body = crate::error::GenericJson),
+        (status = 201, description = "已回滚（codex thread/rollback 透传）", body = ThreadRollbackResponse),
         (status = 400, description = "numTurns 非正整数", body = crate::error::ErrorResponse),
         (status = 401, description = "未认证", body = crate::error::ErrorResponse),
     )
@@ -1086,4 +1086,132 @@ fn parse_positive_limit(value: Option<&str>) -> Result<Option<i64>, AppError> {
             )),
         },
     }
+}
+
+// ── 文档响应 DTO（仅供 OpenAPI/Swagger 展示响应字段；handler 运行时仍返回
+//    Json<serde_json::Value>，字段对齐 codex app-server 透传的 JSON 结构，
+//    参考 TS codex/dto/v2/{thread,turn,responses}.dto.ts）──────────────────────
+//
+// 复杂的可辨识联合（ThreadItem 16 路 / ThreadStatus / SessionSource /
+// ApprovalPolicy / SandboxPolicy）一律用 serde_json::Value 透传不展开，避免
+// 自引用递归导致的 schema 无限展开（栈溢出）。
+
+/// 线程创建时捕获的可选 Git 元数据（对齐 TS GitInfoDto；字段全可空）。
+#[derive(serde::Serialize, utoipa::ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct GitInfoDto {
+    pub sha: Option<String>,
+    pub branch: Option<String>,
+    pub origin_url: Option<String>,
+}
+
+/// 单个 turn（对齐 TS TurnDto）。
+/// `items` 为 16 路 ThreadItem 可辨识联合，结构极复杂，以 serde_json::Value
+/// 透传不展开；`error` 为 TurnErrorDto，同样以 Value 透传。
+#[derive(serde::Serialize, utoipa::ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct TurnDto {
+    pub id: String,
+    /// 16 路 ThreadItem 可辨识联合；透传不展开。
+    pub items: Vec<serde_json::Value>,
+    /// `completed` / `interrupted` / `failed` / `inProgress`。
+    pub status: String,
+    /// TurnErrorDto；复杂结构，以 Value 透传。
+    pub error: Option<serde_json::Value>,
+    pub started_at: Option<i64>,
+    pub completed_at: Option<i64>,
+    pub duration_ms: Option<i64>,
+}
+
+/// 线程详情（对齐 TS ThreadDto）。
+/// `status`（ThreadStatus）/ `source`（SessionSource）为复杂 oneOf，以 Value 透传。
+#[derive(serde::Serialize, utoipa::ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct ThreadDto {
+    pub id: String,
+    pub forked_from_id: Option<String>,
+    pub preview: String,
+    pub ephemeral: bool,
+    pub model_provider: String,
+    pub created_at: i64,
+    pub updated_at: i64,
+    /// ThreadStatus oneOf；以 Value 透传不展开。
+    pub status: serde_json::Value,
+    pub path: Option<String>,
+    pub cwd: String,
+    pub cli_version: String,
+    /// SessionSource oneOf；以 Value 透传不展开。
+    pub source: serde_json::Value,
+    pub agent_nickname: Option<String>,
+    pub agent_role: Option<String>,
+    pub git_info: Option<GitInfoDto>,
+    pub name: Option<String>,
+    pub turns: Vec<TurnDto>,
+}
+
+/// thread/start / thread/resume / thread/fork 响应（对齐 TS ThreadStartResponseDto）。
+/// `approval_policy` / `sandbox` 为复杂联合，以 Value 透传。
+#[derive(serde::Serialize, utoipa::ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct ThreadStartResponse {
+    pub thread: ThreadDto,
+    pub model: String,
+    pub model_provider: String,
+    /// `fast` / `flex` / null。
+    pub service_tier: Option<String>,
+    pub cwd: String,
+    /// ApprovalPolicy 联合；以 Value 透传。
+    pub approval_policy: serde_json::Value,
+    /// `user` / `guardian_subagent`。
+    pub approvals_reviewer: String,
+    /// SandboxPolicy oneOf；以 Value 透传。
+    pub sandbox: serde_json::Value,
+    pub reasoning_effort: Option<String>,
+}
+
+/// thread/list 响应（对齐 TS ThreadListResponseDto）。
+#[derive(serde::Serialize, utoipa::ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct ThreadListResponse {
+    pub data: Vec<ThreadDto>,
+    pub next_cursor: Option<String>,
+}
+
+/// thread/loaded/list 响应（对齐 TS ThreadLoadedListResponseDto；data 为线程 ID 列表）。
+#[derive(serde::Serialize, utoipa::ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct ThreadLoadedListResponse {
+    pub data: Vec<String>,
+    pub next_cursor: Option<String>,
+}
+
+/// thread/read 响应（对齐 TS ThreadReadResponseDto）。
+#[derive(serde::Serialize, utoipa::ToSchema)]
+pub struct ThreadReadResponse {
+    pub thread: ThreadDto,
+}
+
+/// turn/start 响应（对齐 TS TurnStartResponseDto）。
+#[derive(serde::Serialize, utoipa::ToSchema)]
+pub struct TurnStartResponse {
+    pub turn: TurnDto,
+}
+
+/// turn/steer 响应（对齐 TS TurnSteerResponseDto）。
+#[derive(serde::Serialize, utoipa::ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct TurnSteerResponse {
+    pub turn_id: String,
+}
+
+/// thread/unarchive 响应（对齐 TS ThreadUnarchiveResponseDto）。
+#[derive(serde::Serialize, utoipa::ToSchema)]
+pub struct ThreadUnarchiveResponse {
+    pub thread: ThreadDto,
+}
+
+/// thread/rollback 响应（对齐 TS ThreadRollbackResponseDto）。
+#[derive(serde::Serialize, utoipa::ToSchema)]
+pub struct ThreadRollbackResponse {
+    pub thread: ThreadDto,
 }

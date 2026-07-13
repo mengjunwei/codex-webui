@@ -21,13 +21,25 @@ fn bad_request(code: ErrorCode, msg: impl Into<String>) -> AppError {
     AppError::business(code, StatusCode::BAD_REQUEST, msg.into(), None)
 }
 
+/// POST /api/chat/upload 成功响应 —— 已暂存的上传附件信息。
+#[derive(serde::Serialize, utoipa::ToSchema)]
+#[allow(non_snake_case)]
+pub struct ChatUploadResponse {
+    /// 已暂存文件的绝对路径（Codex app-server 可读取）。
+    pub path: String,
+    /// 文件大小（字节）。
+    pub size: i64,
+    /// multipart 请求报告的 MIME 类型。
+    pub mimeType: String,
+}
+
 /// POST /api/chat/upload —— 单文件 multipart 附件上传。
 #[utoipa::path(
     post,
     path = "/api/chat/upload",
     tag = "chat",
     responses(
-        (status = 200, description = "上传成功 {path, size, mimeType}。请求体为 multipart/form-data，字段名 file", body = crate::error::GenericJson),
+        (status = 200, description = "上传成功 {path, size, mimeType}。请求体为 multipart/form-data，字段名 file", body = ChatUploadResponse),
         (status = 400, description = "文件缺失/文件名非法", body = crate::error::ErrorResponse),
         (status = 401, description = "未认证", body = crate::error::ErrorResponse),
         (status = 413, description = "超出上传上限", body = crate::error::ErrorResponse),

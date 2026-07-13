@@ -49,13 +49,23 @@ pub struct ConfigQuery {
     pub mode: Option<String>,
 }
 
+/// GET /api/onlyoffice/config 成功响应 —— 含 API 脚本地址与签名后的编辑器配置。
+#[derive(serde::Serialize, utoipa::ToSchema)]
+#[allow(non_snake_case)]
+pub struct OnlyOfficeConfigResponse {
+    /// OnlyOffice Docs API 脚本地址（`.../web-apps/apps/api/documents/api.js`）。
+    pub scriptUrl: String,
+    /// 编辑器配置对象（结构复杂，透传为原始 JSON；配置密钥时含 `token` 签名）。
+    pub config: serde_json::Value,
+}
+
 #[utoipa::path(
     get,
     path = "/api/onlyoffice/config",
     tag = "onlyoffice",
     params(ConfigQuery),
     responses(
-        (status = 200, description = "OnlyOffice 编辑器配置（含 JWT 签名）", body = crate::error::GenericJson),
+        (status = 200, description = "OnlyOffice 编辑器配置（含 JWT 签名）", body = OnlyOfficeConfigResponse),
         (status = 400, description = "未配置/URL 非法/格式不支持/edit 模式缺 secret", body = crate::error::ErrorResponse),
         (status = 401, description = "未认证", body = crate::error::ErrorResponse),
         (status = 404, description = "文件不存在", body = crate::error::ErrorResponse),
@@ -351,6 +361,13 @@ struct CallbackJwtPayload {
     _extra: std::collections::HashMap<String, Value>,
 }
 
+/// POST /api/onlyoffice/callback 成功响应 —— OnlyOffice 期望的 `{error: 0|1}`。
+#[derive(serde::Serialize, utoipa::ToSchema)]
+pub struct OnlyOfficeCallbackResponse {
+    /// 回调处理结果：0=成功，1=失败。
+    pub error: i64,
+}
+
 #[utoipa::path(
     post,
     path = "/api/onlyoffice/callback",
@@ -358,7 +375,7 @@ struct CallbackJwtPayload {
     params(CallbackQuery),
     request_body = CallbackBody,
     responses(
-        (status = 200, description = "回调处理结果 {error: 0|1}（公开端点，用 JWT 校验）", body = crate::error::GenericJson),
+        (status = 200, description = "回调处理结果 {error: 0|1}（公开端点，用 JWT 校验）", body = OnlyOfficeCallbackResponse),
         (status = 400, description = "回调 JWT/state 非法/下载 URL 校验失败", body = crate::error::ErrorResponse),
         (status = 413, description = "保存内容超过上限", body = crate::error::ErrorResponse),
     )
