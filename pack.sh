@@ -70,16 +70,8 @@ if [[ $count -eq 0 ]]; then
   exit 1
 fi
 
-# ── 收集前端 ─────────────────────────────────────────────────────────────────
-log "收集前端文件"
-if [[ -d "$SOURCE_DIR/target/public" ]]; then
-  cp -r "$SOURCE_DIR/target/public" "$STAGING/target/public"
-  local_count="$(find "$STAGING/target/public" -type f | wc -l)"
-  ok "  public/ ($local_count 个文件)"
-else
-  err "  public/ 目录未找到: $SOURCE_DIR/target/public"
-  exit 1
-fi
+# ── 前端 ────────────────────────────────────────────────────────────────────
+# 前端产物已在编译期嵌入 codex-webui 二进制（rust-embed），无需单独收集。
 
 # ── 收集启动脚本 ─────────────────────────────────────────────────────────────
 log "收集启动脚本"

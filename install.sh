@@ -132,14 +132,7 @@ deploy_files() {
     fi
   done
 
-  # 部署前端
-  if [[ -d "$SCRIPT_DIR/target/public" ]]; then
-    log "  部署前端 public/（$(find "$SCRIPT_DIR/target/public" -type f | wc -l) 个文件）"
-    cp -r "$SCRIPT_DIR/target/public" "$INSTALL_PREFIX/target/public"
-    ok "  public/"
-  else
-    warn "  public/ 目录未找到，跳过"
-  fi
+  # 前端产物已嵌入 codex-webui 二进制（rust-embed），无需单独部署 public/。
 
   # 部署启动脚本
   if [[ -f "$SCRIPT_DIR/bin/start.sh" ]]; then

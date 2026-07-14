@@ -6,14 +6,16 @@ pub mod health;
 use crate::auth::middleware::require_auth;
 use crate::state::AppState;
 use axum::{
+    body::Body,
     extract::Request,
+    http::{header, StatusCode, Uri},
     middleware::{from_fn, Next},
-    response::Response,
+    response::{IntoResponse, Response},
     routing::{get, post},
     Router,
 };
 use crate::error::Json;
-use tower_http::services::{ServeDir, ServeFile};
+use rust_embed::RustEmbed;
 use utoipa::OpenApi;
 use utoipa_swagger_ui::SwaggerUi;
 
@@ -311,11 +313,8 @@ pub fn build_router(state: AppState) -> Router {
         ));
 
     // 为 React 前端(SPA)提供静态文件服务。
-    // 服务 `public/` 目录;对于客户端路由,回退到 `public/index.html`。
-    // 开发环境下(无 public/ 目录),回退返回 404 也无妨
-    // (前端运行在 :5173 并通过代理)。
-    let static_files = ServeDir::new("public")
-        .fallback(ServeFile::new("public/index.html"));
+    // 前端产物由 rust-embed 在编译期嵌入二进制（#[folder = "../public"]）：
+    // debug 模式从文件系统 live 读，release 模式嵌入。未命中路径回退 index.html（SPA 路由）。
 
     Router::new()
         .route("/api/auth/login", post(auth::login))
@@ -331,9 +330,41 @@ pub fn build_router(state: AppState) -> Router {
                 ),
         )
         .nest("/api", api)
-        .fallback_service(static_files)
+        .fallback(serve_asset)
         .layer(from_fn(request_logger))
         .with_state(state)
+}
+
+// ── 前端静态资源（rust-embed 嵌入）──────────────────────────────────────────
+
+/// 前端 build 产物（vite outDir = 根 `public/`，相对 backend-rs 即 `../public`）。
+/// debug 模式从文件系统实时读，release 模式编译期嵌入二进制。
+#[derive(RustEmbed)]
+#[folder = "../public"]
+struct WebAsset;
+
+/// 从嵌入资源提供前端静态文件；未命中则回退 `index.html`（SPA 客户端路由）。
+async fn serve_asset(uri: Uri) -> Response {
+    let path = uri.path().trim_start_matches('/');
+    if let Some(file) = WebAsset::get(path) {
+        return asset_response(path, &file);
+    }
+    // SPA 回退：未知路径返回 index.html，交由前端路由处理。
+    if let Some(file) = WebAsset::get("index.html") {
+        return asset_response("index.html", &file);
+    }
+    (StatusCode::NOT_FOUND, "not found").into_response()
+}
+
+/// 构造静态文件响应：按扩展名推断 Content-Type。
+fn asset_response(path: &str, file: &rust_embed::EmbeddedFile) -> Response {
+    let mime = mime_guess::from_path(path).first_or_octet_stream();
+    Response::builder()
+        .header(header::CONTENT_TYPE, mime.as_ref())
+        .body(Body::from(file.data.clone().into_owned()))
+        .unwrap_or_else(|_| {
+            (StatusCode::INTERNAL_SERVER_ERROR, "failed to build response").into_response()
+        })
 }
 
 /// 请求日志中间件（对齐 TS pino-http）：记录 method / 脱敏 path / status / 耗时。

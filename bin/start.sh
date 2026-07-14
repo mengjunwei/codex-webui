@@ -46,7 +46,6 @@ ENV_FILE="$DEPLOY_HOME/.env"
 CODEX_WEBUI_BIN="$TARGET_DIR/codex-webui"
 CODEX_BIN="$TARGET_DIR/codex"
 CC_SWITCH_BIN="$TARGET_DIR/cc-switch"
-PUBLIC_DIR="$TARGET_DIR/public"
 
 CODEX_WEBUI_PORT="${PORT:-8172}"
 CC_SWITCH_PORT=15722
@@ -195,15 +194,7 @@ check_prereqs() {
     fi
   done
 
-  # 前端产物
-  if [[ -f "$PUBLIC_DIR/index.html" ]]; then
-    local n
-    n="$(find "$PUBLIC_DIR/assets" -maxdepth 1 -type f 2>/dev/null | wc -l)"
-    ok "public/（$n chunks）"
-  else
-    err "缺失：$PUBLIC_DIR/index.html"
-    failed=1
-  fi
+  # 前端已嵌入二进制（rust-embed），无需检查 public/。
 
   # .env
   if [[ -f "$ENV_FILE" ]]; then
@@ -229,7 +220,7 @@ check_prereqs() {
 start_codex_webui() {
   log "启动 codex-webui（cwd=$TARGET_DIR，端口 $CODEX_WEBUI_PORT）"
 
-  # 必须 cd 到 target/，因为 backend-rs 的 ServeDir::new("public") 是相对路径
+  # cd 到 target/（二进制所在目录）；前端已嵌入二进制，不再依赖 public/ 相对路径。
   cd "$TARGET_DIR"
 
   # 环境变量：从 .env 加载 + 覆盖 cc-switch 代理所需
