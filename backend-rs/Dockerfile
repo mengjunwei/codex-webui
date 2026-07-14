@@ -6,6 +6,8 @@ COPY backend-rs/Cargo.toml backend-rs/Cargo.lock ./
 # 先创建一个占位 main.rs 以缓存依赖编译（依赖不变时后续构建直接命中缓存）。
 RUN mkdir src && echo 'fn main() {}' > src/main.rs && cargo build --release && rm -rf src
 COPY backend-rs/src ./src
+# 前端构建产物（rust-embed 在编译期嵌入二进制，必须在此阶段就位）。
+COPY --from=frontend-builder /app/backend-rs/public ./public
 # 触碰 main.rs，让 cargo 重新编译真正的二进制（而不只是依赖）。
 RUN touch src/main.rs && cargo build --release
 
@@ -57,8 +59,7 @@ RUN mkdir -p /root/.codex /workspaces /app/logs
 # 只有 codex CLI 需要 Node.js）。
 COPY --from=rust-builder /app/target/release/codex-webui /usr/local/bin/codex-webui
 
-# 拷贝前端构建产物（由 Rust 后端作为静态文件对外提供）。
-COPY --from=frontend-builder /app/public /app/public
+# 前端资源已在编译期由 rust-embed 嵌入二进制，运行时无需额外拷贝。
 
 WORKDIR /app
 

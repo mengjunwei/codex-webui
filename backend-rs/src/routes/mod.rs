@@ -313,7 +313,7 @@ pub fn build_router(state: AppState) -> Router {
         ));
 
     // 为 React 前端(SPA)提供静态文件服务。
-    // 前端产物由 rust-embed 在编译期嵌入二进制（#[folder = "../public"]）：
+    // 前端产物由 rust-embed 在编译期嵌入二进制（#[folder = "public"]）：
     // debug 模式从文件系统 live 读，release 模式嵌入。未命中路径回退 index.html（SPA 路由）。
 
     Router::new()
@@ -337,10 +337,10 @@ pub fn build_router(state: AppState) -> Router {
 
 // ── 前端静态资源（rust-embed 嵌入）──────────────────────────────────────────
 
-/// 前端 build 产物（vite outDir = 根 `public/`，相对 backend-rs 即 `../public`）。
+/// 前端 build 产物（vite outDir = `backend-rs/public`，相对 backend-rs 即 `public`）。
 /// debug 模式从文件系统实时读，release 模式编译期嵌入二进制。
 #[derive(RustEmbed)]
-#[folder = "../public"]
+#[folder = "public"]
 struct WebAsset;
 
 /// 从嵌入资源提供前端静态文件；未命中则回退 `index.html`（SPA 客户端路由）。
