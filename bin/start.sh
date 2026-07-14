@@ -2,7 +2,7 @@
 # ─────────────────────────────────────────────────────────────────────────────
 # Codex WebUI + cc-switch 一键启动脚本（部署版）
 #
-# 目录布局（/home/master/Mnet）：
+# 目录布局（/home/master/MNet）：
 #   target/codex-webui          backend-rs release 二进制
 #   target/codex                codex CLI 多调用二进制
 #   target/cc-switch            cc-switch-cli
@@ -23,9 +23,16 @@
 #   bash bin/start.sh switch xiaomi # 切换 provider（xiaomi/minimax）
 #   bash bin/start.sh logs         # tail -f codex-webui 日志
 #
-# 注意：此脚本需要在 master 用户下运行
+# 注意：非 master 用户运行时会自动切换到 master（su - master）
 # ─────────────────────────────────────────────────────────────────────────────
 set -euo pipefail
+
+# ── 用户校验：必须以 master 运行，否则自动切换 ──────────────────────────────
+if [[ "$(whoami)" != "master" ]]; then
+  printf '[codex] 当前用户 %s，自动切换到 master 重新执行\n' "$(whoami)"
+  SCRIPT_PATH="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/$(basename "${BASH_SOURCE[0]}")"
+  exec su - master -c "bash '${SCRIPT_PATH}' $(printf "'%s' " "$@")"
+fi
 
 # ── 路径常量 ─────────────────────────────────────────────────────────────────
 # 自动推算 DEPLOY_HOME：脚本所在目录的上级
@@ -44,8 +51,9 @@ PUBLIC_DIR="$TARGET_DIR/public"
 CODEX_WEBUI_PORT="${PORT:-8172}"
 CC_SWITCH_PORT=15722
 
+WEBUI_LOG_DIR="$LOG_DIR/codex"
 CODEX_WEBUI_PID_FILE="$LOG_DIR/codex-webui.pid"
-CODEX_WEBUI_LOG="$LOG_DIR/codex-webui.log"
+CODEX_WEBUI_LOG="$WEBUI_LOG_DIR/codex-webui.log"
 
 # cc-switch daemon 由 cc-switch 自己管理 pid，不额外存 pidfile
 
@@ -234,6 +242,8 @@ start_codex_webui() {
   export OPENAI_API_KEY="PROXY_MANAGED"
   # 指定 codex 二进制路径（target 目录下）
   export CODEX_BIN="$CODEX_BIN"
+  # 日志统一目录（backend-rs tracing/jsonrpc 日志 + stdout 重定向）
+  export WEBUI_LOG_DIR="$WEBUI_LOG_DIR"
 
   : > "$CODEX_WEBUI_LOG"
   nohup "$CODEX_WEBUI_BIN" >>"$CODEX_WEBUI_LOG" 2>&1 &
@@ -350,7 +360,7 @@ EOF
 }
 
 # ── 主入口 ───────────────────────────────────────────────────────────────────
-mkdir -p "$LOG_DIR"
+mkdir -p "$LOG_DIR" "$WEBUI_LOG_DIR" "$DEPLOY_HOME/data/codex/cwd" "$DEPLOY_HOME/data/codex/workspace"
 
 case "${1:-start}" in
   start)

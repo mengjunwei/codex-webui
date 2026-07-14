@@ -107,7 +107,7 @@ pub async fn list_logs(
     let level = normalize_filter(q.level.as_deref());
     let source = normalize_filter(q.source.as_deref());
 
-    let entries = read_all_entries(Path::new("logs"));
+    let entries = read_all_entries(&crate::logging::log_dir());
     let filtered: Vec<LogEntry> = entries
         .into_iter()
         .filter(|e| {
@@ -147,7 +147,7 @@ pub async fn list_logs(
 pub async fn export_diagnostics(
     State(state): State<AppState>,
 ) -> Result<Json<LogsExportResponse>, AppError> {
-    let entries = read_all_entries(Path::new("logs"));
+    let entries = read_all_entries(&crate::logging::log_dir());
     let logs: Vec<LogEntry> = entries.into_iter().take(EXPORT_LIMIT).collect();
 
     Ok(Json(LogsExportResponse {

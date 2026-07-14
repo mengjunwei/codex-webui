@@ -2,7 +2,7 @@
 # ─────────────────────────────────────────────────────────────────────────────
 # Codex WebUI + cc-switch 一键启动脚本
 #
-# 目录布局（/home/master/Mnet）：
+# 目录布局（/home/master/MNet）：
 #   target/codex-webui          backend-rs release 二进制
 #   target/codex                codex CLI 多调用二进制
 #   target/cc-switch            cc-switch-cli
@@ -28,7 +28,7 @@
 set -euo pipefail
 
 # ── 路径常量 ─────────────────────────────────────────────────────────────────
-DEPLOY_HOME="/home/master/Mnet"
+DEPLOY_HOME="/home/master/MNet"
 TARGET_DIR="$DEPLOY_HOME/target"
 LOG_DIR="$DEPLOY_HOME/logs"
 ENV_FILE="$DEPLOY_HOME/.env"

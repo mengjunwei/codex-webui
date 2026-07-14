@@ -154,6 +154,8 @@ impl CodexProcessManager {
                 self.consecutive_failures.store(0, Ordering::SeqCst);
                 self.generation.fetch_add(1, Ordering::SeqCst);
                 let restarted = new_generation > 1;
+                // 启动时补齐缺失的默认 codex 配置（环境变量可控，仅缺失键才写，不覆盖用户配置）。
+                crate::codex_status_config::apply_defaults_if_absent(&client).await;
                 // M1 修复：复查 destroyed 与写入 current 在同一把锁内原子完成。
                 // spawn 之后、写 current 之前若 destroy 被调用，它 take 到 None；
                 // 此处锁内看到 destroyed=true 就地销毁新 client，避免孤儿子进程。

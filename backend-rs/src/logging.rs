@@ -30,8 +30,20 @@ pub struct Guards {
 ///
 /// stdout 与 file 均走 `non_blocking` —— 慢 stdout（如 `docker logs` 滞后）
 /// 不再阻塞业务线程。返回 `Guards`，**必须持有**到进程退出。
+/// 日志目录：优先读 `WEBUI_LOG_DIR` 环境变量（trim 后非空），否则回退相对路径 `logs`。
+/// 由 tracing 文件日志（`app`）、codex/jsonrpc（`codex-jsonrpc.jsonl`）、
+/// `/api/logs` 读取三处复用，确保所有日志落到同一目录。
+pub fn log_dir() -> PathBuf {
+    std::env::var("WEBUI_LOG_DIR")
+        .ok()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from("logs"))
+}
+
 pub fn init(level: &str, otlp_endpoint: Option<&str>) -> Guards {
-    let file_appender = RollingWriter::new(PathBuf::from("logs").join("app"), 10 * 1024 * 1024, 5);
+    let file_appender = RollingWriter::new(log_dir().join("app"), 10 * 1024 * 1024, 5);
     let (file_nb, file_guard) = tracing_appender::non_blocking(file_appender);
     let (stdout_nb, stdout_guard) = tracing_appender::non_blocking(std::io::stdout());
 

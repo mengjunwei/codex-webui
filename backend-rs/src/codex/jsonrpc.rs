@@ -342,7 +342,7 @@ async fn write_loop(
 /// 以及每条消息 open/close 的开销（原实现在 async 任务里每条都重新打开文件）。
 fn jsonl_loop_blocking(mut jsonl_rx: mpsc::Receiver<String>) {
     use std::io::Write;
-    let path = std::path::Path::new("logs").join("codex-jsonrpc.jsonl");
+    let path = crate::logging::log_dir().join("codex-jsonrpc.jsonl");
     if let Some(parent) = path.parent() {
         let _ = std::fs::create_dir_all(parent);
     }

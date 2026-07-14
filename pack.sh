@@ -6,16 +6,16 @@
 # 生成的包可以在任意 Linux 机器上用 install.sh 一键部署
 #
 # 用法：
-#   bash pack.sh                        # 默认从 /home/master/Mnet 收集
+#   bash pack.sh                        # 默认从 /home/master/MNet 收集
 #   bash pack.sh --source /path/to/src  # 指定源目录
 #
 # 产出：
-#   /home/master/Mnet/codex-webui-deploy.tar.gz
+#   /home/master/MNet/codex-webui-deploy.tar.gz
 # ─────────────────────────────────────────────────────────────────────────────
 set -euo pipefail
 
 # ── 参数解析 ─────────────────────────────────────────────────────────────────
-DEPLOY_HOME="/home/master/Mnet"
+DEPLOY_HOME="/home/master/MNet"
 SOURCE_DIR="$DEPLOY_HOME"
 
 while [[ $# -gt 0 ]]; do
@@ -23,7 +23,7 @@ while [[ $# -gt 0 ]]; do
     --source)  SOURCE_DIR="$2"; shift 2 ;;
     --help|-h)
       echo "用法: bash pack.sh [--source <源目录>]"
-      echo "  --source  编译产物所在目录（默认: /home/master/Mnet）"
+      echo "  --source  编译产物所在目录（默认: /home/master/MNet）"
       exit 0
       ;;
     *) echo "未知参数: $1"; exit 1 ;;

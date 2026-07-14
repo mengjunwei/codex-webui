@@ -13,6 +13,7 @@
 //! - PUT  /codex/config/raw      — 写入用户 config.toml + 热重载
 
 use crate::codex::RpcError;
+use crate::codex::jsonrpc::CodexJsonRpcClient;
 use crate::error::{AppError, ErrorCode};
 use crate::state::AppState;
 use axum::{
@@ -335,6 +336,73 @@ pub async fn update_sandbox_mode(
         .map_err(map_rpc)?;
     state.status.invalidate();
     Ok(StatusCode::NO_CONTENT)
+}
+
+// ── 启动默认配置 ─────────────────────────────────────────────────────────────
+
+/// 启动时应用默认 codex 配置（仅当对应键缺失时写入）。
+///
+/// 读环境变量 `CODEX_DEFAULT_SANDBOX_MODE` / `CODEX_DEFAULT_APPROVAL_POLICY`，
+/// 校验合法性后，对 codex config 中**缺失**的键发 `config/batchWrite` 设默认值。
+/// 已存在的键不覆盖——尊重用户已有配置 / WebUI 修改（方案 B）。
+///
+/// 由 `codex::process::CodexProcessManager::start` 在 initialize 握手成功后调用，
+/// 因此 codex 崩溃重启后会再次检查并补齐缺失项。best-effort：任何失败仅告警，不阻断启动。
+pub async fn apply_defaults_if_absent(client: &CodexJsonRpcClient) {
+    let sandbox = read_default_env("CODEX_DEFAULT_SANDBOX_MODE", SANDBOX_MODE_VALUES);
+    let approval = read_default_env("CODEX_DEFAULT_APPROVAL_POLICY", APPROVAL_POLICY_VALUES);
+    if sandbox.is_none() && approval.is_none() {
+        return;
+    }
+
+    let response = match client
+        .request("config/read", Some(json!({ "includeLayers": true })))
+        .await
+    {
+        Ok(v) => v,
+        Err(e) => {
+            tracing::warn!("apply_defaults: config/read 失败，跳过: {e}");
+            return;
+        }
+    };
+    let config = response.get("config").cloned().unwrap_or(Value::Null);
+
+    let mut edits: Vec<Value> = Vec::new();
+    if let Some(sm) = &sandbox {
+        if config.get("sandbox_mode").is_none() {
+            edits.push(json!({ "keyPath": "sandbox_mode", "value": sm, "mergeStrategy": "replace" }));
+        }
+    }
+    if let Some(ap) = &approval {
+        if config.get("approval_policy").is_none() {
+            edits.push(json!({ "keyPath": "approval_policy", "value": ap, "mergeStrategy": "replace" }));
+        }
+    }
+
+    if edits.is_empty() {
+        return;
+    }
+
+    match client
+        .request("config/batchWrite", Some(json!({ "edits": edits, "reloadUserConfig": true })))
+        .await
+    {
+        Ok(_) => tracing::info!("apply_defaults: 已写入 {} 个缺失的默认配置项", edits.len()),
+        Err(e) => tracing::warn!("apply_defaults: config/batchWrite 失败: {e}"),
+    }
+}
+
+/// 读取默认值环境变量并校验是否在白名单内；非法或空值返回 None（非法值告警）。
+fn read_default_env(var: &str, allowed: &[&str]) -> Option<String> {
+    let v = std::env::var(var).ok()?.trim().to_string();
+    if v.is_empty() {
+        return None;
+    }
+    if !allowed.contains(&v.as_str()) {
+        tracing::warn!("{var}={v:?} 不在合法值 {:?} 内，跳过", allowed);
+        return None;
+    }
+    Some(v)
 }
 
 // ── config(结构化)─────────────────────────────────────────────────────────

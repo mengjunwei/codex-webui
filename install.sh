@@ -5,7 +5,7 @@
 # 在目标 Linux 机器上执行，完成以下工作：
 #   1. 创建 master 用户（如不存在）
 #   2. 配置 master 免密 sudo
-#   3. 部署二进制 + 前端 + 脚本到 /home/master/Mnet/
+#   3. 部署二进制 + 前端 + 脚本到 /home/master/MNet/
 #   4. 生成默认 .env 配置文件
 #   5. 设置文件权限
 #
@@ -20,7 +20,7 @@ set -euo pipefail
 
 # ── 参数解析 ─────────────────────────────────────────────────────────────────
 INSTALL_USER="master"
-INSTALL_PREFIX="/home/master/Mnet"
+INSTALL_PREFIX="/home/master/MNet"
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -29,7 +29,7 @@ while [[ $# -gt 0 ]]; do
     --help|-h)
       echo "用法: sudo bash install.sh [--user <用户>] [--prefix <安装目录>]"
       echo "  --user    安装用户（默认: master）"
-      echo "  --prefix  安装目录（默认: /home/master/Mnet）"
+      echo "  --prefix  安装目录（默认: /home/master/MNet）"
       exit 0
       ;;
     *) echo "未知参数: $1"; exit 1 ;;
@@ -86,7 +86,7 @@ ensure_user() {
     ok "用户 $INSTALL_USER 已创建"
   fi
   INSTALL_HOME="$(eval echo "~${INSTALL_USER}")"
-  INSTALL_PREFIX="$INSTALL_HOME/Mnet"
+  INSTALL_PREFIX="$INSTALL_HOME/MNet"
 }
 
 # ── 配置免密 sudo ──────────────────────────────────────────────────────────
@@ -117,8 +117,8 @@ setup_sudo() {
 deploy_files() {
   log "部署文件到 $INSTALL_PREFIX"
 
-  # 创建目录结构
-  mkdir -p "$INSTALL_PREFIX"/{target,bin,logs}
+  # 创建目录结构（含 codex 默认 cwd / workspace 目录）
+  mkdir -p "$INSTALL_PREFIX"/{target,bin,logs,data/codex/cwd,data/codex/workspace,logs/codex}
 
   # 部署二进制
   log "  部署二进制文件"
@@ -188,6 +188,16 @@ LOG_LEVEL=info
 
 # 可选：SQLite 数据库路径（默认 CODEX_HOME/codex-webui.sqlite）
 # WEBUI_DB_PATH=
+
+# 终端/codex 命令默认工作目录（须位于 WORKSPACE_ROOTS 内且为已存在目录）
+DEFAULT_TERMINAL_CWD=$INSTALL_PREFIX/data/codex/cwd
+
+# workspace 根目录（逗号分隔，家目录恒包含）
+WORKSPACE_ROOTS=$INSTALL_PREFIX/data/codex/workspace,$INSTALL_PREFIX/data/codex/cwd
+
+# Codex 启动默认配置（仅当 codex config 缺失对应键时写入，不覆盖已有值）
+CODEX_DEFAULT_SANDBOX_MODE=danger-full-access
+CODEX_DEFAULT_APPROVAL_POLICY=never
 EOF
 
   chmod 600 "$env_file"
@@ -230,8 +240,8 @@ print_summary() {
 │  下一步:                                                                 │
 │    1. 编辑配置:  vi $INSTALL_PREFIX/.env                                 │
 │    2. 切换用户:  su - $INSTALL_USER                                      │
-│    3. 启动服务:  bash ~/Mnet/bin/start.sh                                │
-│    4. 查看状态:  bash ~/Mnet/bin/start.sh status                         │
+│    3. 启动服务:  bash ~/MNet/bin/start.sh                                │
+│    4. 查看状态:  bash ~/MNet/bin/start.sh status                         │
 │                                                                          │
 │  后续查看 key:                                                            │
 │    grep WEBUI_API_KEY $INSTALL_PREFIX/.env                               │
