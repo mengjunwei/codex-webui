@@ -322,7 +322,14 @@ pub fn build_router(state: AppState) -> Router {
         .route("/api/onlyoffice/callback", post(oo::handle_callback))
         .route("/api/docs-json", get(openapi_json))
         // Swagger UI（公开，不经过 require_auth）；spec 由 ApiDoc 内联提供。
-        .merge(SwaggerUi::new("/api/docs").url("/api/openapi.json", ApiDoc::openapi()))
+        // default_model_expand_depth(-1)：加载时自动展开所有嵌套 schema（无需逐个点击 $ref）。
+        .merge(
+            SwaggerUi::new("/api/docs")
+                .url("/api/openapi.json", ApiDoc::openapi())
+                .config(
+                    utoipa_swagger_ui::Config::default().default_model_expand_depth(-1),
+                ),
+        )
         .nest("/api", api)
         .fallback_service(static_files)
         .layer(from_fn(request_logger))
