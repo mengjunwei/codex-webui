@@ -132,8 +132,6 @@ deploy_files() {
     fi
   done
 
-  # 前端产物已嵌入 codex-webui 二进制（rust-embed），无需单独部署 public/。
-
   # 部署启动脚本
   if [[ -f "$SCRIPT_DIR/bin/start.sh" ]]; then
     cp "$SCRIPT_DIR/bin/start.sh" "$INSTALL_PREFIX/bin/start.sh"

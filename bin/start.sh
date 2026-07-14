@@ -6,7 +6,6 @@
 #   target/codex-webui          backend-rs release 二进制
 #   target/codex                codex CLI 多调用二进制
 #   target/cc-switch            cc-switch-cli
-#   target/public/              前端 vite build 产物
 #   .env                        WEBUI_API_KEY 等配置
 #   logs/                       运行日志 + pid 文件
 #
@@ -194,8 +193,6 @@ check_prereqs() {
     fi
   done
 
-  # 前端已嵌入二进制（rust-embed），无需检查 public/。
-
   # .env
   if [[ -f "$ENV_FILE" ]]; then
     load_env
@@ -220,7 +217,7 @@ check_prereqs() {
 start_codex_webui() {
   log "启动 codex-webui（cwd=$TARGET_DIR，端口 $CODEX_WEBUI_PORT）"
 
-  # cd 到 target/（二进制所在目录）；前端已嵌入二进制，不再依赖 public/ 相对路径。
+  # 切到二进制所在目录作为工作目录
   cd "$TARGET_DIR"
 
   # 环境变量：从 .env 加载 + 覆盖 cc-switch 代理所需
