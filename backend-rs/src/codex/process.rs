@@ -373,9 +373,31 @@ impl CodexProcessManager {
 /// 真正的 `.exe` 可执行文件以及非 Windows 平台直接启动。
 #[cfg(windows)]
 fn build_codex_command(bin: &str) -> Command {
+    // 裸名解析：Windows 上 `Command::new("codex")` 走 CreateProcess，搜 PATH 时
+    // 只自动补 `.exe`、不补 `.cmd`/`.bat`，因此 npm 全局安装的 codex（`codex.cmd`
+    // 垫片，没有 `codex.exe`）会被判为 "program not found"。先用 `where` 把裸名
+    // 解析成带扩展名的绝对路径，让下面的 `.cmd`/`.bat` 分支接管，进而由
+    // `resolve_node_script` 直接启动 `node codex.js`（避免 cmd.exe /c 的 stdio
+    // 孙进程问题）。解析失败则保持原样，交给 CreateProcess（兼容旧行为）。
+    let bin: String = if is_bare_program_name(bin) {
+        match resolve_program_path(bin) {
+            Some(resolved) => {
+                tracing::info!(
+                    original = bin,
+                    resolved = %resolved,
+                    "resolved bare codex bin via where"
+                );
+                resolved
+            }
+            None => bin.to_string(),
+        }
+    } else {
+        bin.to_string()
+    };
     let lower = bin.to_ascii_lowercase();
+
     if lower.ends_with(".cmd") || lower.ends_with(".bat") {
-        if let Some(cmd) = resolve_node_script(bin) {
+        if let Some(cmd) = resolve_node_script(&bin) {
             return cmd;
         }
         // 兜底：使用绝对路径的 cmd.exe，避免 Rust 在 PATH 不含
@@ -385,16 +407,64 @@ fn build_codex_command(bin: &str) -> Command {
             .filter(|s| !s.trim().is_empty())
             .unwrap_or_else(|| "C:\\Windows\\system32\\cmd.exe".to_string());
         tracing::warn!(
-            bin = bin,
+            bin = %bin,
             comspec = %comspec,
             "falling back to cmd.exe /c (could not resolve npm shim to node script)"
         );
         let mut c = Command::new(comspec);
-        c.arg("/c").arg(bin);
+        c.arg("/c").arg(&bin);
         c
     } else {
-        Command::new(bin)
+        Command::new(&bin)
     }
+}
+
+/// 判断是否为"裸程序名"：不含路径分隔符，且没有可执行扩展名。
+///
+/// 这类名字交给 Windows `CreateProcess` 时只会按 `.exe` 搜索 PATH，
+/// 无法命中 npm 的 `.cmd`/`.bat` 垫片，是 `Command::new("codex")` 报
+/// "program not found" 的根因。
+#[cfg(windows)]
+fn is_bare_program_name(name: &str) -> bool {
+    let lower = name.to_ascii_lowercase();
+    if lower.contains('\\') || lower.contains('/') {
+        return false;
+    }
+    !(lower.ends_with(".exe")
+        || lower.ends_with(".cmd")
+        || lower.ends_with(".bat")
+        || lower.ends_with(".ps1"))
+}
+
+/// 用 `where` 将裸名解析为绝对路径：优先 `.exe`，其次 `.cmd`/`.bat`。
+///
+/// 跳过无扩展名项（Git Bash 风格的 shell 垫片，`CreateProcess` 不认）与
+/// `.ps1`（需 PowerShell 解释）。`where codex` 通常返回多行（`codex`、
+/// `codex.cmd`），这里只挑能被直接 spawn 的带扩展名条目。
+#[cfg(windows)]
+fn resolve_program_path(name: &str) -> Option<String> {
+    let out = std::process::Command::new("where").arg(name).output().ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let mut exe: Option<String> = None;
+    let mut cmd_bat: Option<String> = None;
+    for line in stdout.lines() {
+        let line = line.trim();
+        if line.is_empty() {
+            continue;
+        }
+        let low = line.to_ascii_lowercase();
+        if low.ends_with(".exe") {
+            exe = Some(line.to_string());
+            break;
+        }
+        if (low.ends_with(".cmd") || low.ends_with(".bat")) && cmd_bat.is_none() {
+            cmd_bat = Some(line.to_string());
+        }
+    }
+    exe.or(cmd_bat)
 }
 
 /// 将 npm 的 `.cmd` 垫片解析为直接调用 `node <script>` 的 Command。
@@ -523,4 +593,42 @@ fn run_cmd_capture(cmd: &str) -> Option<String> {
         return None;
     }
     Some(String::from_utf8_lossy(&out.stdout).into_owned())
+}
+
+#[cfg(all(test, windows))]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn bare_program_name_detection() {
+        // 裸名：需要 where 解析（CreateProcess 只补 .exe，命中不了 .cmd 垫片）
+        assert!(is_bare_program_name("codex"));
+        assert!(is_bare_program_name("CODEX"));
+        assert!(is_bare_program_name("node"));
+
+        // 带可执行扩展名：无需解析，直接交给对应分支
+        assert!(!is_bare_program_name("codex.exe"));
+        assert!(!is_bare_program_name("codex.cmd"));
+        assert!(!is_bare_program_name("codex.bat"));
+        assert!(!is_bare_program_name("codex.ps1"));
+        assert!(!is_bare_program_name("CODEX.CMD"));
+
+        // 含路径分隔符：已是路径，不应当作裸名解析
+        assert!(!is_bare_program_name(r"C:\Users\me\codex"));
+        assert!(!is_bare_program_name("./codex"));
+        assert!(!is_bare_program_name("bin/codex"));
+    }
+
+    /// 宿主机装了 npm 全局 codex 时，resolve_program_path 应返回带扩展名的路径；
+    /// 未安装时 where 失败返回 None，测试自动跳过（不断言）。
+    #[test]
+    fn resolve_program_path_picks_executable_extension() {
+        if let Some(p) = resolve_program_path("codex") {
+            let low = p.to_ascii_lowercase();
+            assert!(
+                low.ends_with(".exe") || low.ends_with(".cmd") || low.ends_with(".bat"),
+                "expected an .exe/.cmd/.bat path, got {p}"
+            );
+        }
+    }
 }

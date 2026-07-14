@@ -66,3 +66,6 @@ codex-schema/
 # Rust
 /backend-rs/target
 **/*.rs.bk
+
+# 部署打包产物（pack.sh 生成）
+/codex-webui-deploy.tar.gz

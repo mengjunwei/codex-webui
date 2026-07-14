@@ -398,7 +398,7 @@ async fn codex_version_async(state: &AppState) -> String {
     let result: Option<String> = match tokio::time::timeout(
         std::time::Duration::from_secs(2),
         tokio::task::spawn_blocking(move || {
-            std::process::Command::new(bin)
+            build_codex_version_command(&bin)
                 .arg("--version")
                 .output()
                 .ok()
@@ -418,6 +418,28 @@ async fn codex_version_async(state: &AppState) -> String {
         _ => None,
     };
     result.unwrap_or_else(|| "unknown".into())
+}
+
+/// 构造用于执行 `codex --version` 的命令。
+///
+/// Windows 上 CreateProcess 不补 `.cmd`/`.bat`，npm 全局安装的 codex 是
+/// `codex.cmd` 垫片，直接 `Command::new("codex")` 会 program not found。
+/// `--version` 是一次性命令，用 `cmd.exe /c` 让 PATHEXT 解析即可（不涉及
+/// app-server 的长期 stdio 管道）。非 Windows 直接启动。
+#[cfg(windows)]
+fn build_codex_version_command(bin: &str) -> std::process::Command {
+    let comspec = std::env::var("COMSPEC")
+        .ok()
+        .filter(|s| !s.trim().is_empty())
+        .unwrap_or_else(|| r"C:\Windows\system32\cmd.exe".to_string());
+    let mut c = std::process::Command::new(comspec);
+    c.args(["/C", bin]);
+    c
+}
+
+#[cfg(not(windows))]
+fn build_codex_version_command(bin: &str) -> std::process::Command {
+    std::process::Command::new(bin)
 }
 
 #[cfg(test)]
