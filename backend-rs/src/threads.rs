@@ -1100,8 +1100,11 @@ fn parse_positive_limit(value: Option<&str>) -> Result<Option<i64>, AppError> {
 #[derive(serde::Serialize, utoipa::ToSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct GitInfoDto {
+    /// Git commit SHA
     pub sha: Option<String>,
+    /// 分支名
     pub branch: Option<String>,
+    /// 远程仓库地址
     pub origin_url: Option<String>,
 }
 
@@ -1111,15 +1114,19 @@ pub struct GitInfoDto {
 #[derive(serde::Serialize, utoipa::ToSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct TurnDto {
+    /// turn ID
     pub id: String,
-    /// 16 路 ThreadItem 可辨识联合；透传不展开。
+    /// turn 内的消息/动作项（command/fileChange/mcpToolCall 等）
     pub items: Vec<serde_json::Value>,
-    /// `completed` / `interrupted` / `failed` / `inProgress`。
+    /// turn 状态：completed/interrupted/failed/inProgress
     pub status: String,
-    /// TurnErrorDto；复杂结构，以 Value 透传。
+    /// 错误详情（失败时）
     pub error: Option<serde_json::Value>,
+    /// 开始时间
     pub started_at: Option<i64>,
+    /// 完成时间
     pub completed_at: Option<i64>,
+    /// 耗时（毫秒）
     pub duration_ms: Option<i64>,
 }
 
@@ -1128,24 +1135,39 @@ pub struct TurnDto {
 #[derive(serde::Serialize, utoipa::ToSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct ThreadDto {
+    /// 线程 ID
     pub id: String,
+    /// fork 来源线程 ID（无则 null）
     pub forked_from_id: Option<String>,
+    /// 预览摘要
     pub preview: String,
+    /// 是否临时线程
     pub ephemeral: bool,
+    /// 模型 provider
     pub model_provider: String,
+    /// 创建时间（Unix 毫秒）
     pub created_at: i64,
+    /// 更新时间（Unix 毫秒）
     pub updated_at: i64,
-    /// ThreadStatus oneOf；以 Value 透传不展开。
+    /// 线程状态（含 active 的等待标志）
     pub status: serde_json::Value,
+    /// 关联路径
     pub path: Option<String>,
+    /// 工作目录
     pub cwd: String,
+    /// codex CLI 版本
     pub cli_version: String,
-    /// SessionSource oneOf；以 Value 透传不展开。
+    /// 会话来源
     pub source: serde_json::Value,
+    /// agent 昵称
     pub agent_nickname: Option<String>,
+    /// agent 角色
     pub agent_role: Option<String>,
+    /// git 信息
     pub git_info: Option<GitInfoDto>,
+    /// 线程名
     pub name: Option<String>,
+    /// turn 列表
     pub turns: Vec<TurnDto>,
 }
 
@@ -1154,18 +1176,23 @@ pub struct ThreadDto {
 #[derive(serde::Serialize, utoipa::ToSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct ThreadStartResponse {
+    /// 线程详情
     pub thread: ThreadDto,
+    /// 实际使用的模型
     pub model: String,
+    /// 模型 provider
     pub model_provider: String,
-    /// `fast` / `flex` / null。
+    /// 服务层级 fast/flex
     pub service_tier: Option<String>,
+    /// 工作目录
     pub cwd: String,
-    /// ApprovalPolicy 联合；以 Value 透传。
+    /// 审批策略
     pub approval_policy: serde_json::Value,
-    /// `user` / `guardian_subagent`。
+    /// 审批者 user/guardian_subagent
     pub approvals_reviewer: String,
-    /// SandboxPolicy oneOf；以 Value 透传。
+    /// 沙箱策略
     pub sandbox: serde_json::Value,
+    /// 推理强度
     pub reasoning_effort: Option<String>,
 }
 
@@ -1173,7 +1200,9 @@ pub struct ThreadStartResponse {
 #[derive(serde::Serialize, utoipa::ToSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct ThreadListResponse {
+    /// 线程列表
     pub data: Vec<ThreadDto>,
+    /// 分页游标（无更多数据为 null）
     pub next_cursor: Option<String>,
 }
 
@@ -1181,19 +1210,23 @@ pub struct ThreadListResponse {
 #[derive(serde::Serialize, utoipa::ToSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct ThreadLoadedListResponse {
+    /// 已加载线程 ID 列表
     pub data: Vec<String>,
+    /// 分页游标（无更多数据为 null）
     pub next_cursor: Option<String>,
 }
 
 /// thread/read 响应（对齐 TS ThreadReadResponseDto）。
 #[derive(serde::Serialize, utoipa::ToSchema)]
 pub struct ThreadReadResponse {
+    /// 线程详情
     pub thread: ThreadDto,
 }
 
 /// turn/start 响应（对齐 TS TurnStartResponseDto）。
 #[derive(serde::Serialize, utoipa::ToSchema)]
 pub struct TurnStartResponse {
+    /// turn 详情
     pub turn: TurnDto,
 }
 
@@ -1201,17 +1234,20 @@ pub struct TurnStartResponse {
 #[derive(serde::Serialize, utoipa::ToSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct TurnSteerResponse {
+    /// 目标 turn ID
     pub turn_id: String,
 }
 
 /// thread/unarchive 响应（对齐 TS ThreadUnarchiveResponseDto）。
 #[derive(serde::Serialize, utoipa::ToSchema)]
 pub struct ThreadUnarchiveResponse {
+    /// 线程详情
     pub thread: ThreadDto,
 }
 
 /// thread/rollback 响应（对齐 TS ThreadRollbackResponseDto）。
 #[derive(serde::Serialize, utoipa::ToSchema)]
 pub struct ThreadRollbackResponse {
+    /// 线程详情
     pub thread: ThreadDto,
 }

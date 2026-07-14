@@ -315,6 +315,7 @@ pub fn resolve_terminal_cwd(
 #[allow(non_snake_case)]
 #[derive(serde::Serialize, utoipa::ToSchema)]
 pub struct OkResponse {
+    /// 操作是否成功。
     pub ok: bool,
 }
 
@@ -322,15 +323,17 @@ pub struct OkResponse {
 #[allow(non_snake_case)]
 #[derive(serde::Serialize, utoipa::ToSchema)]
 pub struct FileEntryDto {
+    /// 条目名称（不含路径）。
     pub name: String,
+    /// 条目的完整路径。
     pub path: String,
-    /// `file` / `directory` / `other`。
+    /// 条目类型：file、directory 或 other。
     #[serde(rename = "type")]
     pub r#type: String,
-    /// 仅文件条目携带；目录省略。
+    /// 文件大小（字节），仅文件条目返回。
     #[serde(skip_serializing_if = "Option::is_none")]
     pub size: Option<i64>,
-    /// 仅文件条目携带；目录省略。
+    /// 修改时间（Unix 毫秒），仅文件条目返回。
     #[serde(skip_serializing_if = "Option::is_none")]
     pub mtime: Option<i64>,
 }
@@ -339,7 +342,9 @@ pub struct FileEntryDto {
 #[allow(non_snake_case)]
 #[derive(serde::Serialize, utoipa::ToSchema)]
 pub struct WorkspaceRootsResponse {
+    /// 工作区根目录列表（配置根 + 家目录 + 动态根）。
     pub roots: Vec<String>,
+    /// 当前用户家目录。
     pub homeDir: String,
 }
 
@@ -347,9 +352,13 @@ pub struct WorkspaceRootsResponse {
 #[allow(non_snake_case)]
 #[derive(serde::Serialize, utoipa::ToSchema)]
 pub struct FileReadResponse {
+    /// 读取的文件路径。
     pub path: String,
+    /// 文本内容（非 UTF-8 字节以 U+FFFD 替换）。
     pub content: String,
+    /// 文件大小（字节）。
     pub size: i64,
+    /// 修改时间（Unix 毫秒）。
     pub mtime: i64,
 }
 
@@ -357,14 +366,18 @@ pub struct FileReadResponse {
 #[allow(non_snake_case)]
 #[derive(serde::Serialize, utoipa::ToSchema)]
 pub struct FileMetadataResponse {
+    /// 文件或目录的路径。
     pub path: String,
+    /// 名称（路径最后一段）。
     pub name: String,
-    /// `file` / `directory` / `symlink` / `other`。
+    /// 类型：file、directory、symlink 或 other。
     #[serde(rename = "type")]
     pub r#type: String,
+    /// 大小（字节）。
     pub size: i64,
+    /// 修改时间（Unix 毫秒）。
     pub mtime: i64,
-    /// 权限位八进制字符串（如 `"0644"`）。
+    /// 权限位八进制字符串，如 "0644"。
     pub permissions: String,
 }
 
@@ -372,8 +385,11 @@ pub struct FileMetadataResponse {
 #[allow(non_snake_case)]
 #[derive(serde::Serialize, utoipa::ToSchema)]
 pub struct CreateFileResponse {
+    /// 是否创建成功。
     pub ok: bool,
+    /// 创建的文件路径。
     pub path: String,
+    /// 修改时间（Unix 毫秒）。
     pub mtime: i64,
 }
 
@@ -381,7 +397,9 @@ pub struct CreateFileResponse {
 #[allow(non_snake_case)]
 #[derive(serde::Serialize, utoipa::ToSchema)]
 pub struct CreateDirectoryResponse {
+    /// 是否创建成功。
     pub ok: bool,
+    /// 创建的目录路径。
     pub path: String,
 }
 
@@ -389,9 +407,13 @@ pub struct CreateDirectoryResponse {
 #[allow(non_snake_case)]
 #[derive(serde::Serialize, utoipa::ToSchema)]
 pub struct WriteFileResponse {
+    /// 是否写入成功。
     pub ok: bool,
+    /// 写入的文件路径。
     pub path: String,
+    /// 写入后的文件大小（字节）。
     pub size: i64,
+    /// 修改时间（Unix 毫秒）。
     pub mtime: i64,
 }
 
@@ -399,8 +421,11 @@ pub struct WriteFileResponse {
 #[allow(non_snake_case)]
 #[derive(serde::Serialize, utoipa::ToSchema)]
 pub struct RenamePathResponse {
+    /// 是否重命名成功。
     pub ok: bool,
+    /// 原路径。
     pub oldPath: String,
+    /// 重命名后的新路径。
     pub newPath: String,
 }
 
@@ -408,8 +433,11 @@ pub struct RenamePathResponse {
 #[allow(non_snake_case)]
 #[derive(serde::Serialize, utoipa::ToSchema)]
 pub struct CopyPathResponse {
+    /// 是否复制成功。
     pub ok: bool,
+    /// 源文件或目录路径。
     pub sourcePath: String,
+    /// 复制后的目标路径。
     pub destinationPath: String,
 }
 
@@ -417,7 +445,9 @@ pub struct CopyPathResponse {
 #[allow(non_snake_case)]
 #[derive(serde::Serialize, utoipa::ToSchema)]
 pub struct UploadedFileDto {
+    /// 上传后落地的文件路径。
     pub path: String,
+    /// 文件大小（字节）。
     pub size: i64,
 }
 
@@ -425,7 +455,9 @@ pub struct UploadedFileDto {
 #[allow(non_snake_case)]
 #[derive(serde::Serialize, utoipa::ToSchema)]
 pub struct UploadFilesResponse {
+    /// 是否上传成功。
     pub ok: bool,
+    /// 已上传的文件列表。
     pub files: Vec<UploadedFileDto>,
 }
 
@@ -433,28 +465,29 @@ pub struct UploadFilesResponse {
 #[allow(non_snake_case)]
 #[derive(serde::Serialize, utoipa::ToSchema)]
 pub struct ArchiveEntryDto {
+    /// 条目名称。
     pub name: String,
+    /// 条目在归档内的相对路径。
     pub path: String,
-    /// `file` / `directory`。
+    /// 条目类型：file 或 directory。
     #[serde(rename = "type")]
     pub r#type: String,
-    /// 目录为 null / 缺省。
+    /// 文件大小（字节），目录缺省。
     #[serde(skip_serializing_if = "Option::is_none")]
     pub size: Option<i64>,
-    /// zip 条目携带；tar/7z 缺省。
+    /// 压缩后大小（字节），zip 条目携带。
     #[serde(skip_serializing_if = "Option::is_none")]
     pub compressedSize: Option<i64>,
-    /// tar 条目携带（毫秒）；zip/7z 缺省。
+    /// 修改时间（Unix 毫秒），tar 条目携带。
     #[serde(skip_serializing_if = "Option::is_none")]
     pub mtime: Option<i64>,
-    /// zip / 7z 条目携带。
+    /// 是否加密，zip/7z 条目携带。
     #[serde(skip_serializing_if = "Option::is_none")]
     pub encrypted: Option<bool>,
-    /// tar 条目携带（非 file/dir 类型）。
+    /// 是否为不支持的条目类型（非 file/dir），tar 条目携带。
     #[serde(skip_serializing_if = "Option::is_none")]
     pub unsupported: Option<bool>,
-    /// 仅目录节点携带。递归树用原始 JSON 透传（避免 utoipa ToSchema derive
-    /// 对自引用类型的运行时构造栈溢出）。
+    /// 子条目列表，仅目录节点携带（递归树用原始 JSON 透传）。
     #[serde(skip_serializing_if = "Option::is_none")]
     pub children: Option<serde_json::Value>,
 }
@@ -463,7 +496,9 @@ pub struct ArchiveEntryDto {
 #[allow(non_snake_case)]
 #[derive(serde::Serialize, utoipa::ToSchema)]
 pub struct ArchiveListResponse {
+    /// 归档文件的路径。
     pub path: String,
+    /// 归档内的条目树（按目录嵌套）。
     pub entries: Vec<ArchiveEntryDto>,
 }
 
