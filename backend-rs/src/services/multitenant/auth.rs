@@ -5,8 +5,8 @@
 //! 用 claims.typ="mt_access" 与旧 token 区分;refresh token 为随机串,仅存 SHA-256 哈希。
 
 use crate::error::{AppError, ErrorCode};
-use crate::multitenant::entity::{refresh_token, user};
-use crate::multitenant::{new_id, now_ms};
+use crate::db::entities::{refresh_token, user};
+use crate::services::multitenant::{new_id, now_ms};
 use argon2::password_hash::{PasswordHash, PasswordHasher, PasswordVerifier, SaltString};
 use argon2::Argon2;
 use axum::http::StatusCode;

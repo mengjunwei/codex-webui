@@ -2,11 +2,11 @@
 //! 供安全合规追溯。owner 可查本 team 的审计记录。
 
 use crate::error::AppError;
-use crate::multitenant::entity::audit_log::{
+use crate::db::entities::audit_log::{
     ActiveModel as AuditLogActiveModel, Column as AuditLogColumn, Entity as AuditLogEntity,
     Model as AuditLogModel,
 };
-use crate::multitenant::{new_id, now_ms};
+use crate::services::multitenant::{new_id, now_ms};
 use sea_orm::entity::prelude::*;
 use sea_orm::{DatabaseConnection, QueryFilter, QueryOrder, QuerySelect, Set};
 

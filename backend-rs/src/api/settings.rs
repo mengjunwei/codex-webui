@@ -4,9 +4,9 @@ use sea_orm::DatabaseConnection;
 use sea_orm::sea_query::Expr;
 use sea_orm::{ColumnTrait, EntityTrait, QueryFilter, TransactionTrait};
 
-use crate::entity::setting::{Column as SettingColumn, Entity as SettingEntity};
+use crate::db::entity::setting::{Column as SettingColumn, Entity as SettingEntity};
 use crate::error::{AppError, ErrorCode, Json};
-use crate::settings::{
+use crate::services::settings::{
     default_as_value, find_def, validate_and_serialize, write_setting, SettingsReader,
 };
 use crate::state::AppState;
@@ -35,14 +35,14 @@ pub struct SettingDto {
 }
 
 impl SettingDto {
-    fn from_resolved(r: &crate::settings::ResolvedSetting, constraints: serde_json::Value) -> Self {
+    fn from_resolved(r: &crate::services::settings::ResolvedSetting, constraints: serde_json::Value) -> Self {
         Self {
             key: r.key.to_string(),
             value: r.value.clone(),
             source: match r.source {
-                crate::settings::ValueSource::Db => "db",
-                crate::settings::ValueSource::Env => "env",
-                crate::settings::ValueSource::Default => "default",
+                crate::services::settings::ValueSource::Db => "db",
+                crate::services::settings::ValueSource::Env => "env",
+                crate::services::settings::ValueSource::Default => "default",
             },
             ty: r.def.ty.as_str(),
             category: r.def.category.as_str(),
@@ -246,7 +246,7 @@ pub async fn update_batch(
                         .col_expr(SettingColumn::Value, Expr::value(value.clone()))
                         .col_expr(
                             SettingColumn::UpdatedAt,
-                            Expr::value(crate::multitenant::now_ms()),
+                            Expr::value(crate::services::multitenant::now_ms()),
                         )
                         .filter(SettingColumn::Key.eq(key.to_string()))
                         .exec(txn)

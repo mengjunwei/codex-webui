@@ -11,8 +11,8 @@
 use crate::auth::AuthService;
 use crate::codex::{CodexProcessManager, LifecycleEvent};
 use crate::error::AppError;
-use crate::terminal::{TerminalMetadataEvent, TerminalService};
-use crate::threads::ThreadResumeRegistry;
+use crate::services::terminal::{TerminalMetadataEvent, TerminalService};
+use crate::services::threads::ThreadResumeRegistry;
 use sea_orm::DatabaseConnection;
 use serde_json::{json, Value};
 use socketioxide::extract::{AckSender, Data as SocketData, SocketRef, State};
@@ -276,7 +276,7 @@ async fn on_term_open(s: SocketRef, State(state): State<RealtimeState>, SocketDa
         .lock()
         .map(|g| g.iter().cloned().collect())
         .unwrap_or_default();
-    let cwd: String = match crate::files::resolve_terminal_cwd(
+    let cwd: String = match crate::services::files::resolve_terminal_cwd(
         &state.db,
         &dyn_roots,
         &ctx,
@@ -396,7 +396,7 @@ pub fn spawn_emit_tasks(io: SocketIo, codex: Arc<CodexProcessManager>, terminal:
 /// 各节点 emit 给自己持有的订阅 socket(跨节点广播)。
 pub fn spawn_event_bus_emit(
     io: SocketIo,
-    bus: std::sync::Arc<dyn crate::multitenant::event_bus::EventBus>,
+    bus: std::sync::Arc<dyn crate::services::multitenant::event_bus::EventBus>,
 ) {
     tokio::spawn(async move {
         let mut rx = match bus.subscribe("codex:events").await {
@@ -488,7 +488,7 @@ fn spawn_server_request_record_and_emit(io: SocketIo, codex: Arc<CodexProcessMan
                     // 阶段 1:记录到 DB(必须在 WS emit 之前完成)。
                     // MEDIUM-1 修复:若 DB 记录失败,则完全跳过 emit
                     // (防止出现无法响应的幽灵请求)。
-                    if let Err(e) = crate::event_subscribers::record_server_request(&db, &codex, &req).await {
+                    if let Err(e) = crate::api::event_subscribers::record_server_request(&db, &codex, &req).await {
                         tracing::error!("record server request failed, skipping emit: {e}");
                         continue;
                     }

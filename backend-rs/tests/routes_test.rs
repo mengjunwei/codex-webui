@@ -12,9 +12,9 @@ use axum::http::{Request, StatusCode};
 use codex_webui::auth::AuthService;
 use codex_webui::codex::CodexProcessManager;
 use codex_webui::db::Db;
-use codex_webui::routes::build_router;
+use codex_webui::api::build_router;
 use codex_webui::state::AppState;
-use codex_webui::terminal::{TerminalConfig, TerminalService};
+use codex_webui::services::terminal::{TerminalConfig, TerminalService};
 use rusqlite::Connection;
 use std::sync::{Arc, Mutex};
 use tower::ServiceExt;
@@ -24,7 +24,7 @@ fn state(api_key: &str) -> AppState {
     let c = Connection::open_in_memory().unwrap();
     let db = Arc::new(Db { conn: Mutex::new(c) });
     let term_cfg = {
-        let r = codex_webui::settings::SettingsReader::new(&db, None);
+        let r = codex_webui::services::settings::SettingsReader::new(&db, None);
         TerminalConfig::from_settings(&r)
     };
     let codex = Arc::new(CodexProcessManager::new("codex".into(), None));
@@ -32,7 +32,7 @@ fn state(api_key: &str) -> AppState {
         db,
         mt_pg: None,
         mt_master_key: "test-master".into(),
-        mt_team_codex: Arc::new(codex_webui::multitenant::codex_pool::TeamCodexManager::new(
+        mt_team_codex: Arc::new(codex_webui::services::multitenant::codex_pool::TeamCodexManager::new(
             std::path::PathBuf::from("/tmp/mt-test"),
             "codex".into(),
             None,
@@ -40,10 +40,10 @@ fn state(api_key: &str) -> AppState {
         mt_redis: None,
         metrics_handle: None,
         auth: Arc::new(AuthService::new(api_key)),
-        status: Arc::new(codex_webui::codex_status::CodexStatusService::new(codex.clone())),
+        status: Arc::new(codex_webui::services::codex_status::CodexStatusService::new(codex.clone())),
         codex,
         terminal: TerminalService::new(term_cfg),
-        resume_registry: Arc::new(codex_webui::threads::ThreadResumeRegistry::new()),
+        resume_registry: Arc::new(codex_webui::services::threads::ThreadResumeRegistry::new()),
         dynamic_files_roots: Arc::new(Mutex::new(HashSet::new())),
         settings_cache: Arc::new(Mutex::new(HashMap::new())),
     }

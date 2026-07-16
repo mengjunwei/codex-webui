@@ -2,12 +2,12 @@
 
 use crate::auth::AuthService;
 use crate::codex::CodexProcessManager;
-use crate::codex_status::CodexStatusService;
-use crate::multitenant::codex_pool::TeamCodexManager;
+use crate::services::codex_status::CodexStatusService;
+use crate::services::multitenant::codex_pool::TeamCodexManager;
 use metrics_exporter_prometheus::PrometheusHandle;
-use crate::settings::ValueSource;
-use crate::terminal::TerminalService;
-use crate::threads::ThreadResumeRegistry;
+use crate::services::settings::ValueSource;
+use crate::services::terminal::TerminalService;
+use crate::services::threads::ThreadResumeRegistry;
 use sea_orm::DatabaseConnection;
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
@@ -48,8 +48,8 @@ impl AppState {
     }
 
     /// 便捷方法：借用本状态中的 DB 构造一个 `SettingsReader`。
-    pub fn settings_reader(&self) -> crate::settings::SettingsReader<'_> {
-        crate::settings::SettingsReader::new(&self.db, Some(&self.settings_cache))
+    pub fn settings_reader(&self) -> crate::services::settings::SettingsReader<'_> {
+        crate::services::settings::SettingsReader::new(&self.db, Some(&self.settings_cache))
     }
 
     /// 清空 settings 缓存（写入后调用，对齐 TS reloadCache）。

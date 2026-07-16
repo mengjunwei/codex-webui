@@ -6,7 +6,7 @@
 //! 原子写入 —— 待文件服务支持 multipart/流式传输后再实现。
 
 use crate::error::{AppError, ErrorCode};
-use crate::files;
+use crate::services::files;
 use crate::state::AppState;
 use axum::{
     extract::{Query, State},
@@ -116,7 +116,7 @@ pub async fn get_config(
             "path is required",
         ));
     }
-    let resolved = crate::files::resolve_safe_path(&state, raw_path).await?;
+    let resolved = crate::services::files::resolve_safe_path(&state, raw_path).await?;
     let meta = tokio::fs::metadata(&resolved).await
         .map_err(|e| AppError::internal(format!("metadata: {e}")))?;
     if !meta.is_file() {

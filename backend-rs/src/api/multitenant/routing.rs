@@ -124,7 +124,7 @@ impl WorkerRegistry {
             .map_err(|e| AppError::internal(format!("redis sadd: {e}")))?;
         let _: () = redis::cmd("SET")
             .arg(format!("worker:{}", self.worker_id))
-            .arg(crate::multitenant::now_ms())
+            .arg(crate::services::multitenant::now_ms())
             .arg("EX")
             .arg(ttl_secs)
             .query_async(&mut conn)

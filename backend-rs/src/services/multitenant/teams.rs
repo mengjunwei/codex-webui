@@ -6,23 +6,23 @@
 //! 注:本模块 entity 暂未声明 Relation 元数据,涉及多表 JOIN 走自定义 SELECT + 手动
 //! 投影,确保 PG/MySQL 行为一致(避免 SeaORM builder 隐式补 ON 子句)。
 
-pub use crate::multitenant::entity::invitation::Model as Invitation;
-pub use crate::multitenant::entity::team::Model as Team;
+pub use crate::db::entities::invitation::Model as Invitation;
+pub use crate::db::entities::team::Model as Team;
 
 use crate::error::{AppError, ErrorCode};
-use crate::multitenant::entity::invitation::{
+use crate::db::entities::invitation::{
     ActiveModel as InvitationActiveModel, Column as InvitationColumn, Entity as InvitationEntity,
 };
-use crate::multitenant::entity::team::{
+use crate::db::entities::team::{
     ActiveModel as TeamActiveModel, Column as TeamColumn, Entity as TeamEntity,
 };
-use crate::multitenant::entity::team_member::{
+use crate::db::entities::team_member::{
     ActiveModel as TeamMemberActiveModel, Column as TeamMemberColumn, Entity as TeamMemberEntity,
 };
-use crate::multitenant::entity::user::{
+use crate::db::entities::user::{
     Column as UserColumn, Entity as UserEntity, Model as UserModel,
 };
-use crate::multitenant::{new_id, now_ms};
+use crate::services::multitenant::{new_id, now_ms};
 use axum::http::StatusCode;
 use sea_orm::entity::prelude::*;
 use sea_orm::{ActiveModelTrait, DatabaseConnection, QueryOrder, QuerySelect, Set, TransactionTrait};

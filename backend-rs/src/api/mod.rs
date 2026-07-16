@@ -1,7 +1,19 @@
-//! 路由处理器与路由构建。
+//! API 层：HTTP 路由处理器、WebSocket 网关、请求/响应 DTO。
 
 pub mod auth;
+pub mod chat;
+pub mod event_subscribers;
+pub mod files;
 pub mod health;
+pub mod logs;
+pub mod multitenant;
+pub mod onlyoffice;
+pub mod proxies;
+pub mod realtime;
+pub mod settings;
+pub mod sqlite;
+pub mod terminal;
+pub mod threads;
 
 use crate::auth::middleware::require_auth;
 use crate::state::AppState;
@@ -34,140 +46,140 @@ use utoipa_swagger_ui::SwaggerUi;
         crate::auth::LoginRequest,
         crate::auth::LoginResponse,
         // logs
-        crate::logs::LogEntry,
-        crate::logs::LogsResponse,
-        crate::logs::LogsExportResponse,
-        crate::logs::SystemInfo,
-        // sqlite_handlers
-        crate::sqlite_handlers::BreakdownDto,
-        crate::sqlite_handlers::TurnUsageDto,
-        crate::sqlite_handlers::TurnTokenUsageDto,
-        crate::sqlite_handlers::ThreadTokenUsageResponse,
-        crate::sqlite_handlers::TurnDiffDto,
-        crate::sqlite_handlers::ThreadTurnDiffsResponse,
-        crate::sqlite_handlers::TurnErrorDto,
-        crate::sqlite_handlers::ThreadTurnErrorsResponse,
-        crate::sqlite_handlers::PendingServerRequestDto,
-        crate::sqlite_handlers::ListPendingResponse,
-        crate::sqlite_handlers::RespondRequestBody,
+        crate::api::logs::LogEntry,
+        crate::api::logs::LogsResponse,
+        crate::api::logs::LogsExportResponse,
+        crate::api::logs::SystemInfo,
+        // sqlite
+        crate::api::sqlite::BreakdownDto,
+        crate::api::sqlite::TurnUsageDto,
+        crate::api::sqlite::TurnTokenUsageDto,
+        crate::api::sqlite::ThreadTokenUsageResponse,
+        crate::api::sqlite::TurnDiffDto,
+        crate::api::sqlite::ThreadTurnDiffsResponse,
+        crate::api::sqlite::TurnErrorDto,
+        crate::api::sqlite::ThreadTurnErrorsResponse,
+        crate::api::sqlite::PendingServerRequestDto,
+        crate::api::sqlite::ListPendingResponse,
+        crate::api::sqlite::RespondRequestBody,
         // settings
-        crate::settings::handlers::SettingDto,
-        crate::settings::handlers::SettingListResponse,
-        crate::settings::handlers::SettingBatchEntry,
-        crate::settings::handlers::SettingBatchUpdateBody,
-        crate::settings::handlers::UpdatePayload,
+        crate::api::settings::SettingDto,
+        crate::api::settings::SettingListResponse,
+        crate::api::settings::SettingBatchEntry,
+        crate::api::settings::SettingBatchUpdateBody,
+        crate::api::settings::UpdatePayload,
         // files
-        crate::files::AddRootBody,
-        crate::files::CreateFileBody,
-        crate::files::CreateDirBody,
-        crate::files::WriteFileBody,
-        crate::files::RenameBody,
-        crate::files::CopyMoveBody,
+        crate::api::files::AddRootBody,
+        crate::api::files::CreateFileBody,
+        crate::api::files::CreateDirBody,
+        crate::api::files::WriteFileBody,
+        crate::api::files::RenameBody,
+        crate::api::files::CopyMoveBody,
         // threads
-        crate::threads::CreateThreadBody,
-        crate::threads::StartTurnBody,
-        crate::threads::RollbackBody,
-        crate::threads::SetNameBody,
+        crate::api::threads::CreateThreadBody,
+        crate::api::threads::StartTurnBody,
+        crate::api::threads::RollbackBody,
+        crate::api::threads::SetNameBody,
         // proxies
-        crate::proxies::LoginBody,
-        crate::proxies::LoginCancelBody,
-        crate::proxies::McpOauthBody,
-        crate::proxies::SkillConfigBody,
-        crate::proxies::PluginInstallBody,
-        crate::proxies::PluginUninstallBody,
+        crate::api::proxies::LoginBody,
+        crate::api::proxies::LoginCancelBody,
+        crate::api::proxies::McpOauthBody,
+        crate::api::proxies::SkillConfigBody,
+        crate::api::proxies::PluginInstallBody,
+        crate::api::proxies::PluginUninstallBody,
         // codex_status_config
-        crate::codex_status_config::ApprovalPolicyBody,
-        crate::codex_status_config::SandboxModeBody,
-        crate::codex_status_config::UpdateConfigBody,
-        crate::codex_status_config::ConfigEdit,
-        crate::codex_status_config::UpdateRawConfigBody,
+        crate::services::codex_status_config::ApprovalPolicyBody,
+        crate::services::codex_status_config::SandboxModeBody,
+        crate::services::codex_status_config::UpdateConfigBody,
+        crate::services::codex_status_config::ConfigEdit,
+        crate::services::codex_status_config::UpdateRawConfigBody,
         // onlyoffice
-        crate::onlyoffice::CallbackBody,
+        crate::api::onlyoffice::CallbackBody,
     )),
     paths(
         // system
-        crate::routes::health::ping,
+        crate::api::health::ping,
         // auth
-        crate::routes::auth::login,
-        crate::routes::auth::logout,
+        crate::api::auth::login,
+        crate::api::auth::logout,
         // logs
-        crate::logs::list_logs,
-        crate::logs::export_diagnostics,
-        // sqlite_handlers
-        crate::sqlite_handlers::read_token_usage,
-        crate::sqlite_handlers::read_latest_token_usage,
-        crate::sqlite_handlers::read_turn_diffs,
-        crate::sqlite_handlers::read_turn_errors,
-        crate::sqlite_handlers::list_pending,
-        crate::sqlite_handlers::respond_to_request,
+        crate::api::logs::list_logs,
+        crate::api::logs::export_diagnostics,
+        // sqlite
+        crate::api::sqlite::read_token_usage,
+        crate::api::sqlite::read_latest_token_usage,
+        crate::api::sqlite::read_turn_diffs,
+        crate::api::sqlite::read_turn_errors,
+        crate::api::sqlite::list_pending,
+        crate::api::sqlite::respond_to_request,
         // settings
-        crate::settings::handlers::list,
-        crate::settings::handlers::get_one,
-        crate::settings::handlers::update_batch,
-        crate::settings::handlers::update_one,
-        crate::settings::handlers::delete_one,
+        crate::api::settings::list,
+        crate::api::settings::get_one,
+        crate::api::settings::update_batch,
+        crate::api::settings::update_one,
+        crate::api::settings::delete_one,
         // files
-        crate::files::get_roots,
-        crate::files::add_root,
-        crate::files::read_tree,
-        crate::files::read_file,
-        crate::files::get_metadata,
-        crate::files::delete_path,
-        crate::files::create_file,
-        crate::files::create_directory,
-        crate::files::write_file,
-        crate::files::serve_file,
-        crate::files::download_file,
-        crate::files::rename_path,
-        crate::files::copy_path,
-        crate::files::move_path,
-        crate::files::upload_files,
-        crate::files::archive_list,
-        crate::files::archive_entry,
+        crate::api::files::get_roots,
+        crate::api::files::add_root,
+        crate::api::files::read_tree,
+        crate::api::files::read_file,
+        crate::api::files::get_metadata,
+        crate::api::files::delete_path,
+        crate::api::files::create_file,
+        crate::api::files::create_directory,
+        crate::api::files::write_file,
+        crate::api::files::serve_file,
+        crate::api::files::download_file,
+        crate::api::files::rename_path,
+        crate::api::files::copy_path,
+        crate::api::files::move_path,
+        crate::api::files::upload_files,
+        crate::api::files::archive_list,
+        crate::api::files::archive_entry,
         // threads
-        crate::threads::create_thread,
-        crate::threads::list_threads,
-        crate::threads::list_loaded_threads,
-        crate::threads::read_thread,
-        crate::threads::resume_thread,
-        crate::threads::start_turn,
-        crate::threads::steer_turn,
-        crate::threads::interrupt_turn,
-        crate::threads::archive_thread,
-        crate::threads::unarchive_thread,
-        crate::threads::compact_thread,
-        crate::threads::fork_thread,
-        crate::threads::rollback_thread,
-        crate::threads::set_thread_name,
+        crate::api::threads::create_thread,
+        crate::api::threads::list_threads,
+        crate::api::threads::list_loaded_threads,
+        crate::api::threads::read_thread,
+        crate::api::threads::resume_thread,
+        crate::api::threads::start_turn,
+        crate::api::threads::steer_turn,
+        crate::api::threads::interrupt_turn,
+        crate::api::threads::archive_thread,
+        crate::api::threads::unarchive_thread,
+        crate::api::threads::compact_thread,
+        crate::api::threads::fork_thread,
+        crate::api::threads::rollback_thread,
+        crate::api::threads::set_thread_name,
         // proxies
-        crate::proxies::account_read,
-        crate::proxies::account_login,
-        crate::proxies::account_login_cancel,
-        crate::proxies::account_logout,
-        crate::proxies::account_rate_limits,
-        crate::proxies::apps_list,
-        crate::proxies::models_list,
-        crate::proxies::mcp_servers_list,
-        crate::proxies::mcp_servers_reload,
-        crate::proxies::mcp_servers_oauth_login,
-        crate::proxies::skills_list,
-        crate::proxies::skills_config_write,
-        crate::proxies::plugins_list,
-        crate::proxies::plugins_detail,
-        crate::proxies::plugins_install,
-        crate::proxies::plugins_uninstall,
+        crate::api::proxies::account_read,
+        crate::api::proxies::account_login,
+        crate::api::proxies::account_login_cancel,
+        crate::api::proxies::account_logout,
+        crate::api::proxies::account_rate_limits,
+        crate::api::proxies::apps_list,
+        crate::api::proxies::models_list,
+        crate::api::proxies::mcp_servers_list,
+        crate::api::proxies::mcp_servers_reload,
+        crate::api::proxies::mcp_servers_oauth_login,
+        crate::api::proxies::skills_list,
+        crate::api::proxies::skills_config_write,
+        crate::api::proxies::plugins_list,
+        crate::api::proxies::plugins_detail,
+        crate::api::proxies::plugins_install,
+        crate::api::proxies::plugins_uninstall,
         // codex_status_config
-        crate::codex_status_config::status,
-        crate::codex_status_config::update_approval_policy,
-        crate::codex_status_config::update_sandbox_mode,
-        crate::codex_status_config::read_config,
-        crate::codex_status_config::update_config,
-        crate::codex_status_config::read_raw_config,
-        crate::codex_status_config::update_raw_config,
+        crate::services::codex_status_config::status,
+        crate::services::codex_status_config::update_approval_policy,
+        crate::services::codex_status_config::update_sandbox_mode,
+        crate::services::codex_status_config::read_config,
+        crate::services::codex_status_config::update_config,
+        crate::services::codex_status_config::read_raw_config,
+        crate::services::codex_status_config::update_raw_config,
         // onlyoffice + chat
-        crate::onlyoffice::get_config,
-        crate::onlyoffice::handle_callback,
-        crate::chat::upload_attachment,
+        crate::api::onlyoffice::get_config,
+        crate::api::onlyoffice::handle_callback,
+        crate::api::chat::upload_attachment,
     ),
     tags(
         (name = "system", description = "健康检查 / 探针"),
@@ -208,14 +220,14 @@ async fn metrics_endpoint(axum::extract::State(state): axum::extract::State<AppS
 /// - `GET  /api/docs-json`    — 公开(OpenAPI 规格)
 /// - `/api/*` 下的其余路由 — 受 require_auth 保护
 pub async fn build_router(state: AppState) -> Router {
-    use crate::chat as chat_mod;
-    use crate::codex_status_config as csc;
-    use crate::files as fl;
-    use crate::onlyoffice as oo;
-    use crate::proxies as px;
-    use crate::settings::handlers as s;
-    use crate::sqlite_handlers as sq;
-    use crate::threads as th;
+    use crate::api::chat as chat_mod;
+    use crate::services::codex_status_config as csc;
+    use crate::api::files as fl;
+    use crate::api::onlyoffice as oo;
+    use crate::api::proxies as px;
+    use crate::api::settings as s;
+    use crate::api::sqlite as sq;
+    use crate::api::threads as th;
 
     // 上传体积上限（取自 settings 的 `files.uploadMaxBytes`，默认 100 MB）。
     // axum 的 `Multipart` 提取器在缺少 `DefaultBodyLimit` 时回落到 2 MB 默认值，
@@ -246,8 +258,8 @@ pub async fn build_router(state: AppState) -> Router {
             post(sq::respond_to_request),
         )
         // ── 日志 ──
-        .route("/logs", get(crate::logs::list_logs))
-        .route("/logs/export", get(crate::logs::export_diagnostics))
+        .route("/logs", get(crate::api::logs::list_logs))
+        .route("/logs/export", get(crate::api::logs::export_diagnostics))
         // ── account(codex 代理)──
         .route("/account", get(px::account_read))
         .route("/account/login", post(px::account_login))
@@ -292,7 +304,7 @@ pub async fn build_router(state: AppState) -> Router {
             get(csc::read_config).patch(csc::update_config),
         )
         .route("/codex/config/raw", get(csc::read_raw_config).put(csc::update_raw_config))
-        // ── files(完整文件操作:roots/tree/read/metadata/CRUD/serve/download/upload/归档预览)──
+        // ── files(完整文件操作)──
         .route("/files/roots", get(fl::get_roots).post(fl::add_root))
         .route("/files/tree", get(fl::read_tree))
         .route("/files/read", get(fl::read_file))
@@ -318,7 +330,7 @@ pub async fn build_router(state: AppState) -> Router {
         ));
 
     // 多租户路由(M1):/api/mt/auth/* 公开;/api/mt/teams/* 受 require_user_auth 保护。
-    use crate::multitenant::handlers as mt;
+    use crate::api::multitenant::handlers as mt;
     let mt_protected: Router<AppState> = Router::new()
         .route("/teams", post(mt::create_team).get(mt::list_teams))
         .route("/teams/join", post(mt::join_team))
@@ -346,16 +358,11 @@ pub async fn build_router(state: AppState) -> Router {
         .merge(mt_protected);
 
     // 为 React 前端(SPA)提供静态文件服务。
-    // 前端产物由 rust-embed 在编译期嵌入二进制（#[folder = "public"]）：
-    // debug 模式从文件系统 live 读，release 模式嵌入。未命中路径回退 index.html（SPA 路由）。
-
     Router::new()
         .route("/api/auth/login", post(auth::login))
         .route("/api/onlyoffice/callback", post(oo::handle_callback))
         .route("/api/docs-json", get(openapi_json))
         .route("/metrics", get(metrics_endpoint))
-        // Swagger UI（公开，不经过 require_auth）；spec 由 ApiDoc 内联提供。
-        // default_model_expand_depth(-1)：加载时自动展开所有嵌套 schema（无需逐个点击 $ref）。
         .merge(
             SwaggerUi::new("/api/docs")
                 .url("/api/openapi.json", ApiDoc::openapi())
@@ -403,8 +410,6 @@ fn asset_response(path: &str, file: &rust_embed::EmbeddedFile) -> Response {
 }
 
 /// 请求日志中间件（对齐 TS pino-http）：记录 method / 脱敏 path / status / 耗时。
-/// 不记录请求头，故 authorization/cookie 天然不入日志；path 经 `sanitize_url`
-/// 脱敏 `access_token` 查询参数。
 async fn request_logger(req: Request, next: Next) -> Response {
     let method = req.method().clone();
     let path = crate::logging::sanitize_url(&req.uri().to_string());

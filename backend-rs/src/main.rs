@@ -7,9 +7,9 @@
 
 use codex_webui::{
     auth::AuthService, codex::CodexProcessManager, config::Config, logging,
-    migration::Migrator, routes::build_router, settings::{self, reconcile_settings},
-    state::AppState, terminal::{TerminalConfig, TerminalService},
-    threads::ThreadResumeRegistry,
+    db::migration::Migrator, api::build_router, services::settings::{self, reconcile_settings},
+    state::AppState, services::terminal::{TerminalConfig, TerminalService},
+    services::threads::ThreadResumeRegistry,
 };
 use sea_orm::DatabaseConnection;
 use sea_orm_migration::MigratorTrait;
@@ -20,7 +20,7 @@ use tokio::signal;
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let _ = dotenvy::dotenv();
-    codex_webui::logs::mark_process_start();
+    codex_webui::api::logs::mark_process_start();
 
     let cfg = Config::from_env()?;
     let _guards = logging::init(&cfg.log_level, cfg.otlp_endpoint.as_deref());
@@ -53,10 +53,10 @@ async fn main() -> anyhow::Result<()> {
         }
     };
 
-    let mt_event_bus: Option<Arc<dyn codex_webui::multitenant::event_bus::EventBus>> =
+    let mt_event_bus: Option<Arc<dyn codex_webui::services::multitenant::event_bus::EventBus>> =
         match &mt_redis {
             Some(client) => Some(Arc::new(
-                codex_webui::multitenant::event_bus::RedisEventBus::new(client.clone(), 256),
+                codex_webui::services::multitenant::event_bus::RedisEventBus::new(client.clone(), 256),
             )),
             None => None,
         };
@@ -76,7 +76,7 @@ async fn main() -> anyhow::Result<()> {
         }
     };
     let mt_event_bus_for_emit = mt_event_bus.clone();
-    let mt_team_codex = Arc::new(codex_webui::multitenant::codex_pool::TeamCodexManager::new(
+    let mt_team_codex = Arc::new(codex_webui::services::multitenant::codex_pool::TeamCodexManager::new(
         teams_root,
         cfg.codex_bin.clone(),
         mt_event_bus,
@@ -91,16 +91,16 @@ async fn main() -> anyhow::Result<()> {
     let codex_bg = codex.clone();
     tokio::spawn(async move { codex_bg.start().await; });
 
-    codex_webui::event_subscribers::spawn_all(db.clone(), codex.clone());
+    codex_webui::api::event_subscribers::spawn_all(db.clone(), codex.clone());
 
     let reader = settings::SettingsReader::new(&db, None);
     let terminal = TerminalService::new(TerminalConfig::from_settings(&reader).await);
 
     let dynamic_files_roots = Arc::new(Mutex::new(HashSet::new()));
     let resume_registry = Arc::new(ThreadResumeRegistry::new());
-    let active_threads = codex_webui::realtime::ActiveThreadRegistry::new();
+    let active_threads = codex_webui::api::realtime::ActiveThreadRegistry::new();
 
-    let rt_state = codex_webui::realtime::RealtimeState {
+    let rt_state = codex_webui::api::realtime::RealtimeState {
         auth: auth.clone(),
         codex: codex.clone(),
         terminal: terminal.clone(),
@@ -108,8 +108,8 @@ async fn main() -> anyhow::Result<()> {
         dynamic_files_roots: dynamic_files_roots.clone(),
         active_threads: active_threads.clone(),
     };
-    let (ws_layer, io) = codex_webui::realtime::build(rt_state);
-    codex_webui::realtime::spawn_emit_tasks(
+    let (ws_layer, io) = codex_webui::api::realtime::build(rt_state);
+    codex_webui::api::realtime::spawn_emit_tasks(
         io.clone(),
         codex.clone(),
         terminal.clone(),
@@ -119,7 +119,7 @@ async fn main() -> anyhow::Result<()> {
     );
 
     if let Some(bus) = mt_event_bus_for_emit {
-        codex_webui::realtime::spawn_event_bus_emit(io.clone(), bus);
+        codex_webui::api::realtime::spawn_event_bus_emit(io.clone(), bus);
     }
 
     if let Some(client) = mt_redis.clone() {
@@ -129,7 +129,7 @@ async fn main() -> anyhow::Result<()> {
             .filter(|s| !s.is_empty())
             .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
         let registry =
-            codex_webui::multitenant::routing::WorkerRegistry::new(client, worker_id);
+            codex_webui::api::multitenant::routing::WorkerRegistry::new(client, worker_id);
         tokio::spawn(async move {
             loop {
                 if let Err(e) = registry.heartbeat(30).await {
@@ -140,7 +140,7 @@ async fn main() -> anyhow::Result<()> {
         });
     }
 
-    let status_service = Arc::new(codex_webui::codex_status::CodexStatusService::new(codex.clone()));
+    let status_service = Arc::new(codex_webui::services::codex_status::CodexStatusService::new(codex.clone()));
 
     let state = AppState {
         db,

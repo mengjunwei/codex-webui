@@ -440,7 +440,7 @@ pub async fn steer_turn(
         ("turnId" = String, Path, description = "要中断的 turn ID"),
     ),
     responses(
-        (status = 201, description = "turn 已中断（codex turn/interrupt 透传）", body = crate::files::OkResponse),
+        (status = 201, description = "turn 已中断（codex turn/interrupt 透传）", body = crate::api::files::OkResponse),
         (status = 401, description = "未认证", body = crate::error::ErrorResponse),
     )
 )]
@@ -883,7 +883,7 @@ async fn validate_input_item(item: &Value, i: usize, state: &AppState) -> Result
             // H7：校验文本中内联的绝对 @mention 路径（对齐 TS validateInlineTextMentions）。
             // 前端会把文件 mention 内联为 @/abs/path，后端仍是路径访问的安全边界。
             for mention in extract_inline_mentions(&text) {
-                crate::files::resolve_safe_path(state, &mention)
+                crate::services::files::resolve_safe_path(state, &mention)
                     .await
                     .map_err(|e| {
                         AppError::business(
@@ -1001,7 +1001,7 @@ async fn validate_input_item(item: &Value, i: usize, state: &AppState) -> Result
             };
             // 校验路径位于 chat 上传根目录内（对齐 TS ChatUploadService.resolveStoredUploadPath），
             // 仅允许引用通过 /chat/upload 上传的图片，而非整个工作区。
-            crate::chat::resolve_stored_upload_path(&path).await?;
+            crate::api::chat::resolve_stored_upload_path(&path).await?;
             Ok(json!({ "type": "localImage", "path": path }))
         }
         "skill" => {
@@ -1014,7 +1014,7 @@ async fn validate_input_item(item: &Value, i: usize, state: &AppState) -> Result
             let path = req_string_trimmed(obj, "path", i)?;
             // H4 修复：验证 mention 路径存在且在工作区内（对齐
             // FilesService.resolveSafePath，受 workspace-root 安全约束保护）。
-            crate::files::resolve_safe_path(state, &path)
+            crate::services::files::resolve_safe_path(state, &path)
                 .await
                 .map_err(|e| {
                     AppError::business(

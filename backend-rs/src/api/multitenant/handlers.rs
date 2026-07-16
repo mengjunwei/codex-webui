@@ -8,11 +8,11 @@
 //! 业务 entity 直接读 `entity::thread::*` 等子模块,不再依赖旧 `models::FromRow`。
 
 use crate::error::{AppError, ErrorCode};
-use crate::multitenant::entity::thread::{ActiveModel as ThreadActiveModel, Column as ThreadColumn, Entity as ThreadEntity};
-use crate::multitenant::entity::team_api_key::Model as TeamApiKey;
-use crate::multitenant::entity::user::Model as User;
+use crate::db::entities::thread::{ActiveModel as ThreadActiveModel, Column as ThreadColumn, Entity as ThreadEntity};
+use crate::db::entities::team_api_key::Model as TeamApiKey;
+use crate::db::entities::user::Model as User;
 use crate::multitenant::middleware::UserId;
-use crate::multitenant::{api_keys, audit, auth, teams};
+use crate::services::multitenant::{api_keys, audit, auth, teams};
 use crate::state::AppState;
 use axum::extract::{Extension, Path, Query, State};
 use axum::http::StatusCode;
@@ -127,7 +127,7 @@ pub async fn register(
     // M6-A 注册限流(防滥用):按 IP 每分钟 10 次;Redis 未配置则跳过。
     if let Some(client) = &state.mt_redis {
         let ip = client_ip(&headers);
-        let limiter = crate::multitenant::rate_limit::RedisRateLimiter::new(client.clone());
+        let limiter = crate::services::multitenant::rate_limit::RedisRateLimiter::new(client.clone());
         if !limiter.allow(&format!("rl:register:{ip}"), 10, 60).await? {
             return Err(AppError::status(429));
         }
@@ -367,7 +367,7 @@ pub async fn mt_create_thread(
         .and_then(Value::as_str)
         .or_else(|| resp.get("threadId").and_then(Value::as_str));
     if let Some(tid) = thread_id {
-        let now = crate::multitenant::now_ms();
+        let now = crate::services::multitenant::now_ms();
         // 多方言一致:先 find_by_id,不存在则 insert(thread id 主键冲突直接跳过)。
         match ThreadEntity::find_by_id(tid.to_string()).one(db).await {
             Ok(Some(_)) => { /* 已存在,跳过双写 */ }
@@ -399,7 +399,7 @@ pub async fn mt_list_threads(
     State(state): State<AppState>,
     Extension(uid): Extension<UserId>,
     Query(q): Query<TeamIdQuery>,
-) -> Result<Json<Vec<crate::multitenant::entity::thread::Model>>, AppError> {
+) -> Result<Json<Vec<crate::db::entities::thread::Model>>, AppError> {
     let db = require_db(&state);
     teams::require_member(db, &q.team_id, &uid.0).await?;
     let list = ThreadEntity::find()
@@ -449,7 +449,7 @@ pub async fn list_audit(
     State(state): State<AppState>,
     Extension(uid): Extension<UserId>,
     Path((team_id,)): Path<(String,)>,
-) -> Result<Json<Vec<crate::multitenant::entity::audit_log::Model>>, AppError> {
+) -> Result<Json<Vec<crate::db::entities::audit_log::Model>>, AppError> {
     let db = require_db(&state);
     teams::require_owner(db, &team_id, &uid.0).await?;
     Ok(Json(audit::list(db, &team_id, 200).await?))

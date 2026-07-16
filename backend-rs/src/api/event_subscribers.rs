@@ -13,7 +13,7 @@
 //! 数据库访问统一走 SeaORM 1.1(`sea_orm::DatabaseConnection`,PG/MySQL 多方言)。
 
 use crate::codex::{CodexProcessManager, LifecycleEvent};
-use crate::entity::{
+use crate::db::entity::{
     pending_server_request::{
         ActiveModel as PendingActive, Column as PendingColumn, Entity as PendingEntity,
     },

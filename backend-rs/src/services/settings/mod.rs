@@ -11,16 +11,15 @@
 //! 写入时会对值进行 JSON 编码后存储。约束（min/max/integer）会被建模、由
 //! reconcile 持久化、在 DTO 中返回，并在写入时强制校验。
 //!
-//! 数据层:SeaORM(多方言 PG/MySQL),`settings` 表 entity `crate::entity::setting`
+//! 数据层:SeaORM(多方言 PG/MySQL),`settings` 表 entity `crate::db::entity::setting`
 //! (DB 列 `setting_key`,避免 MySQL 保留字 `key`)。
 
 pub mod definitions;
-pub mod handlers;
 pub mod reconcile;
 pub use reconcile::reconcile_settings;
 
-use crate::entity::setting::{ActiveModel as SettingActiveModel, Column as SettingColumn, Entity as SettingEntity, Model as SettingModel};
-use crate::multitenant::now_ms;
+use crate::db::entity::setting::{ActiveModel as SettingActiveModel, Column as SettingColumn, Entity as SettingEntity, Model as SettingModel};
+use crate::services::multitenant::now_ms;
 use crate::state::SettingsCache;
 use anyhow::Result;
 use definitions::{SettingDef, SettingType, SETTINGS_DEFINITIONS};

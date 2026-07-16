@@ -8,11 +8,11 @@
 //! SeaORM async(多方言 PG/MySQL)。跨方言一致性:用"先查后插/更新",避免 ON CONFLICT
 //! 方言差异。整个流程包在单个事务里(对齐 TS 的 db.transaction)。
 
-use crate::entity::setting::{
+use crate::db::entity::setting::{
     ActiveModel as SettingActiveModel, Entity as SettingEntity,
 };
-use crate::multitenant::now_ms;
-use crate::settings::definitions::{SettingDef, SettingType, SETTINGS_DEFINITIONS};
+use crate::services::multitenant::now_ms;
+use crate::services::settings::definitions::{SettingDef, SettingType, SETTINGS_DEFINITIONS};
 use anyhow::Result;
 use sea_orm::sea_query::Expr;
 use sea_orm::{ActiveModelTrait, DatabaseConnection, EntityTrait, Set, TransactionTrait};

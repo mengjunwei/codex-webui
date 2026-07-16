@@ -12,7 +12,7 @@ use crate::codex::jsonrpc::CodexJsonRpcClient;
 use crate::codex::process::build_codex_command;
 use crate::codex::types::default_initialize_params;
 use crate::error::{AppError, ErrorCode};
-use crate::multitenant::api_keys;
+use crate::services::multitenant::api_keys;
 use axum::http::StatusCode;
 use serde_json::Value;
 use std::collections::HashMap;
@@ -29,14 +29,14 @@ pub struct TeamCodexManager {
     /// team_id → 活跃 client(按需启动,缓存复用)。
     clients: Mutex<HashMap<String, Arc<CodexJsonRpcClient>>>,
     /// 事件总线(可选):把 codex notification 发布到 RedisEventBus,接入层订阅后 emit 前端。
-    event_bus: Option<Arc<dyn crate::multitenant::event_bus::EventBus>>,
+    event_bus: Option<Arc<dyn crate::services::multitenant::event_bus::EventBus>>,
 }
 
 impl TeamCodexManager {
     pub fn new(
         teams_root: PathBuf,
         codex_bin: String,
-        event_bus: Option<Arc<dyn crate::multitenant::event_bus::EventBus>>,
+        event_bus: Option<Arc<dyn crate::services::multitenant::event_bus::EventBus>>,
     ) -> Self {
         Self {
             teams_root,

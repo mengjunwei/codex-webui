@@ -1,7 +1,7 @@
 //! Integration tests for settings reconcile + reader.
 
 use codex_webui::db::{run_migrations, Db};
-use codex_webui::settings::{reconcile_settings, SettingsReader};
+use codex_webui::services::settings::{reconcile_settings, SettingsReader};
 use rusqlite::Connection;
 use std::sync::Mutex;
 

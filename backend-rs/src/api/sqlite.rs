@@ -8,7 +8,7 @@
 //! （保持"转发失败回滚"的原语义）。
 
 use crate::error::{AppError, ErrorCode, Json};
-use crate::multitenant::now_ms;
+use crate::services::multitenant::now_ms;
 use crate::state::AppState;
 use axum::{
     extract::{Path, Query, State},
@@ -20,17 +20,17 @@ use sea_orm::{
 };
 use serde::{Deserialize, Serialize};
 
-use crate::entity::pending_server_request::{
+use crate::db::entity::pending_server_request::{
     ActiveModel as PendingServerRequestActiveModel, Column as PendingServerRequestColumn,
     Entity as PendingServerRequestEntity, Model as PendingServerRequestModel,
 };
-use crate::entity::token_usage_snapshot::{
+use crate::db::entity::token_usage_snapshot::{
     Column as TokenUsageColumn, Entity as TokenUsageEntity, Model as TokenUsageModel,
 };
-use crate::entity::turn_diff::{
+use crate::db::entity::turn_diff::{
     Column as TurnDiffColumn, Entity as TurnDiffEntity, Model as TurnDiffModel,
 };
-use crate::entity::turn_error::{
+use crate::db::entity::turn_error::{
     Column as TurnErrorColumn, Entity as TurnErrorEntity, Model as TurnErrorModel,
 };
 

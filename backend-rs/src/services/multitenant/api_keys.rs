@@ -5,8 +5,8 @@
 //! 经 SHA-256 派生 32 字节,密文格式 hex(nonce || ciphertext)。
 
 use crate::error::{AppError, ErrorCode};
-use crate::multitenant::entity::team_api_key;
-use crate::multitenant::{new_id, now_ms};
+use crate::db::entities::team_api_key;
+use crate::services::multitenant::{new_id, now_ms};
 use aes_gcm::aead::{Aead, KeyInit};
 use aes_gcm::{Aes256Gcm, Key, Nonce};
 use axum::http::StatusCode;

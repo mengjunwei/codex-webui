@@ -6,7 +6,7 @@
 //! 不再进行原始字节重放。
 
 use crate::error::{AppError, ErrorCode};
-use crate::settings::SettingsReader;
+use crate::services::settings::SettingsReader;
 use portable_pty::{native_pty_system, CommandBuilder, PtySize};
 use serde::Serialize;
 use serde_json::{json, Value};

@@ -5,10 +5,10 @@ use axum::http::{Request, StatusCode};
 use codex_webui::auth::AuthService;
 use codex_webui::codex::CodexProcessManager;
 use codex_webui::db::{run_migrations, Db};
-use codex_webui::routes::build_router;
-use codex_webui::settings::{self, reconcile_settings};
+use codex_webui::api::build_router;
+use codex_webui::services::settings::{self, reconcile_settings};
 use codex_webui::state::AppState;
-use codex_webui::terminal::{TerminalConfig, TerminalService};
+use codex_webui::services::terminal::{TerminalConfig, TerminalService};
 use rusqlite::Connection;
 use serde_json::Value;
 use std::collections::HashMap;
@@ -30,7 +30,7 @@ fn state() -> AppState {
         db,
         mt_pg: None,
         mt_master_key: "test-master".into(),
-        mt_team_codex: Arc::new(codex_webui::multitenant::codex_pool::TeamCodexManager::new(
+        mt_team_codex: Arc::new(codex_webui::services::multitenant::codex_pool::TeamCodexManager::new(
             std::path::PathBuf::from("/tmp/mt-test"),
             "codex".into(),
             None,
@@ -38,10 +38,10 @@ fn state() -> AppState {
         mt_redis: None,
         metrics_handle: None,
         auth: Arc::new(AuthService::new("test-key")),
-        status: Arc::new(codex_webui::codex_status::CodexStatusService::new(codex.clone())),
+        status: Arc::new(codex_webui::services::codex_status::CodexStatusService::new(codex.clone())),
         codex,
         terminal: TerminalService::new(term_cfg),
-        resume_registry: Arc::new(codex_webui::threads::ThreadResumeRegistry::new()),
+        resume_registry: Arc::new(codex_webui::services::threads::ThreadResumeRegistry::new()),
         dynamic_files_roots: Arc::new(Mutex::new(HashSet::new())),
         settings_cache: Arc::new(Mutex::new(HashMap::new())),
     }

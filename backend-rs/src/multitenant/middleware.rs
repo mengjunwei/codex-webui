@@ -1,7 +1,7 @@
 //! 多租户认证中间件:校验 access JWT 并把 user_id 注入请求扩展。
 
 use crate::error::{AppError, ErrorCode};
-use crate::multitenant::auth::verify_access;
+use crate::services::multitenant::auth::verify_access;
 use crate::state::AppState;
 use axum::body::Body;
 use axum::extract::State;
