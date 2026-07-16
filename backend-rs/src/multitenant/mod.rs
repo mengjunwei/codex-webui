@@ -7,10 +7,12 @@
 pub mod api_keys;
 pub mod auth;
 pub mod codex_pool;
+pub mod event_bus;
 pub mod handlers;
 pub mod migration;
 pub mod middleware;
 pub mod models;
+pub mod routing;
 pub mod teams;
 
 /// 当前 UTC 毫秒时间戳。
