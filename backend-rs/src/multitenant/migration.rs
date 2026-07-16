@@ -91,11 +91,25 @@ CREATE TABLE IF NOT EXISTS team_api_keys (
 CREATE INDEX IF NOT EXISTS idx_team_api_keys_team ON team_api_keys(team_id, is_active);
 "#;
 
+/// M6:审计日志(team owner 关键操作留痕:设 key / 邀请 / 踢除等)。
+const MIGRATION_2026071603_AUDIT: &str = r#"
+CREATE TABLE IF NOT EXISTS audit_log (
+    id VARCHAR(36) PRIMARY KEY,
+    team_id VARCHAR(36) NOT NULL REFERENCES teams(id) ON DELETE CASCADE,
+    actor_user_id VARCHAR(36) NOT NULL REFERENCES users(id),
+    action VARCHAR(64) NOT NULL,
+    detail TEXT,
+    created_at BIGINT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_audit_team ON audit_log(team_id, created_at DESC);
+"#;
+
 /// 所有迁移(版本号 → SQL),按顺序应用。新增迁移在此追加。
 fn migrations() -> Vec<(&'static str, &'static str)> {
     vec![
         ("2026071601_initial", MIGRATION_2026071601_INITIAL),
         ("2026071602_api_keys", MIGRATION_2026071602_API_KEYS),
+        ("2026071603_audit", MIGRATION_2026071603_AUDIT),
     ]
 }
 

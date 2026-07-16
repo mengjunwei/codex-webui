@@ -5,6 +5,7 @@
 //! 设计依据:docs/superpowers/specs/2026-07-16-multitenant-platform-design.md。
 
 pub mod api_keys;
+pub mod audit;
 pub mod auth;
 pub mod codex_pool;
 pub mod event_bus;

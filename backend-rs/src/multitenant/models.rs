@@ -88,3 +88,14 @@ pub struct TeamApiKey {
     pub created_at: i64,
     pub updated_at: i64,
 }
+
+/// 审计日志(M6):team owner 关键操作记录。
+#[derive(Debug, Clone, FromRow, serde::Serialize)]
+pub struct AuditLog {
+    pub id: String,
+    pub team_id: String,
+    pub actor_user_id: String,
+    pub action: String,
+    pub detail: Option<String>,
+    pub created_at: i64,
+}

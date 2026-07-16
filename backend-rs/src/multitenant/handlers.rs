@@ -7,7 +7,7 @@
 use crate::error::{AppError, ErrorCode};
 use crate::multitenant::middleware::UserId;
 use crate::multitenant::models::{TeamApiKey, User};
-use crate::multitenant::{api_keys, auth, teams};
+use crate::multitenant::{api_keys, audit, auth, teams};
 use crate::state::AppState;
 use axum::extract::{Extension, Path, State};
 use axum::http::StatusCode;
@@ -209,14 +209,10 @@ pub async fn create_invitation(
 ) -> Result<Json<teams::Invitation>, AppError> {
     let pool = require_pool(&state)?;
     teams::require_owner(pool, &team_id, &uid.0).await?;
-    Ok(Json(teams::create_invitation(
-        pool,
-        &team_id,
-        &uid.0,
-        body.expires_at,
-        body.max_uses,
-    )
-    .await?))
+    let inv = teams::create_invitation(pool, &team_id, &uid.0, body.expires_at, body.max_uses)
+        .await?;
+    audit::record(pool, &team_id, &uid.0, "invitation_created", None).await;
+    Ok(Json(inv))
 }
 
 pub async fn join_team(
@@ -236,6 +232,7 @@ pub async fn remove_member(
     let pool = require_pool(&state)?;
     teams::require_owner(pool, &team_id, &uid.0).await?;
     teams::remove_member(pool, &team_id, &user_id).await?;
+    audit::record(pool, &team_id, &uid.0, "member_removed", Some(&user_id)).await;
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -288,6 +285,7 @@ pub async fn set_team_api_key(
         &state.mt_master_key,
     )
     .await?;
+    audit::record(pool, &team_id, &uid.0, "api_key_set", Some(&k.key_hint)).await;
     Ok(Json(k.into()))
 }
 
@@ -438,4 +436,15 @@ pub async fn mt_start_turn(
         .execute(pool)
         .await;
     Ok(Json(resp))
+}
+
+// ── 审计日志(M6,owner 查询)────────────────────────────────────────────────
+pub async fn list_audit(
+    State(state): State<AppState>,
+    Extension(uid): Extension<UserId>,
+    Path((team_id,)): Path<(String,)>,
+) -> Result<Json<Vec<crate::multitenant::models::AuditLog>>, AppError> {
+    let pool = require_pool(&state)?;
+    teams::require_owner(pool, &team_id, &uid.0).await?;
+    Ok(Json(audit::list(pool, &team_id, 200).await?))
 }

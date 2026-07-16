@@ -328,6 +328,7 @@ pub fn build_router(state: AppState) -> Router {
             "/teams/{teamId}/api-key",
             post(mt::set_team_api_key).get(mt::list_team_api_keys),
         )
+        .route("/teams/{teamId}/audit", get(mt::list_audit))
         .route("/threads", post(mt::mt_create_thread).get(mt::mt_list_threads))
         .route("/threads/{threadId}/turns", post(mt::mt_start_turn))
         .route(
