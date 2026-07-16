@@ -16,6 +16,7 @@ pub mod event_subscribers;
 pub mod files;
 pub mod logs;
 pub mod logging;
+pub mod multitenant;
 pub mod onlyoffice;
 pub mod proxies;
 pub mod realtime;

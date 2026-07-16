@@ -312,6 +312,27 @@ pub fn build_router(state: AppState) -> Router {
             require_auth,
         ));
 
+    // 多租户路由(M1):/api/mt/auth/* 公开;/api/mt/teams/* 受 require_user_auth 保护。
+    use crate::multitenant::handlers as mt;
+    let mt_protected: Router<AppState> = Router::new()
+        .route("/teams", post(mt::create_team).get(mt::list_teams))
+        .route("/teams/join", post(mt::join_team))
+        .route("/teams/{teamId}/members", get(mt::list_members))
+        .route("/teams/{teamId}/invitations", post(mt::create_invitation))
+        .route(
+            "/teams/{teamId}/members/{userId}",
+            axum::routing::delete(mt::remove_member),
+        )
+        .layer(axum::middleware::from_fn_with_state(
+            state.clone(),
+            crate::multitenant::middleware::require_user_auth,
+        ));
+    let mt_router: Router<AppState> = Router::new()
+        .route("/auth/register", post(mt::register))
+        .route("/auth/login", post(mt::login))
+        .route("/auth/refresh", post(mt::refresh))
+        .merge(mt_protected);
+
     // 为 React 前端(SPA)提供静态文件服务。
     // 前端产物由 rust-embed 在编译期嵌入二进制（#[folder = "public"]）：
     // debug 模式从文件系统 live 读，release 模式嵌入。未命中路径回退 index.html（SPA 路由）。
@@ -329,6 +350,7 @@ pub fn build_router(state: AppState) -> Router {
                     utoipa_swagger_ui::Config::default().default_model_expand_depth(-1),
                 ),
         )
+        .nest("/api/mt", mt_router)
         .nest("/api", api)
         .fallback(serve_asset)
         .layer(from_fn(request_logger))

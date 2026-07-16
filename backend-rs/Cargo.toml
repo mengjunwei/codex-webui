@@ -41,7 +41,12 @@ flate2 = "1"
 utoipa = { version = "5", features = ["axum_extras"] }
 utoipa-swagger-ui = { version = "9", features = ["axum", "cache"] }
 url = "2"
-uuid = { version = "1", features = ["v4"] }
+uuid = { version = "1", features = ["v4", "v7"] }
+# 多租户平台(M1):sqlx 数据层(async + 多方言 pg/mysql,与现有 rusqlite 共存) + 密码哈希 + 邀请码随机
+# 注:SeaORM 1.0 与 rusqlite 的 libsqlite3-sys links 冲突(SeaORM issue #2725),无法共存,故用 sqlx
+sqlx = { version = "0.7", default-features = false, features = ["runtime-tokio-rustls", "postgres", "macros"] }
+argon2 = "0.5"
+rand = "0.8"
 zip = "2"
 sevenz-rust2 = "0.21"
 bzip2-rs = "0.1"

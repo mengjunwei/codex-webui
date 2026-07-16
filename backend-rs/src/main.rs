@@ -38,6 +38,27 @@ async fn main() -> anyhow::Result<()> {
     codex_webui::db::run_migrations(&db)?;
     reconcile_settings(&db)?;
 
+    // 多租户 PG(可选):未配置 DATABASE_URL 则禁用多租户功能,现有功能不受影响。
+    let mt_pg = match &cfg.database_url {
+        Some(url) => {
+            tracing::info!("connecting multitenant postgres");
+            let pool = sqlx::postgres::PgPoolOptions::new()
+                .max_connections(20)
+                .connect(url)
+                .await
+                .map_err(|e| anyhow::anyhow!("connect multitenant pg: {e}"))?;
+            codex_webui::multitenant::migration::run_migrations(&pool)
+                .await
+                .map_err(|e| anyhow::anyhow!("multitenant migration: {e}"))?;
+            tracing::info!("multitenant postgres ready");
+            Some(pool)
+        }
+        None => {
+            tracing::warn!("DATABASE_URL not set; multitenant features disabled");
+            None
+        }
+    };
+
     // 认证服务（在 AppState 之前创建，以便 realtime 模块共享）。
     let auth = Arc::new(AuthService::new(&cfg.webui_api_key));
 
@@ -96,6 +117,7 @@ async fn main() -> anyhow::Result<()> {
     // 共享状态。
     let state = AppState {
         db,
+        mt_pg,
         auth,
         codex,
         terminal,

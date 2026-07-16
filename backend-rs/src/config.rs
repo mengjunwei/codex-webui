@@ -23,6 +23,8 @@ pub struct Config {
     /// backend (Jaeger, Tempo, Grafana, Datadog, OTel Collector, ...).
     /// When `None`, the OTLP layer is not installed (zero overhead).
     pub otlp_endpoint: Option<String>,
+    /// 多租户数据库连接串(postgres);未设置则禁用多租户功能。
+    pub database_url: Option<String>,
 }
 
 const DEFAULT_DB_FILENAME: &str = "codex-webui.sqlite";
@@ -85,6 +87,11 @@ impl Config {
             .map(|s| s.trim().to_string())
             .filter(|s| !s.is_empty());
 
+        let database_url = env::var("DATABASE_URL")
+            .ok()
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty());
+
         Ok(Self {
             webui_api_key,
             host,
@@ -95,6 +102,7 @@ impl Config {
             codex_home: codex_home.clone(),
             db_path: resolve_db_path(env::var("WEBUI_DB_PATH").ok(), codex_home.as_deref()),
             otlp_endpoint,
+            database_url,
         })
     }
 }

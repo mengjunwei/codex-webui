@@ -30,6 +30,7 @@ fn state(api_key: &str) -> AppState {
     let codex = Arc::new(CodexProcessManager::new("codex".into(), None));
     AppState {
         db,
+        mt_pg: None,
         auth: Arc::new(AuthService::new(api_key)),
         status: Arc::new(codex_webui::codex_status::CodexStatusService::new(codex.clone())),
         codex,

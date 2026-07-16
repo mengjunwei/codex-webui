@@ -28,6 +28,7 @@ fn state() -> AppState {
     let codex = Arc::new(CodexProcessManager::new("codex".into(), None));
     AppState {
         db,
+        mt_pg: None,
         auth: Arc::new(AuthService::new("test-key")),
         status: Arc::new(codex_webui::codex_status::CodexStatusService::new(codex.clone())),
         codex,

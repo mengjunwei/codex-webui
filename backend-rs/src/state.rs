@@ -16,6 +16,8 @@ pub type SettingsCache = Arc<Mutex<HashMap<String, (serde_json::Value, ValueSour
 #[derive(Clone)]
 pub struct AppState {
     pub db: Arc<Db>,
+    /// 多租户 PG 连接池(None = 未配置 DATABASE_URL,多租户功能禁用,现有功能不受影响)。
+    pub mt_pg: Option<sqlx::PgPool>,
     pub auth: Arc<AuthService>,
     pub codex: Arc<CodexProcessManager>,
     pub terminal: Arc<TerminalService>,
