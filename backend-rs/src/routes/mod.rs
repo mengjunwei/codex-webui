@@ -320,6 +320,10 @@ pub fn build_router(state: AppState) -> Router {
         .route("/teams/{teamId}/members", get(mt::list_members))
         .route("/teams/{teamId}/invitations", post(mt::create_invitation))
         .route(
+            "/teams/{teamId}/api-key",
+            post(mt::set_team_api_key).get(mt::list_team_api_keys),
+        )
+        .route(
             "/teams/{teamId}/members/{userId}",
             axum::routing::delete(mt::remove_member),
         )

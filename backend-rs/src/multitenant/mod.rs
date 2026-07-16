@@ -4,6 +4,7 @@
 //! 约定:主键 UUIDv7 字符串(VARCHAR(36)),时间 i64 UTC 毫秒。
 //! 设计依据:docs/superpowers/specs/2026-07-16-multitenant-platform-design.md。
 
+pub mod api_keys;
 pub mod auth;
 pub mod handlers;
 pub mod migration;

@@ -73,3 +73,18 @@ pub struct ThreadMeta {
     pub updated_at: i64,
     pub last_activity_at: i64,
 }
+
+/// team 的 OpenAI API key(BYOK)。encrypted_key 为 AES-GCM 密文(hex),
+/// key_hint 为尾 4 位用于显示。一 team 同时仅一条 is_active(应用层事务保证)。
+#[derive(Debug, Clone, FromRow, serde::Serialize)]
+pub struct TeamApiKey {
+    pub id: String,
+    pub team_id: String,
+    pub provider: String,
+    pub encrypted_key: String,
+    pub key_hint: String,
+    pub set_by: String,
+    pub is_active: bool,
+    pub created_at: i64,
+    pub updated_at: i64,
+}

@@ -75,9 +75,28 @@ CREATE INDEX IF NOT EXISTS idx_threads_team ON threads(team_id);
 CREATE INDEX IF NOT EXISTS idx_threads_status ON threads(team_id, status);
 "#;
 
+/// M2:team_api_keys(BYOK 加密存储)。
+const MIGRATION_2026071602_API_KEYS: &str = r#"
+CREATE TABLE IF NOT EXISTS team_api_keys (
+    id VARCHAR(36) PRIMARY KEY,
+    team_id VARCHAR(36) NOT NULL REFERENCES teams(id) ON DELETE CASCADE,
+    provider VARCHAR(32) NOT NULL DEFAULT 'openai',
+    encrypted_key TEXT NOT NULL,
+    key_hint VARCHAR(16) NOT NULL,
+    set_by VARCHAR(36) NOT NULL REFERENCES users(id),
+    is_active BOOLEAN NOT NULL DEFAULT FALSE,
+    created_at BIGINT NOT NULL,
+    updated_at BIGINT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_team_api_keys_team ON team_api_keys(team_id, is_active);
+"#;
+
 /// 所有迁移(版本号 → SQL),按顺序应用。新增迁移在此追加。
 fn migrations() -> Vec<(&'static str, &'static str)> {
-    vec![("2026071601_initial", MIGRATION_2026071601_INITIAL)]
+    vec![
+        ("2026071601_initial", MIGRATION_2026071601_INITIAL),
+        ("2026071602_api_keys", MIGRATION_2026071602_API_KEYS),
+    ]
 }
 
 /// 执行所有未应用的多租户迁移。幂等:已应用的跳过。

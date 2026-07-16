@@ -25,6 +25,8 @@ pub struct Config {
     pub otlp_endpoint: Option<String>,
     /// 多租户数据库连接串(postgres);未设置则禁用多租户功能。
     pub database_url: Option<String>,
+    /// 主密钥(加密 team API key);未设置则回退用 webui_api_key。
+    pub master_key: Option<String>,
 }
 
 const DEFAULT_DB_FILENAME: &str = "codex-webui.sqlite";
@@ -92,6 +94,11 @@ impl Config {
             .map(|s| s.trim().to_string())
             .filter(|s| !s.is_empty());
 
+        let master_key = env::var("MASTER_KEY")
+            .ok()
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty());
+
         Ok(Self {
             webui_api_key,
             host,
@@ -103,6 +110,7 @@ impl Config {
             db_path: resolve_db_path(env::var("WEBUI_DB_PATH").ok(), codex_home.as_deref()),
             otlp_endpoint,
             database_url,
+            master_key,
         })
     }
 }

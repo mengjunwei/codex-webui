@@ -6,8 +6,8 @@
 
 use crate::error::{AppError, ErrorCode};
 use crate::multitenant::middleware::UserId;
-use crate::multitenant::models::User;
-use crate::multitenant::{auth, teams};
+use crate::multitenant::models::{TeamApiKey, User};
+use crate::multitenant::{api_keys, auth, teams};
 use crate::state::AppState;
 use axum::extract::{Extension, Path, State};
 use axum::http::StatusCode;
@@ -216,4 +216,68 @@ pub async fn remove_member(
     teams::require_owner(pool, &team_id, &uid.0).await?;
     teams::remove_member(pool, &team_id, &user_id).await?;
     Ok(StatusCode::NO_CONTENT)
+}
+
+// ── team API key(BYOK,owner only)─────────────────────────────────────────
+
+#[derive(Deserialize)]
+pub struct SetKeyBody {
+    pub key: String,
+    pub provider: Option<String>,
+}
+
+/// key 响应(不含密文,只暴露 hint)。
+#[derive(Serialize)]
+pub struct ApiKeyResp {
+    pub id: String,
+    pub provider: String,
+    pub key_hint: String,
+    pub is_active: bool,
+    pub created_at: i64,
+}
+
+impl From<TeamApiKey> for ApiKeyResp {
+    fn from(k: TeamApiKey) -> Self {
+        Self {
+            id: k.id,
+            provider: k.provider,
+            key_hint: k.key_hint,
+            is_active: k.is_active,
+            created_at: k.created_at,
+        }
+    }
+}
+
+/// 设置/轮换 team 的 OpenAI key(owner):先调 OpenAI 验证 → AES-GCM 加密落库 → 旧 key 失活。
+pub async fn set_team_api_key(
+    State(state): State<AppState>,
+    Extension(uid): Extension<UserId>,
+    Path((team_id,)): Path<(String,)>,
+    crate::error::Json(body): crate::error::Json<SetKeyBody>,
+) -> Result<Json<ApiKeyResp>, AppError> {
+    let pool = require_pool(&state)?;
+    teams::require_owner(pool, &team_id, &uid.0).await?;
+    let provider = body.provider.unwrap_or_else(|| "openai".into());
+    let k = api_keys::set_team_api_key(
+        pool,
+        &team_id,
+        &uid.0,
+        &body.key,
+        &provider,
+        &state.mt_master_key,
+    )
+    .await?;
+    Ok(Json(k.into()))
+}
+
+/// 列出 team 的全部 key(owner,只返回 hint,不含密文)。
+pub async fn list_team_api_keys(
+    State(state): State<AppState>,
+    Extension(uid): Extension<UserId>,
+    Path((team_id,)): Path<(String,)>,
+) -> Result<Json<Vec<ApiKeyResp>>, AppError> {
+    let pool = require_pool(&state)?;
+    teams::require_owner(pool, &team_id, &uid.0).await?;
+    let keys = api_keys::list_team_api_keys(pool, &team_id).await?;
+    Ok(Json(keys.into_iter().map(Into::into).collect()))
 }

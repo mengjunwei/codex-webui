@@ -263,6 +263,19 @@ M1 已完成并通过验证:lib + tests 编译通过,34 个 lib 单测全绿(含
 
 **验证方式**:配 `DATABASE_URL=postgres://...` 启动后自动建表迁移;用 `/api/docs` Swagger UI 或 curl 测 `/api/mt/auth/register` → `/api/mt/auth/login` → `/api/mt/teams` 等。
 
+### ✅ M2 完成状态(2026-07-16,key 管理层)
+
+M2 的 **key 管理层**已完成(team_api_keys 表 + AES-256-GCM 加密存储 + OpenAI 验证 + set/list/轮换 handler)。8 个 multitenant 单测全绿(含 api_keys 加解密 3 个)。
+
+已交付:
+- `src/multitenant/api_keys.rs`:`encrypt_key`/`decrypt_key`(AES-256-GCM,主密钥经 SHA-256 派生 32 字节,密文 hex(nonce‖ct))、`key_hint`、`validate_openai_key`(reqwest 调 `/v1/models`)、`set_team_api_key`(验证→加密→旧 key 失活→插新 active,事务)、`list_team_api_keys`、`get_active_plain_key`(供 M3 注入)
+- 迁移 `2026071602_api_keys`:`team_api_keys` 表
+- handler `/api/mt/teams/{teamId}/api-key` POST(set/轮换,owner) / GET(list,owner,**只返回 hint**)
+- `Config`/`AppState` 加 `master_key`/`mt_master_key`(`MASTER_KEY` 或回退 `webui_api_key`)
+- 响应只暴露 `key_hint`,**绝不返回密文/明文**
+
+**M2 未完成(留 M3)**:注入 codex —— 把 team active key 写入 per-team `CODEX_HOME/auth.json` 并按 team 启动 codex 进程。依赖 per-team CODEX_HOME 改造,与 M3 进程池一起做。
+
 ---
 
 ## 11. codex 文件系统查证结论(关键参考)

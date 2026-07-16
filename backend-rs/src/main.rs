@@ -59,6 +59,9 @@ async fn main() -> anyhow::Result<()> {
         }
     };
 
+    // 主密钥:优先 MASTER_KEY,回退 webui_api_key(加密 team 的 OpenAI key 用)。
+    let mt_master_key = cfg.master_key.clone().unwrap_or_else(|| cfg.webui_api_key.clone());
+
     // 认证服务（在 AppState 之前创建，以便 realtime 模块共享）。
     let auth = Arc::new(AuthService::new(&cfg.webui_api_key));
 
@@ -118,6 +121,7 @@ async fn main() -> anyhow::Result<()> {
     let state = AppState {
         db,
         mt_pg,
+        mt_master_key,
         auth,
         codex,
         terminal,

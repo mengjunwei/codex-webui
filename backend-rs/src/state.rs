@@ -18,6 +18,8 @@ pub struct AppState {
     pub db: Arc<Db>,
     /// 多租户 PG 连接池(None = 未配置 DATABASE_URL,多租户功能禁用,现有功能不受影响)。
     pub mt_pg: Option<sqlx::PgPool>,
+    /// 主密钥(加密 team API key)。来自 MASTER_KEY 或回退 webui_api_key。
+    pub mt_master_key: String,
     pub auth: Arc<AuthService>,
     pub codex: Arc<CodexProcessManager>,
     pub terminal: Arc<TerminalService>,

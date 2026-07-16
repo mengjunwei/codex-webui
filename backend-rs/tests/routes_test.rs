@@ -31,6 +31,7 @@ fn state(api_key: &str) -> AppState {
     AppState {
         db,
         mt_pg: None,
+        mt_master_key: "test-master".into(),
         auth: Arc::new(AuthService::new(api_key)),
         status: Arc::new(codex_webui::codex_status::CodexStatusService::new(codex.clone())),
         codex,
