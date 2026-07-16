@@ -70,7 +70,20 @@ curl -s -X $BASE/api/mt/teams/$TID/api-key -H "Authorization: Bearer $TOK" \
 # 7) 列出 key(只返回 hint,如 …1a2b;绝不返回密文)
 curl -s $BASE/api/mt/teams/$TID/api-key -H "Authorization: Bearer $TOK"
 
-# 8) 邀请另一个用户:对方先注册,再用邀请码加入
+# 8) 创建会话(M3:会按 team 启动 codex 进程,需 team 已设 key + codex 可用)
+curl -s -X $BASE/api/mt/threads -H "Authorization: Bearer $TOK" \
+  -H 'Content-Type: application/json' -d "{\"teamId\":\"$TID\"}"
+#   → 拿 threadId(codex thread/start 响应);元数据已写入 PG threads 表
+
+# 9) 列出 team 会话(从 PG,team 内共享)
+curl -s "$BASE/api/mt/threads?teamId=$TID" -H "Authorization: Bearer $TOK"
+
+# 10) 发 turn(会真正调 OpenAI,需真实 key;codex 进程按 team 复用)
+curl -s -X $BASE/api/mt/threads/<threadId>/turns -H "Authorization: Bearer $TOK" \
+  -H 'Content-Type: application/json' \
+  -d '{"input":[{"type":"message","content":[{"type":"input_text","text":"hi"}]}]}'
+
+# 11) 邀请另一个用户:对方先注册,再用邀请码加入
 curl -s -X $BASE/api/mt/teams/join -H "Authorization: Bearer <对方accessToken>" \
   -H 'Content-Type: application/json' -d '{"code":"<邀请码>"}'
 ```
@@ -88,9 +101,9 @@ cargo test --manifest-path backend-rs/Cargo.toml --lib multitenant::
 
 ## 当前进度
 
-- ✅ **M1** 用户体系 + 多租户 + 认证(邮箱密码/JWT/refresh)+ team(创建/成员/邀请码/角色)
+- ✅ **M1** 用户体系 + 多租户 + 认证 + team(创建/成员/邀请码/角色)
 - ✅ **M2** BYOK key 管理(AES-256-GCM 加密存储 + OpenAI 验证 + set/list/轮换)
-- ⏳ **M3** codex 进程池 + per-team `CODEX_HOME` + 注入 key(下一步;key 已能存,注入 codex 在此里程碑)
-- ⏳ M4 分布式(接入/worker 分离 + Redis + 跨节点广播)
-- ⏳ M5 高可用 + 可观测 + 扩缩容
-- ⏳ M6 打磨上线
+- ✅ **M3** TeamCodexManager + 多租户 thread 路由(per-team codex 进程 + team 校验 + PG 元数据双写)
+- ⏳ **M4** 分布式(接入/worker 分离 + Redis + 跨节点广播)—— 规模超大、需多机环境验证,后续会话推进
+- ⏳ **M5** 高可用 + 可观测 + 扩缩容(Redis/PG 主从 + Prometheus + OpenTelemetry)
+- ⏳ **M6** 打磨上线(防滥用 + 计费 + 安全审计)
