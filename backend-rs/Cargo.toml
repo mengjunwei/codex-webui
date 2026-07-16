@@ -50,6 +50,9 @@ aes-gcm = "0.10"
 rand = "0.8"
 # M4 分布式协调:Redis(事件总线 Pub/Sub、路由表、粘性、限流计数)
 redis = { version = "0.27", default-features = false, features = ["tokio-comp"] }
+# M5-B 指标:metrics + Prometheus exporter
+metrics = "0.23"
+metrics-exporter-prometheus = { version = "0.15", default-features = false }
 zip = "2"
 sevenz-rust2 = "0.21"
 bzip2-rs = "0.1"

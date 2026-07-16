@@ -132,6 +132,7 @@ pub async fn register(
             return Err(AppError::status(429));
         }
     }
+    metrics::counter!("mt_registrations_total").increment(1);
     let secret = state.auth.jwt_secret();
     let user = auth::register_user(pool, &body.email, &body.password).await?;
     let tokens = auth::issue_tokens(&user.id, pool, secret).await?;
@@ -355,6 +356,7 @@ pub async fn mt_create_thread(
 ) -> Result<Json<Value>, AppError> {
     let pool = require_pool(&state)?;
     teams::require_member(pool, &body.team_id, &uid.0).await?;
+    metrics::counter!("mt_threads_created_total").increment(1);
     let client = state
         .mt_team_codex
         .client_for(&body.team_id, pool, &state.mt_master_key)
@@ -416,6 +418,7 @@ pub async fn mt_start_turn(
 ) -> Result<Json<Value>, AppError> {
     let pool = require_pool(&state)?;
     let team_id = require_thread_team(pool, &thread_id, &uid.0).await?;
+    metrics::counter!("mt_turns_total").increment(1);
     let client = state
         .mt_team_codex
         .client_for(&team_id, pool, &state.mt_master_key)

@@ -5,6 +5,7 @@ use crate::codex::CodexProcessManager;
 use crate::codex_status::CodexStatusService;
 use crate::db::Db;
 use crate::multitenant::codex_pool::TeamCodexManager;
+use metrics_exporter_prometheus::PrometheusHandle;
 use crate::settings::ValueSource;
 use crate::terminal::TerminalService;
 use crate::threads::ThreadResumeRegistry;
@@ -25,6 +26,8 @@ pub struct AppState {
     pub mt_team_codex: Arc<TeamCodexManager>,
     /// Redis 客户端(M4 分布式协调;None = 未配置,跨节点功能禁用)。
     pub mt_redis: Option<redis::Client>,
+    /// Prometheus 指标 handle(供 /metrics 暴露;None = 未启用指标)。
+    pub metrics_handle: Option<PrometheusHandle>,
     pub auth: Arc<AuthService>,
     pub codex: Arc<CodexProcessManager>,
     pub terminal: Arc<TerminalService>,

@@ -195,6 +195,11 @@ async fn openapi_json() -> Json<utoipa::openapi::OpenApi> {
     Json(ApiDoc::openapi())
 }
 
+/// M5-B Prometheus 指标(公开,供 Prometheus 抓取)。
+async fn metrics_endpoint(axum::extract::State(state): axum::extract::State<AppState>) -> String {
+    state.metrics_handle.as_ref().map(|h| h.render()).unwrap_or_default()
+}
+
 /// 构建应用路由。
 ///
 /// 布局(与 NestJS globalPrefix 'api' 对齐):
@@ -347,6 +352,7 @@ pub fn build_router(state: AppState) -> Router {
         .route("/api/auth/login", post(auth::login))
         .route("/api/onlyoffice/callback", post(oo::handle_callback))
         .route("/api/docs-json", get(openapi_json))
+        .route("/metrics", get(metrics_endpoint))
         // Swagger UI（公开，不经过 require_auth）；spec 由 ApiDoc 内联提供。
         // default_model_expand_depth(-1)：加载时自动展开所有嵌套 schema（无需逐个点击 $ref）。
         .merge(

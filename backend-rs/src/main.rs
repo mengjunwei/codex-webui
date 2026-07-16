@@ -27,6 +27,11 @@ async fn main() -> anyhow::Result<()> {
     let cfg = Config::from_env()?;
     let _guards = logging::init(&cfg.log_level, cfg.otlp_endpoint.as_deref());
 
+    // M5-B Prometheus 指标:安装全局 recorder,handle 供 /metrics 暴露。
+    let metrics_handle = metrics_exporter_prometheus::PrometheusBuilder::new()
+        .install_recorder()
+        .map_err(|e| anyhow::anyhow!("prometheus recorder: {e}"))?;
+
     tracing::info!(
         port = cfg.port,
         db = %cfg.db_path,
@@ -166,6 +171,7 @@ async fn main() -> anyhow::Result<()> {
         mt_master_key,
         mt_team_codex,
         mt_redis,
+        metrics_handle: Some(metrics_handle),
         auth,
         codex,
         terminal,

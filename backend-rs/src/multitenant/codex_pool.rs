@@ -139,6 +139,7 @@ impl TeamCodexManager {
             .notify("initialized", Some(Value::Object(Default::default())))
             .map_err(|e| AppError::internal(format!("codex initialized notify: {e}")))?;
 
+        metrics::counter!("codex_team_spawns_total").increment(1);
         tracing::info!(team_id, "codex app-server initialized for team");
 
         // M4 接入(发布端):codex notification → 事件总线(RedisEventBus)→ 接入层订阅 emit。

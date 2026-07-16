@@ -38,6 +38,7 @@ fn state(api_key: &str) -> AppState {
             None,
         )),
         mt_redis: None,
+        metrics_handle: None,
         auth: Arc::new(AuthService::new(api_key)),
         status: Arc::new(codex_webui::codex_status::CodexStatusService::new(codex.clone())),
         codex,

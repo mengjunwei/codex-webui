@@ -36,6 +36,7 @@ fn state() -> AppState {
             None,
         )),
         mt_redis: None,
+        metrics_handle: None,
         auth: Arc::new(AuthService::new("test-key")),
         status: Arc::new(codex_webui::codex_status::CodexStatusService::new(codex.clone())),
         codex,
