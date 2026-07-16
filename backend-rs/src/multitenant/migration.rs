@@ -115,6 +115,8 @@ fn migrations() -> Vec<(&'static str, &'static str)> {
 
 /// 执行所有未应用的多租户迁移。幂等:已应用的跳过。
 pub async fn run_migrations(pool: &PgPool) -> Result<(), sqlx::Error> {
+    // 独立 schema(隔离,避免与现有 public 表冲突);依赖连接 search_path=mt(DATABASE_URL options)。
+    sqlx::query("CREATE SCHEMA IF NOT EXISTS mt").execute(pool).await?;
     // 版本记录表。
     sqlx::query(
         "CREATE TABLE IF NOT EXISTS schema_migrations (version TEXT PRIMARY KEY, applied_at BIGINT NOT NULL)",
