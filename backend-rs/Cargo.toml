@@ -48,6 +48,8 @@ sqlx = { version = "0.7", default-features = false, features = ["runtime-tokio-r
 argon2 = "0.5"
 aes-gcm = "0.10"
 rand = "0.8"
+# M4 分布式协调:Redis(事件总线 Pub/Sub、路由表、粘性、限流计数)
+redis = { version = "0.27", default-features = false, features = ["tokio-comp"] }
 zip = "2"
 sevenz-rust2 = "0.21"
 bzip2-rs = "0.1"

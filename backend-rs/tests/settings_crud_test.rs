@@ -34,6 +34,7 @@ fn state() -> AppState {
             std::path::PathBuf::from("/tmp/mt-test"),
             "codex".into(),
         )),
+        mt_redis: None,
         auth: Arc::new(AuthService::new("test-key")),
         status: Arc::new(codex_webui::codex_status::CodexStatusService::new(codex.clone())),
         codex,

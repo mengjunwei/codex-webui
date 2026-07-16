@@ -82,6 +82,18 @@ async fn main() -> anyhow::Result<()> {
         cfg.codex_bin.clone(),
     ));
 
+    // Redis(M4 分布式协调;可选):未配置则跨节点功能禁用,单机功能不受影响。
+    let mt_redis = match &cfg.redis_url {
+        Some(url) => Some(
+            redis::Client::open(url.as_str())
+                .map_err(|e| anyhow::anyhow!("redis client: {e}"))?,
+        ),
+        None => {
+            tracing::warn!("REDIS_URL not set; distributed coordination disabled");
+            None
+        }
+    };
+
     // 认证服务（在 AppState 之前创建，以便 realtime 模块共享）。
     let auth = Arc::new(AuthService::new(&cfg.webui_api_key));
 
@@ -143,6 +155,7 @@ async fn main() -> anyhow::Result<()> {
         mt_pg,
         mt_master_key,
         mt_team_codex,
+        mt_redis,
         auth,
         codex,
         terminal,

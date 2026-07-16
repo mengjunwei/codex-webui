@@ -23,6 +23,8 @@ pub struct AppState {
     pub mt_master_key: String,
     /// 按 team 启动 codex 进程的管理器(M3)。
     pub mt_team_codex: Arc<TeamCodexManager>,
+    /// Redis 客户端(M4 分布式协调;None = 未配置,跨节点功能禁用)。
+    pub mt_redis: Option<redis::Client>,
     pub auth: Arc<AuthService>,
     pub codex: Arc<CodexProcessManager>,
     pub terminal: Arc<TerminalService>,

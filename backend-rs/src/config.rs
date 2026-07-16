@@ -27,6 +27,8 @@ pub struct Config {
     pub database_url: Option<String>,
     /// 主密钥(加密 team API key);未设置则回退用 webui_api_key。
     pub master_key: Option<String>,
+    /// Redis 连接串(M4 分布式协调);未设置则禁用跨节点功能。
+    pub redis_url: Option<String>,
 }
 
 const DEFAULT_DB_FILENAME: &str = "codex-webui.sqlite";
@@ -99,6 +101,11 @@ impl Config {
             .map(|s| s.trim().to_string())
             .filter(|s| !s.is_empty());
 
+        let redis_url = env::var("REDIS_URL")
+            .ok()
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty());
+
         Ok(Self {
             webui_api_key,
             host,
@@ -111,6 +118,7 @@ impl Config {
             otlp_endpoint,
             database_url,
             master_key,
+            redis_url,
         })
     }
 }
