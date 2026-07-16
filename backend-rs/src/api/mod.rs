@@ -12,7 +12,6 @@ pub mod proxies;
 pub mod realtime;
 pub mod settings;
 pub mod sqlite;
-pub mod terminal;
 pub mod threads;
 
 use crate::auth::middleware::require_auth;
