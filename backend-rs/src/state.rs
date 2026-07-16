@@ -4,6 +4,7 @@ use crate::auth::AuthService;
 use crate::codex::CodexProcessManager;
 use crate::codex_status::CodexStatusService;
 use crate::db::Db;
+use crate::multitenant::codex_pool::TeamCodexManager;
 use crate::settings::ValueSource;
 use crate::terminal::TerminalService;
 use crate::threads::ThreadResumeRegistry;
@@ -20,6 +21,8 @@ pub struct AppState {
     pub mt_pg: Option<sqlx::PgPool>,
     /// 主密钥(加密 team API key)。来自 MASTER_KEY 或回退 webui_api_key。
     pub mt_master_key: String,
+    /// 按 team 启动 codex 进程的管理器(M3)。
+    pub mt_team_codex: Arc<TeamCodexManager>,
     pub auth: Arc<AuthService>,
     pub codex: Arc<CodexProcessManager>,
     pub terminal: Arc<TerminalService>,

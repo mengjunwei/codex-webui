@@ -62,6 +62,26 @@ async fn main() -> anyhow::Result<()> {
     // 主密钥:优先 MASTER_KEY,回退 webui_api_key(加密 team 的 OpenAI key 用)。
     let mt_master_key = cfg.master_key.clone().unwrap_or_else(|| cfg.webui_api_key.clone());
 
+    // 多 team codex 进程管理器(M3):CODEX_TEAMS_HOME 或回退 ~/.codex-webui-teams。
+    let teams_root: std::path::PathBuf = match std::env::var("CODEX_TEAMS_HOME")
+        .ok()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+    {
+        Some(p) => std::path::PathBuf::from(p),
+        None => {
+            let base = std::env::var("USERPROFILE")
+                .or_else(|_| std::env::var("HOME"))
+                .map(std::path::PathBuf::from)
+                .unwrap_or_else(|_| std::path::PathBuf::from("."));
+            base.join(".codex-webui-teams")
+        }
+    };
+    let mt_team_codex = Arc::new(codex_webui::multitenant::codex_pool::TeamCodexManager::new(
+        teams_root,
+        cfg.codex_bin.clone(),
+    ));
+
     // 认证服务（在 AppState 之前创建，以便 realtime 模块共享）。
     let auth = Arc::new(AuthService::new(&cfg.webui_api_key));
 
@@ -122,6 +142,7 @@ async fn main() -> anyhow::Result<()> {
         db,
         mt_pg,
         mt_master_key,
+        mt_team_codex,
         auth,
         codex,
         terminal,

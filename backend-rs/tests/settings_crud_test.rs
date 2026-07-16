@@ -30,6 +30,10 @@ fn state() -> AppState {
         db,
         mt_pg: None,
         mt_master_key: "test-master".into(),
+        mt_team_codex: Arc::new(codex_webui::multitenant::codex_pool::TeamCodexManager::new(
+            std::path::PathBuf::from("/tmp/mt-test"),
+            "codex".into(),
+        )),
         auth: Arc::new(AuthService::new("test-key")),
         status: Arc::new(codex_webui::codex_status::CodexStatusService::new(codex.clone())),
         codex,

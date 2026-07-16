@@ -147,7 +147,7 @@ impl CodexJsonRpcClient {
         })
     }
 
-    fn is_closed(&self) -> bool {
+    pub fn is_closed(&self) -> bool {
         self.closed.load(Ordering::SeqCst)
     }
 

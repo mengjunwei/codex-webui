@@ -323,6 +323,8 @@ pub fn build_router(state: AppState) -> Router {
             "/teams/{teamId}/api-key",
             post(mt::set_team_api_key).get(mt::list_team_api_keys),
         )
+        .route("/threads", post(mt::mt_create_thread).get(mt::mt_list_threads))
+        .route("/threads/{threadId}/turns", post(mt::mt_start_turn))
         .route(
             "/teams/{teamId}/members/{userId}",
             axum::routing::delete(mt::remove_member),

@@ -372,7 +372,7 @@ impl CodexProcessManager {
 /// （使用绝对路径避免在 Git Bash 等进程 PATH 不含 system32 的环境下找不到 cmd.exe）。
 /// 真正的 `.exe` 可执行文件以及非 Windows 平台直接启动。
 #[cfg(windows)]
-fn build_codex_command(bin: &str) -> Command {
+pub(crate) fn build_codex_command(bin: &str) -> Command {
     // 裸名解析：Windows 上 `Command::new("codex")` 走 CreateProcess，搜 PATH 时
     // 只自动补 `.exe`、不补 `.cmd`/`.bat`，因此 npm 全局安装的 codex（`codex.cmd`
     // 垫片，没有 `codex.exe`）会被判为 "program not found"。先用 `where` 把裸名
@@ -506,7 +506,7 @@ fn resolve_node_script(cmd_path: &str) -> Option<Command> {
 }
 
 #[cfg(not(windows))]
-fn build_codex_command(bin: &str) -> Command {
+pub(crate) fn build_codex_command(bin: &str) -> Command {
     Command::new(bin)
 }
 

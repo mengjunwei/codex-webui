@@ -6,6 +6,7 @@
 
 pub mod api_keys;
 pub mod auth;
+pub mod codex_pool;
 pub mod handlers;
 pub mod migration;
 pub mod middleware;

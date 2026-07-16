@@ -276,6 +276,22 @@ M2 的 **key 管理层**已完成(team_api_keys 表 + AES-256-GCM 加密存储 +
 
 **M2 未完成(留 M3)**:注入 codex —— 把 team active key 写入 per-team `CODEX_HOME/auth.json` 并按 team 启动 codex 进程。依赖 per-team CODEX_HOME 改造,与 M3 进程池一起做。
 
+### ✅ M3 完成状态(2026-07-16,单机核心)
+
+M3 的**单机多 team 核心**已完成:`TeamCodexManager` + 多租户 thread 路由。37 个 lib 单测全过(无回归,现有功能不受影响)。
+
+已交付:
+- `src/multitenant/codex_pool.rs`(`TeamCodexManager`):per-team `CODEX_HOME`(本地目录 `{teams_root}/{team_id}/.codex`)、按需启动 codex(注入 `OPENAI_API_KEY`,来自 M2 `get_active_plain_key` 解密)、复用 `CodexJsonRpcClient` + `process::build_codex_command`、进程表缓存、`evict`/`restart_team`
+- handler `/api/mt/threads` POST(create:成员校验→启动 codex→`thread/start`→PG `threads` 元数据双写)/ GET(list:从 PG,team 内共享)、`/api/mt/threads/{id}/turns` POST(team 校验→`turn/start`→更新活跃时间)
+- team 校验铁律:thread 操作前 `require_member` / `require_thread_team`(查 PG `threads.team_id` + 成员校验)
+- `AppState.mt_team_codex`;main 初始化(`CODEX_TEAMS_HOME` 或回退 `~/.codex-webui-teams`)
+- 放开 `process::build_codex_command`(pub(crate))、`jsonrpc::is_closed`(pub)供复用
+
+**M3 未完成(留 M4/M5)**:
+- `write_tx` 背压(改 jsonrpc.rs `unbounded→有界` + semaphore,根治 OOM)——`CodexJsonRpcClient` 现有/多租户共用,改动影响面大,留 M5 统一做
+- 空闲回收 / 全局进程上限 / 会话粘性细化 / 一致性哈希骨架
+- mt thread 的 notification/审批**实时回流前端**还没接(需事件总线,M4 跨节点广播时一起做);目前 turn/start 返回 codex 同步响应,流式事件待 M4
+
 ---
 
 ## 11. codex 文件系统查证结论(关键参考)

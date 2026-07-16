@@ -281,3 +281,138 @@ pub async fn list_team_api_keys(
     let keys = api_keys::list_team_api_keys(pool, &team_id).await?;
     Ok(Json(keys.into_iter().map(Into::into).collect()))
 }
+
+// ── 多租户 threads / turns(M3,经 TeamCodexManager)────────────────────────
+use axum::extract::Query;
+use serde_json::Value;
+
+#[derive(Deserialize)]
+pub struct TeamIdQuery {
+    #[serde(rename = "teamId")]
+    pub team_id: String,
+}
+
+#[derive(Deserialize)]
+pub struct MtCreateThreadBody {
+    #[serde(rename = "teamId")]
+    pub team_id: String,
+    /// 透传给 codex thread/start 的其余字段(model/cwd/...)。
+    #[serde(flatten)]
+    pub rest: serde_json::Map<String, Value>,
+}
+
+/// 校验 thread 属于某 team 且 user 是该 team 成员,返回 team_id。
+async fn require_thread_team(
+    pool: &PgPool,
+    thread_id: &str,
+    user_id: &str,
+) -> Result<String, AppError> {
+    let row: Option<(String,)> = sqlx::query_as("SELECT team_id FROM threads WHERE id = $1")
+        .bind(thread_id)
+        .fetch_optional(pool)
+        .await
+        .map_err(|e| AppError::internal(format!("query thread team: {e}")))?;
+    let team_id = match row {
+        Some((t,)) => t,
+        None => {
+            return Err(AppError::business(
+                ErrorCode::HttpNotFound,
+                StatusCode::NOT_FOUND,
+                "thread not found".into(),
+                None,
+            ))
+        }
+    };
+    teams::require_member(pool, &team_id, user_id).await?;
+    Ok(team_id)
+}
+
+/// 创建会话:成员校验 → 按 team 启动 codex → thread/start → PG 元数据双写。
+pub async fn mt_create_thread(
+    State(state): State<AppState>,
+    Extension(uid): Extension<UserId>,
+    crate::error::Json(body): crate::error::Json<MtCreateThreadBody>,
+) -> Result<Json<Value>, AppError> {
+    let pool = require_pool(&state)?;
+    teams::require_member(pool, &body.team_id, &uid.0).await?;
+    let client = state
+        .mt_team_codex
+        .client_for(&body.team_id, pool, &state.mt_master_key)
+        .await?;
+    let resp = client
+        .request("thread/start", Some(Value::Object(body.rest)))
+        .await
+        .map_err(|e| AppError::internal(format!("codex thread/start: {e}")))?;
+
+    // PG threads 元数据双写(尽力提取 thread id;失败不阻塞)。
+    let thread_id = resp
+        .get("id")
+        .and_then(Value::as_str)
+        .or_else(|| resp.get("threadId").and_then(Value::as_str));
+    if let Some(tid) = thread_id {
+        let now = crate::multitenant::now_ms();
+        if let Err(e) = sqlx::query(
+            "INSERT INTO threads (id, team_id, created_by_user_id, title, status, created_at, updated_at, last_activity_at) \
+             VALUES ($1, $2, $3, NULL, 'active', $4, $4, $4) ON CONFLICT (id) DO NOTHING",
+        )
+        .bind(tid)
+        .bind(&body.team_id)
+        .bind(&uid.0)
+        .bind(now)
+        .execute(pool)
+        .await
+        {
+            tracing::warn!(error = %e, "insert thread meta failed (non-fatal)");
+        }
+    }
+    Ok(Json(resp))
+}
+
+/// 列出 team 会话元数据(从 PG,team 内共享,按活跃时间倒序)。
+pub async fn mt_list_threads(
+    State(state): State<AppState>,
+    Extension(uid): Extension<UserId>,
+    Query(q): Query<TeamIdQuery>,
+) -> Result<Json<Vec<crate::multitenant::models::ThreadMeta>>, AppError> {
+    let pool = require_pool(&state)?;
+    teams::require_member(pool, &q.team_id, &uid.0).await?;
+    let list = sqlx::query_as::<_, crate::multitenant::models::ThreadMeta>(
+        "SELECT id, team_id, created_by_user_id, title, status, created_at, updated_at, last_activity_at \
+         FROM threads WHERE team_id = $1 ORDER BY last_activity_at DESC",
+    )
+    .bind(&q.team_id)
+    .fetch_all(pool)
+    .await
+    .map_err(|e| AppError::internal(format!("list threads: {e}")))?;
+    Ok(Json(list))
+}
+
+/// 对会话发起 turn:校验 thread 所属 team + 成员 → codex turn/start → 更新活跃时间。
+pub async fn mt_start_turn(
+    State(state): State<AppState>,
+    Extension(uid): Extension<UserId>,
+    Path((thread_id,)): Path<(String,)>,
+    body: axum::Json<Value>,
+) -> Result<Json<Value>, AppError> {
+    let pool = require_pool(&state)?;
+    let team_id = require_thread_team(pool, &thread_id, &uid.0).await?;
+    let client = state
+        .mt_team_codex
+        .client_for(&team_id, pool, &state.mt_master_key)
+        .await?;
+    let mut params = body.0;
+    if let Value::Object(ref mut map) = params {
+        map.entry("threadId").or_insert(Value::String(thread_id.clone()));
+    }
+    let resp = client
+        .request("turn/start", Some(params))
+        .await
+        .map_err(|e| AppError::internal(format!("codex turn/start: {e}")))?;
+    let now = crate::multitenant::now_ms();
+    let _ = sqlx::query("UPDATE threads SET last_activity_at = $1, updated_at = $1 WHERE id = $2")
+        .bind(now)
+        .bind(&thread_id)
+        .execute(pool)
+        .await;
+    Ok(Json(resp))
+}
