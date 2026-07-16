@@ -24,12 +24,18 @@ use tokio::task::JoinHandle;
 use tokio::time::timeout;
 
 const DEFAULT_REQUEST_TIMEOUT_MS: u64 = 30_000;
+/// 出站写队列容量(有界背压):codex 处理或 stdin 写跟不上时队列满 → WriteQueueFull,
+/// 调用方应退避/限流,而非在内存无限堆积(M5-A:根治 unbounded channel 的 OOM 风险)。
+const WRITE_QUEUE_CAP: usize = 1024;
 
 /// JSON-RPC 请求可能产生的错误。
 #[derive(Debug, thiserror::Error)]
 pub enum RpcError {
     #[error("client is closed")]
     Closed,
+    /// 写队列已满(有界背压)。
+    #[error("write queue full (backpressure)")]
+    WriteQueueFull,
     #[error("request {method} (id={id}) timed out")]
     Timeout { method: String, id: RequestId },
     #[error("rpc error {code}: {message}")]
@@ -45,12 +51,20 @@ pub enum RpcError {
     },
 }
 
+/// 有界写队列 try_send 错误 → RpcError(Full → WriteQueueFull,Closed → Closed)。
+fn map_try_send_err(e: mpsc::error::TrySendError<String>) -> RpcError {
+    match e {
+        mpsc::error::TrySendError::Full(_) => RpcError::WriteQueueFull,
+        mpsc::error::TrySendError::Closed(_) => RpcError::Closed,
+    }
+}
+
 type PendingMap = Arc<Mutex<HashMap<RequestId, oneshot::Sender<Result<Value, RpcError>>>>>;
 
 pub struct CodexJsonRpcClient {
     next_id: AtomicU64, // 初始化为 1；fetch_add 依次返回 1、2、3……
     pending: PendingMap,
-    write_tx: mpsc::UnboundedSender<String>,
+    write_tx: mpsc::Sender<String>,
     notify_tx: broadcast::Sender<Value>,
     server_request_tx: broadcast::Sender<Value>,
     close_tx: broadcast::Sender<CloseReason>,
@@ -87,7 +101,7 @@ impl CodexJsonRpcClient {
             .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::Other, "stdout not piped"))?;
 
         let pending: PendingMap = Arc::new(Mutex::new(HashMap::new()));
-        let (write_tx, write_rx) = mpsc::unbounded_channel::<String>();
+        let (write_tx, write_rx) = mpsc::channel::<String>(WRITE_QUEUE_CAP);
         let (notify_tx, _) = broadcast::channel::<Value>(256);
         let (server_request_tx, _) = broadcast::channel::<Value>(1024);
         let (close_tx, _) = broadcast::channel::<CloseReason>(8);
@@ -182,9 +196,9 @@ impl CodexJsonRpcClient {
         let (tx, rx) = oneshot::channel();
         self.pending.lock().await.insert(id, tx);
 
-        if self.write_tx.send(line).is_err() {
+        if let Err(e) = self.write_tx.try_send(line) {
             self.pending.lock().await.remove(&id);
-            return Err(RpcError::Closed);
+            return Err(map_try_send_err(e));
         }
 
         match timeout(self.request_timeout, rx).await {
@@ -212,7 +226,7 @@ impl CodexJsonRpcClient {
             msg.insert("params".into(), p);
         }
         let line = serde_json::to_string(&Value::Object(msg))?;
-        self.write_tx.send(line).map_err(|_| RpcError::Closed)
+        self.write_tx.try_send(line).map_err(map_try_send_err)
     }
 
     /// 响应服务端主动发起的请求（例如审批决定）。
@@ -231,7 +245,7 @@ impl CodexJsonRpcClient {
         msg.insert("id".into(), id);
         msg.insert("result".into(), result);
         let line = serde_json::to_string(&Value::Object(msg))?;
-        self.write_tx.send(line).map_err(|_| RpcError::Closed)
+        self.write_tx.try_send(line).map_err(map_try_send_err)
     }
 
     /// 用错误码响应服务端请求（审批拒绝等场景）。
@@ -257,7 +271,7 @@ impl CodexJsonRpcClient {
             }),
         );
         let line = serde_json::to_string(&Value::Object(msg))?;
-        self.write_tx.send(line).map_err(|_| RpcError::Closed)
+        self.write_tx.try_send(line).map_err(map_try_send_err)
     }
 
     /// 订阅服务端通知（method + params，无 id）。
@@ -320,7 +334,7 @@ async fn read_loop(
 
 async fn write_loop(
     mut stdin: ChildStdin,
-    mut write_rx: mpsc::UnboundedReceiver<String>,
+    mut write_rx: mpsc::Receiver<String>,
     jsonl_tx: mpsc::Sender<String>,
 ) {
     while let Some(line) = write_rx.recv().await {
