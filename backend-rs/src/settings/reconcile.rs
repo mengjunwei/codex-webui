@@ -4,85 +4,85 @@
 //! `constraints`, `updated_at`) are updated to the current definition.
 //!
 //! Parity with `src/settings/settings.service.ts` reconcile logic.
+//!
+//! SeaORM async(多方言 PG/MySQL)。跨方言一致性:用"先查后插/更新",避免 ON CONFLICT
+//! 方言差异。整个流程包在单个事务里(对齐 TS 的 db.transaction)。
 
-use crate::db::Db;
-use crate::settings::definitions::SETTINGS_DEFINITIONS;
+use crate::entity::setting::{
+    ActiveModel as SettingActiveModel, Entity as SettingEntity,
+};
+use crate::multitenant::now_ms;
+use crate::settings::definitions::{SettingDef, SettingType, SETTINGS_DEFINITIONS};
 use anyhow::Result;
+use sea_orm::sea_query::Expr;
+use sea_orm::{ActiveModelTrait, DatabaseConnection, EntityTrait, Set, TransactionTrait};
 
-pub fn reconcile_settings(db: &Db) -> Result<()> {
-    let conn = db
-        .conn
-        .lock()
-        .map_err(|e| anyhow::anyhow!("db lock poisoned: {e}"))?;
+/// 应用所有 SETTINGS_DEFINITIONS 到 settings 表:行缺失则插入(无 value),元数据变化则更新。
+pub async fn reconcile_settings(db: &DatabaseConnection) -> Result<()> {
+    db.transaction::<_, _, sea_orm::DbErr>(|txn| {
+        Box::pin(async move {
+            for def in SETTINGS_DEFINITIONS {
+                let constraints_json = def.constraints.to_json();
+                let constraints_str = serde_json::to_string(&constraints_json)
+                    .unwrap_or_else(|_| "{}".to_string());
 
-    // 将逐条 INSERT/UPDATE 包进单个事务（对齐 TS settings.service.ts:initialize
-    // 的 db.transaction）——中途任意一条失败即整体回滚，避免部分写入导致
-    // settings 表元数据不一致。unchecked_transaction 与 handlers.rs 写入路径
-    // 一致；中途 `?` 提前返回时 Transaction 在 Drop 时自动回滚。
-    let tx = conn.unchecked_transaction()?;
+                // INSERT if row missing — preserves any existing user value。
+                let existing = SettingEntity::find_by_id(def.key).one(txn).await?;
+                if existing.is_none() {
+                    SettingActiveModel {
+                        key: Set(def.key.to_string()),
+                        value: Set(None),
+                        r#type: Set(def.ty.as_str().to_string()),
+                        category: Set(def.category.as_str().to_string()),
+                        description: Set(def.description.to_string()),
+                        default_value: Set(def.default_value.to_string()),
+                        constraints: Set(constraints_str.clone()),
+                        updated_at: Set(now_ms()),
+                    }
+                    .insert(txn)
+                    .await?;
+                    continue;
+                }
 
-    for def in SETTINGS_DEFINITIONS {
-        let constraints_json = def.constraints.to_json();
-        let constraints_str = serde_json::to_string(&constraints_json)
-            .unwrap_or_else(|_| "{}".to_string());
-        // INSERT OR IGNORE: preserves any existing value set by the user.
-        tx.execute(
-            "INSERT OR IGNORE INTO settings \
-             (key, value, type, category, description, default_value, constraints, updated_at) \
-             VALUES (?1, NULL, ?2, ?3, ?4, ?5, ?6, (strftime('%s','now')*1000))",
-            rusqlite::params![
-                def.key,
-                def.ty.as_str(),
-                def.category.as_str(),
-                def.description,
-                def.default_value,
-                constraints_str,
-            ],
-        )?;
-
-        // UPDATE metadata + constraints — never touches `value` (user overrides are sacred)。
-        // 仅当元数据实际变化时才 UPDATE（避免每次启动都刷新 updated_at，对齐 TS hasMetadataChanged）。
-        let changed: bool = tx
-            .query_row(
-                "SELECT type, category, description, default_value, constraints FROM settings WHERE key = ?1",
-                rusqlite::params![def.key],
-                |r| {
-                    let cur: (String, String, String, String, String) =
-                        (r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?);
-                    Ok(cur != (
-                        def.ty.as_str().to_string(),
-                        def.category.as_str().to_string(),
-                        def.description.to_string(),
-                        def.default_value.to_string(),
-                        constraints_str.clone(),
-                    ))
-                },
-            )
-            .unwrap_or(true); // 行缺失或查询错误 → 保守执行 UPDATE。
-        if changed {
-            tx.execute(
-                "UPDATE settings \
-                 SET type = ?1, category = ?2, description = ?3, \
-                     default_value = ?4, constraints = ?5, updated_at = (strftime('%s','now')*1000) \
-                 WHERE key = ?6",
-                rusqlite::params![
-                    def.ty.as_str(),
-                    def.category.as_str(),
-                    def.description,
-                    def.default_value,
-                    constraints_str,
-                    def.key,
-                ],
-            )?;
-        }
-    }
-
-    // 全部成功后提交事务。
-    tx.commit()?;
-
+                // UPDATE metadata + constraints — never touches `value`。
+                // 仅当元数据实际变化时才 UPDATE（对齐 TS hasMetadataChanged），避免无谓写。
+                let cur = existing.unwrap();
+                let changed = cur.r#type != def.ty.as_str()
+                    || cur.category != def.category.as_str()
+                    || cur.description != def.description
+                    || cur.default_value != def.default_value
+                    || cur.constraints != constraints_str;
+                if changed {
+                    let mut am: SettingActiveModel = cur.into();
+                    am.r#type = Set(def.ty.as_str().to_string());
+                    am.category = Set(def.category.as_str().to_string());
+                    am.description = Set(def.description.to_string());
+                    am.default_value = Set(def.default_value.to_string());
+                    am.constraints = Set(constraints_str);
+                    am.updated_at = Set(now_ms());
+                    am.update(txn).await?;
+                }
+            }
+            // 显式忽略 Expr 的 unused 警告（reconcile 自身不依赖 Expr，使用 update_many 时再用到）。
+            let _ = Expr::value(0i64);
+            Ok(())
+        })
+    })
+    .await
+    .map_err(|e| anyhow::anyhow!("reconcile settings: {e}"))?;
     tracing::info!(
         "reconciled {} settings definitions",
         SETTINGS_DEFINITIONS.len()
     );
     Ok(())
+}
+
+// 抑制 unused 警告(SettingType 引用确保 definitions 模块链接)。
+#[allow(dead_code)]
+fn _ensure_typed(def: &SettingDef) -> &str {
+    match def.ty {
+        SettingType::Number | SettingType::String | SettingType::Boolean | SettingType::Json => {
+            def.ty.as_str()
+        }
+    }
 }

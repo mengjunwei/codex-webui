@@ -2,13 +2,17 @@
 //! 供安全合规追溯。owner 可查本 team 的审计记录。
 
 use crate::error::AppError;
-use crate::multitenant::models::AuditLog;
+use crate::multitenant::entity::audit_log::{
+    ActiveModel as AuditLogActiveModel, Column as AuditLogColumn, Entity as AuditLogEntity,
+    Model as AuditLogModel,
+};
 use crate::multitenant::{new_id, now_ms};
-use sqlx::PgPool;
+use sea_orm::entity::prelude::*;
+use sea_orm::{DatabaseConnection, QueryFilter, QueryOrder, QuerySelect, Set};
 
 /// 记录一条审计日志。best-effort:失败仅 warn,不阻断主操作(审计不应让业务失败)。
 pub async fn record(
-    pool: &PgPool,
+    db: &DatabaseConnection,
     team_id: &str,
     actor_user_id: &str,
     action: &str,
@@ -16,33 +20,32 @@ pub async fn record(
 ) {
     let id = new_id();
     let now = now_ms();
-    if let Err(e) = sqlx::query(
-        "INSERT INTO audit_log (id, team_id, actor_user_id, action, detail, created_at) \
-         VALUES ($1, $2, $3, $4, $5, $6)",
-    )
-    .bind(id)
-    .bind(team_id)
-    .bind(actor_user_id)
-    .bind(action)
-    .bind(detail)
-    .bind(now)
-    .execute(pool)
-    .await
-    {
+    let am = AuditLogActiveModel {
+        id: Set(id),
+        team_id: Set(team_id.to_string()),
+        actor_user_id: Set(actor_user_id.to_string()),
+        action: Set(action.to_string()),
+        // detail 列允许 NULL:None 显式写入 NULL(等价于原 sqlx bind(None))
+        detail: Set(detail.map(str::to_string)),
+        created_at: Set(now),
+    };
+    if let Err(e) = am.insert(db).await {
         tracing::warn!(error = %e, "insert audit log failed (non-fatal)");
     }
 }
 
 /// 列出 team 审计日志(按时间倒序,默认上限 200)。
-pub async fn list(pool: &PgPool, team_id: &str, limit: i64) -> Result<Vec<AuditLog>, AppError> {
+pub async fn list(
+    db: &DatabaseConnection,
+    team_id: &str,
+    limit: i64,
+) -> Result<Vec<AuditLogModel>, AppError> {
     let limit = limit.clamp(1, 500);
-    sqlx::query_as::<_, AuditLog>(
-        "SELECT id, team_id, actor_user_id, action, detail, created_at FROM audit_log \
-         WHERE team_id = $1 ORDER BY created_at DESC LIMIT $2",
-    )
-    .bind(team_id)
-    .bind(limit)
-    .fetch_all(pool)
-    .await
-    .map_err(|e| AppError::internal(format!("list audit: {e}")))
+    AuditLogEntity::find()
+        .filter(AuditLogColumn::TeamId.eq(team_id.to_string()))
+        .order_by_desc(AuditLogColumn::CreatedAt)
+        .limit(limit as u64)
+        .all(db)
+        .await
+        .map_err(|e| AppError::internal(format!("list audit: {e}")))
 }

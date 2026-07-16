@@ -3,12 +3,12 @@
 use crate::auth::AuthService;
 use crate::codex::CodexProcessManager;
 use crate::codex_status::CodexStatusService;
-use crate::db::Db;
 use crate::multitenant::codex_pool::TeamCodexManager;
 use metrics_exporter_prometheus::PrometheusHandle;
 use crate::settings::ValueSource;
 use crate::terminal::TerminalService;
 use crate::threads::ThreadResumeRegistry;
+use sea_orm::DatabaseConnection;
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
 
@@ -17,9 +17,8 @@ pub type SettingsCache = Arc<Mutex<HashMap<String, (serde_json::Value, ValueSour
 
 #[derive(Clone)]
 pub struct AppState {
-    pub db: Arc<Db>,
-    /// 多租户 PG 连接池(None = 未配置 DATABASE_URL,多租户功能禁用,现有功能不受影响)。
-    pub mt_pg: Option<sqlx::PgPool>,
+    /// SeaORM 数据库连接(PG/MySQL 多方言,必选)。multitenant + 业务共用。
+    pub db: DatabaseConnection,
     /// 主密钥(加密 team API key)。来自 MASTER_KEY 或回退 webui_api_key。
     pub mt_master_key: String,
     /// 按 team 启动 codex 进程的管理器(M3)。

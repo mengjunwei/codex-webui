@@ -10,17 +10,22 @@
 //!
 //! 写入时会对值进行 JSON 编码后存储。约束（min/max/integer）会被建模、由
 //! reconcile 持久化、在 DTO 中返回，并在写入时强制校验。
+//!
+//! 数据层:SeaORM(多方言 PG/MySQL),`settings` 表 entity `crate::entity::setting`
+//! (DB 列 `setting_key`,避免 MySQL 保留字 `key`)。
 
 pub mod definitions;
 pub mod handlers;
 pub mod reconcile;
 pub use reconcile::reconcile_settings;
 
-use crate::db::Db;
+use crate::entity::setting::{ActiveModel as SettingActiveModel, Column as SettingColumn, Entity as SettingEntity, Model as SettingModel};
+use crate::multitenant::now_ms;
 use crate::state::SettingsCache;
 use anyhow::Result;
 use definitions::{SettingDef, SettingType, SETTINGS_DEFINITIONS};
-use rusqlite::OptionalExtension;
+use sea_orm::sea_query::Expr;
+use sea_orm::{ColumnTrait, DatabaseConnection, EntityTrait, QueryFilter};
 
 // ── 值来源追踪 ────────────────────────────────────────────────────
 
@@ -41,6 +46,13 @@ pub struct ResolvedSetting {
     pub updated_at: Option<i64>,
 }
 
+impl ResolvedSetting {
+    /// 透出声明的 description(SettingDef 没有 pub description)。
+    pub fn description(&self) -> &'static str {
+        self.def.description
+    }
+}
+
 /// 查找给定 key 对应的 `SettingDef`。未知 key 返回 `None`。
 pub fn find_def(key: &str) -> Option<&'static SettingDef> {
     SETTINGS_DEFINITIONS.iter().find(|d| d.key == key)
@@ -49,20 +61,20 @@ pub fn find_def(key: &str) -> Option<&'static SettingDef> {
 // ── 读取器 ───────────────────────────────────────────────────────────────────
 
 pub struct SettingsReader<'a> {
-    db: &'a Db,
+    db: &'a DatabaseConnection,
     cache: Option<&'a SettingsCache>,
 }
 
 impl<'a> SettingsReader<'a> {
-    pub fn new(db: &'a Db, cache: Option<&'a SettingsCache>) -> Self {
+    pub fn new(db: &'a DatabaseConnection, cache: Option<&'a SettingsCache>) -> Self {
         Self { db, cache }
     }
 
     /// 解析单个设置，并追踪其来源。优先从内存缓存读取（对齐 TS SettingsService.cache）。
-    pub fn resolve(&self, key: &str) -> Option<ResolvedSetting> {
+    pub async fn resolve(&self, key: &str) -> Option<ResolvedSetting> {
         let def = find_def(key)?;
 
-        // 缓存命中：直接返回。
+        // 缓存命中：直接返回（std::sync::Mutex 在 async 内仅做同步短操作，不跨 await）。
         if let Some(cache_ref) = self.cache {
             if let Ok(cache) = cache_ref.lock() {
                 if let Some((value, source, updated_at)) = cache.get(key) {
@@ -77,25 +89,20 @@ impl<'a> SettingsReader<'a> {
             }
         }
 
-        let conn = self.db.conn.lock().ok()?;
-
-        // 用 optional() 精确区分"无行"（None，回退到 env/default）与"DB 真实错误"
-        // （记录 warn 后回退），避免 unwrap_or 把磁盘 IO/锁失败静默当成"用户未设置"。
-        let row: Option<(Option<String>, Option<i64>)> = match conn
-            .query_row(
-                "SELECT value, updated_at FROM settings WHERE key = ?1",
-                [key],
-                |r| Ok((r.get::<_, Option<String>>(0)?, r.get::<_, Option<i64>>(1)?)),
-            )
-            .optional()
-        {
-            Ok(r) => r,
-            Err(e) => {
+        // DB 层：SeaORM 按主键 setting_key 查询。错误记 warn 后回退到 env/default。
+        let row: Option<SettingModel> = SettingEntity::find_by_id(key)
+            .one(self.db)
+            .await
+            .map_err(|e| {
                 tracing::warn!("settings db read error for {}: {}", key, e);
-                None
-            }
+                e
+            })
+            .ok()
+            .flatten();
+        let (db_raw, updated_at) = match row {
+            Some(m) => (m.value, Some(m.updated_at)),
+            None => (None, None),
         };
-        let (db_raw, updated_at) = row.unwrap_or((None, None));
 
         // DB 层：JSON 解码；TS 仅把 NULL 视为缺失（空字符串不算）。
         if let Some(raw) = db_raw {
@@ -107,7 +114,6 @@ impl<'a> SettingsReader<'a> {
                     def,
                     updated_at,
                 };
-                // 写入缓存。
                 if let Some(cache_ref) = self.cache {
                     if let Ok(mut cache) = cache_ref.lock() {
                         cache.insert(key.to_string(), (value, ValueSource::Db, updated_at));
@@ -126,7 +132,6 @@ impl<'a> SettingsReader<'a> {
             .filter(|s| !s.is_empty())
         {
             if let Some(value) = parse_env_value(&raw, def) {
-                // 写入缓存：env 来源也缓存，避免每次 resolve 都重查 DB 确认无值。
                 if let Some(cache_ref) = self.cache {
                     if let Ok(mut cache) = cache_ref.lock() {
                         cache.insert(key.to_string(), (value.clone(), ValueSource::Env, updated_at));
@@ -144,7 +149,6 @@ impl<'a> SettingsReader<'a> {
 
         // default 层：按类型解释定义中的默认值字符串。
         let value = default_as_value(def);
-        // 写入缓存：default 来源也缓存（同 env），避免每次 resolve 重查 DB。
         if let Some(cache_ref) = self.cache {
             if let Ok(mut cache) = cache_ref.lock() {
                 cache.insert(key.to_string(), (value.clone(), ValueSource::Default, updated_at));
@@ -160,30 +164,40 @@ impl<'a> SettingsReader<'a> {
     }
 
     /// 解析所有设置，可按 category 过滤。
-    pub fn list_all(&self, category: Option<&str>) -> Vec<ResolvedSetting> {
-        SETTINGS_DEFINITIONS
+    pub async fn list_all(&self, category: Option<&str>) -> Vec<ResolvedSetting> {
+        let mut out = Vec::new();
+        for d in SETTINGS_DEFINITIONS
             .iter()
             .filter(|d| category.map_or(true, |c| d.category.as_str() == c))
-            .filter_map(|d| self.resolve(d.key))
-            .collect()
+        {
+            if let Some(r) = self.resolve(d.key).await {
+                out.push(r);
+            }
+        }
+        out
     }
 
-    pub fn get_string(&self, key: &str) -> Option<String> {
-        // 将空字符串归一化为 None（与 TS 的 getStringSetting：`s.value || null` 对齐）。
-        self.resolve(key)?.value.as_str().filter(|s| !s.is_empty()).map(|s| s.to_string())
+    pub async fn get_string(&self, key: &str) -> Option<String> {
+        self.resolve(key)
+            .await?
+            .value
+            .as_str()
+            .filter(|s| !s.is_empty())
+            .map(|s| s.to_string())
     }
 
-    pub fn get_number(&self, key: &str) -> Option<f64> {
-        self.resolve(key)?.value.as_f64()
+    pub async fn get_number(&self, key: &str) -> Option<f64> {
+        self.resolve(key).await?.value.as_f64()
     }
 
-    pub fn get_bool(&self, key: &str) -> Option<bool> {
-        self.resolve(key)?.value.as_bool()
+    pub async fn get_bool(&self, key: &str) -> Option<bool> {
+        self.resolve(key).await?.value.as_bool()
     }
 
     /// 便捷方法：将 `files.uploadMaxBytes` 转为 `u64`，缺失时回退到 100 MB。
-    pub fn get_upload_max_bytes(&self) -> u64 {
+    pub async fn get_upload_max_bytes(&self) -> u64 {
         self.get_number("files.uploadMaxBytes")
+            .await
             .map(|n| n as u64)
             .unwrap_or(104_857_600)
     }
@@ -192,19 +206,20 @@ impl<'a> SettingsReader<'a> {
 // ── 写入器 ───────────────────────────────────────────────────────────────────
 
 /// 写入（upsert）一个设置值。`value` 为 `None` 时重置回 env/default。
-pub fn write_setting(db: &Db, key: &str, value: Option<&str>) -> Result<()> {
+///
+/// 通过 `update_many` + 行数检查实现"行存在才更新",0 行则报错（行缺失 = reconcile 未跑），
+/// 行存在则更新 value + updated_at。不在 DB 层做 upsert `ON CONFLICT`,避免跨方言差异；
+/// `reconcile_settings` 启动时已为每个定义建行,这里只允许改 value。
+pub async fn write_setting(db: &DatabaseConnection, key: &str, value: Option<&str>) -> Result<()> {
     find_def(key).ok_or_else(|| anyhow::anyhow!("unknown setting: {}", key))?;
-    let conn = db
-        .conn
-        .lock()
-        .map_err(|e| anyhow::anyhow!("db lock poisoned: {e}"))?;
-    let n = conn.execute(
-        "UPDATE settings SET value = ?1, updated_at = (strftime('%s','now')*1000) WHERE key = ?2",
-        rusqlite::params![value, key],
-    )?;
-    if n == 0 {
-        // reconcile 应在启动时为每个已定义设置建行；命中 0 行说明行缺失，
-        // 显式报错而非静默成功（否则前端拿到 200 但值实际未写入）。
+    let res = SettingEntity::update_many()
+        .col_expr(SettingColumn::Value, Expr::value(value))
+        .col_expr(SettingColumn::UpdatedAt, Expr::value(now_ms()))
+        .filter(SettingColumn::Key.eq(key.to_string()))
+        .exec(db)
+        .await
+        .map_err(|e| anyhow::anyhow!("db: {e}"))?;
+    if res.rows_affected == 0 {
         return Err(anyhow::anyhow!(
             "setting row not found for key '{key}' (was reconcile_settings run?)"
         ));
@@ -250,16 +265,12 @@ pub fn validate_value(
         }
         SettingType::String => match value {
             serde_json::Value::String(_) => value.clone(),
-            // null → 视作空字符串（与 TS 对齐，TS 会拒绝非字符串；
-            // 但 PATCH 的 null 表示“重置”，由 handler 层处理）。
             _ => return Err(format!("expected string for {}", def.key)),
         },
         SettingType::Boolean => value
             .as_bool()
             .map(serde_json::Value::Bool)
             .ok_or_else(|| format!("expected boolean for {}", def.key))?,
-        // JSON 类型：递归校验合法性（对齐 TS isJsonValue + validateValue 的 json 分支）。
-        // 拒绝 null；对象键名禁止 __proto__/constructor/prototype（防原型污染）。
         SettingType::Json => {
             if !is_valid_json_value(value) {
                 return Err(format!("{} must be JSON", def.key));
@@ -268,7 +279,6 @@ pub fn validate_value(
         }
     };
 
-    // enum 约束校验（对齐 TS constraints.enum）：归一化后的值必须命中其一。
     if let Some(enum_values) = &def.constraints.enum_values {
         if !enum_values.iter().any(|c| c == &normalized) {
             return Err(format!("{} is not an allowed value", def.key));
@@ -278,11 +288,6 @@ pub fn validate_value(
     Ok(normalized)
 }
 
-/// 递归校验 JSON 值的合法性（对齐 TS settings.service.ts:isJsonValue，
-/// 并增加原型污染键名防护）。
-/// - null 视为非法（validateValue 的 json 分支要求 value !== null）
-/// - serde_json::Number 不含 NaN/Infinity，等价于 TS Number.isFinite 校验
-/// - 对象键名禁止 __proto__/constructor/prototype
 fn is_valid_json_value(value: &serde_json::Value) -> bool {
     match value {
         serde_json::Value::Null => false,
@@ -296,7 +301,6 @@ fn is_valid_json_value(value: &serde_json::Value) -> bool {
     }
 }
 
-/// 构造一个 `serde_json::Number` Value，整数优先使用 i64。
 fn num_value(n: f64) -> serde_json::Value {
     if n.fract() == 0.0 && n.is_finite() {
         serde_json::Value::Number(serde_json::Number::from(n as i64))
@@ -307,7 +311,6 @@ fn num_value(n: f64) -> serde_json::Value {
     }
 }
 
-/// 将定义中的原始默认值字符串按类型解释为 Value。
 pub fn default_as_value(def: &SettingDef) -> serde_json::Value {
     match def.ty {
         SettingType::Number => def.default_value.parse::<f64>().ok().map(num_value).unwrap_or(serde_json::Value::Null),
@@ -317,8 +320,6 @@ pub fn default_as_value(def: &SettingDef) -> serde_json::Value {
     }
 }
 
-/// 将原始环境变量字符串按类型解析为 Value（与 TS 的 `readEnvValue` 对齐）。
-/// 数值会按 constraints 截断（integer）并夹到 [min,max]（对齐 TS clampNumber）。
 fn parse_env_value(raw: &str, def: &SettingDef) -> Option<serde_json::Value> {
     match def.ty {
         SettingType::Number => {
@@ -343,3 +344,7 @@ fn parse_env_value(raw: &str, def: &SettingDef) -> Option<serde_json::Value> {
         SettingType::Json => serde_json::from_str(raw).ok(),
     }
 }
+
+// 抑制 unused 警告(ActiveModel trait 在 future 扩展用到)。
+#[allow(unused_imports)]
+use SettingActiveModel as _;

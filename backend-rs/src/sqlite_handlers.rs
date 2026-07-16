@@ -2,16 +2,37 @@
 //! token-usage、turn-diff、turn-errors、pending-approvals。
 //!
 //! 这些模块的写入路径是事件驱动的（订阅 codex 通知），将在 Phase 1 中补充。
+//!
+//! 数据访问全部走 SeaORM（PG/MySQL 多方言）。`AppState.db` 为
+//! `sea_orm::DatabaseConnection`，复合主键查找用元组，CAS 更新在事务内完成
+//! （保持"转发失败回滚"的原语义）。
 
-use crate::error::{AppError, ErrorCode};
+use crate::error::{AppError, ErrorCode, Json};
+use crate::multitenant::now_ms;
 use crate::state::AppState;
 use axum::{
     extract::{Path, Query, State},
     http::StatusCode,
 };
-use crate::error::Json;
-use rusqlite::OptionalExtension;
+use sea_orm::{
+    entity::prelude::*, ColumnTrait, EntityTrait, QueryFilter, QueryOrder, Set, TransactionError,
+    TransactionTrait,
+};
 use serde::{Deserialize, Serialize};
+
+use crate::entity::pending_server_request::{
+    ActiveModel as PendingServerRequestActiveModel, Column as PendingServerRequestColumn,
+    Entity as PendingServerRequestEntity, Model as PendingServerRequestModel,
+};
+use crate::entity::token_usage_snapshot::{
+    Column as TokenUsageColumn, Entity as TokenUsageEntity, Model as TokenUsageModel,
+};
+use crate::entity::turn_diff::{
+    Column as TurnDiffColumn, Entity as TurnDiffEntity, Model as TurnDiffModel,
+};
+use crate::entity::turn_error::{
+    Column as TurnErrorColumn, Entity as TurnErrorEntity, Model as TurnErrorModel,
+};
 
 // ── token 用量 ──────────────────────────────────────────────────────────────
 
@@ -54,6 +75,31 @@ pub struct ThreadTokenUsageResponse {
     pub latest: Option<TurnTokenUsageDto>,
 }
 
+/// 把 entity Model 投影为对外 DTO（不动 raw_payload 字段）。
+fn token_usage_to_dto(m: TokenUsageModel) -> TurnTokenUsageDto {
+    TurnTokenUsageDto {
+        turn_id: m.turn_id,
+        usage: TurnUsageDto {
+            model_context_window: m.model_context_window,
+            total: BreakdownDto {
+                total_tokens: m.total_tokens,
+                input_tokens: m.input_tokens,
+                cached_input_tokens: m.cached_input_tokens,
+                output_tokens: m.output_tokens,
+                reasoning_output_tokens: m.reasoning_output_tokens,
+            },
+            last: BreakdownDto {
+                total_tokens: m.last_total_tokens,
+                input_tokens: m.last_input_tokens,
+                cached_input_tokens: m.last_cached_input_tokens,
+                output_tokens: m.last_output_tokens,
+                reasoning_output_tokens: m.last_reasoning_output_tokens,
+            },
+        },
+        updated_at: m.updated_at,
+    }
+}
+
 #[utoipa::path(
     get,
     path = "/api/threads/{threadId}/token-usage",
@@ -68,50 +114,15 @@ pub async fn read_token_usage(
     State(state): State<AppState>,
     Path(thread_id): Path<String>,
 ) -> Result<Json<ThreadTokenUsageResponse>, AppError> {
-    let conn = state
-        .db
-        .conn
-        .lock()
-        .map_err(|e| AppError::internal(format!("db lock: {e}")))?;
-
-    let mut stmt = conn
-        .prepare(
-            "SELECT turn_id, total_tokens, input_tokens, cached_input_tokens, \
-             output_tokens, reasoning_output_tokens, \
-             last_total_tokens, last_input_tokens, last_cached_input_tokens, \
-             last_output_tokens, last_reasoning_output_tokens, \
-             model_context_window, updated_at \
-             FROM token_usage_snapshots WHERE thread_id = ?1 ORDER BY updated_at",
-        )
-        .map_err(|e| AppError::internal(format!("prepare: {e}")))?;
-
-    let turns = stmt
-        .query_map([&thread_id], |r| {
-            Ok(TurnTokenUsageDto {
-                turn_id: r.get(0)?,
-                usage: TurnUsageDto {
-                    model_context_window: r.get(11)?,
-                    total: BreakdownDto {
-                        total_tokens: r.get(1)?,
-                        input_tokens: r.get(2)?,
-                        cached_input_tokens: r.get(3)?,
-                        output_tokens: r.get(4)?,
-                        reasoning_output_tokens: r.get(5)?,
-                    },
-                    last: BreakdownDto {
-                        total_tokens: r.get(6)?,
-                        input_tokens: r.get(7)?,
-                        cached_input_tokens: r.get(8)?,
-                        output_tokens: r.get(9)?,
-                        reasoning_output_tokens: r.get(10)?,
-                    },
-                },
-                updated_at: r.get(12)?,
-            })
-        })
-        .map_err(|e| AppError::internal(format!("query: {e}")))?
-        .filter_map(|t| t.ok())
-        .collect::<Vec<_>>();
+    let turns: Vec<TurnTokenUsageDto> = TokenUsageEntity::find()
+        .filter(TokenUsageColumn::ThreadId.eq(thread_id.clone()))
+        .order_by_asc(TokenUsageColumn::UpdatedAt)
+        .all(&state.db)
+        .await
+        .map_err(|e| AppError::internal(format!("query token_usage_snapshots: {e}")))?
+        .into_iter()
+        .map(token_usage_to_dto)
+        .collect();
 
     Ok(Json(ThreadTokenUsageResponse {
         thread_id,
@@ -136,49 +147,13 @@ pub async fn read_latest_token_usage(
     State(state): State<AppState>,
     Path(thread_id): Path<String>,
 ) -> Result<Json<Option<TurnTokenUsageDto>>, AppError> {
-    let conn = state
-        .db
-        .conn
-        .lock()
-        .map_err(|e| AppError::internal(format!("db lock: {e}")))?;
-
-    let result = conn
-        .query_row(
-            "SELECT turn_id, total_tokens, input_tokens, cached_input_tokens, \
-             output_tokens, reasoning_output_tokens, \
-             last_total_tokens, last_input_tokens, last_cached_input_tokens, \
-             last_output_tokens, last_reasoning_output_tokens, \
-             model_context_window, updated_at \
-             FROM token_usage_snapshots \
-             WHERE thread_id = ?1 \
-             ORDER BY updated_at DESC LIMIT 1",
-            [&thread_id],
-            |r| {
-                Ok(TurnTokenUsageDto {
-                    turn_id: r.get(0)?,
-                    usage: TurnUsageDto {
-                        model_context_window: r.get(11)?,
-                        total: BreakdownDto {
-                            total_tokens: r.get(1)?,
-                            input_tokens: r.get(2)?,
-                            cached_input_tokens: r.get(3)?,
-                            output_tokens: r.get(4)?,
-                            reasoning_output_tokens: r.get(5)?,
-                        },
-                        last: BreakdownDto {
-                            total_tokens: r.get(6)?,
-                            input_tokens: r.get(7)?,
-                            cached_input_tokens: r.get(8)?,
-                            output_tokens: r.get(9)?,
-                            reasoning_output_tokens: r.get(10)?,
-                        },
-                    },
-                    updated_at: r.get(12)?,
-                })
-            },
-        )
-        .optional()
-        .map_err(|e| AppError::internal(format!("query: {e}")))?;
+    let result = TokenUsageEntity::find()
+        .filter(TokenUsageColumn::ThreadId.eq(thread_id.clone()))
+        .order_by_desc(TokenUsageColumn::UpdatedAt)
+        .one(&state.db)
+        .await
+        .map_err(|e| AppError::internal(format!("query latest token_usage: {e}")))?
+        .map(token_usage_to_dto);
 
     Ok(Json(result))
 }
@@ -215,35 +190,21 @@ pub async fn read_turn_diffs(
     State(state): State<AppState>,
     Path(thread_id): Path<String>,
 ) -> Result<Json<ThreadTurnDiffsResponse>, AppError> {
-    let conn = state
-        .db
-        .conn
-        .lock()
-        .map_err(|e| AppError::internal(format!("db lock: {e}")))?;
-
-    let mut stmt = conn
-        .prepare(
-            "SELECT turn_id, diff, updated_at FROM turn_diffs \
-             WHERE thread_id = ?1 ORDER BY updated_at",
-        )
-        .map_err(|e| AppError::internal(format!("prepare: {e}")))?;
-
-    let turns = stmt
-        .query_map([&thread_id], |r| {
-            Ok(TurnDiffDto {
-                turn_id: r.get(0)?,
-                diff: r.get(1)?,
-                updated_at: r.get(2)?,
-            })
+    let turns: Vec<TurnDiffDto> = TurnDiffEntity::find()
+        .filter(TurnDiffColumn::ThreadId.eq(thread_id.clone()))
+        .order_by_asc(TurnDiffColumn::UpdatedAt)
+        .all(&state.db)
+        .await
+        .map_err(|e| AppError::internal(format!("query turn_diffs: {e}")))?
+        .into_iter()
+        .map(|m: TurnDiffModel| TurnDiffDto {
+            turn_id: m.turn_id,
+            diff: m.diff,
+            updated_at: m.updated_at,
         })
-        .map_err(|e| AppError::internal(format!("query: {e}")))?
-        .filter_map(|t| t.ok())
         .collect();
 
-    Ok(Json(ThreadTurnDiffsResponse {
-        thread_id,
-        turns,
-    }))
+    Ok(Json(ThreadTurnDiffsResponse { thread_id, turns }))
 }
 
 // ── turn 错误 ────────────────────────────────────────────────────────────────
@@ -278,35 +239,21 @@ pub async fn read_turn_errors(
     State(state): State<AppState>,
     Path(thread_id): Path<String>,
 ) -> Result<Json<ThreadTurnErrorsResponse>, AppError> {
-    let conn = state
-        .db
-        .conn
-        .lock()
-        .map_err(|e| AppError::internal(format!("db lock: {e}")))?;
-
-    let mut stmt = conn
-        .prepare(
-            "SELECT turn_id, message, created_at FROM turn_errors \
-             WHERE thread_id = ?1 ORDER BY created_at",
-        )
-        .map_err(|e| AppError::internal(format!("prepare: {e}")))?;
-
-    let errors = stmt
-        .query_map([&thread_id], |r| {
-            Ok(TurnErrorDto {
-                turn_id: r.get(0)?,
-                message: r.get(1)?,
-                created_at: r.get(2)?,
-            })
+    let errors: Vec<TurnErrorDto> = TurnErrorEntity::find()
+        .filter(TurnErrorColumn::ThreadId.eq(thread_id.clone()))
+        .order_by_asc(TurnErrorColumn::CreatedAt)
+        .all(&state.db)
+        .await
+        .map_err(|e| AppError::internal(format!("query turn_errors: {e}")))?
+        .into_iter()
+        .map(|m: TurnErrorModel| TurnErrorDto {
+            turn_id: m.turn_id,
+            message: m.message,
+            created_at: m.created_at,
         })
-        .map_err(|e| AppError::internal(format!("query: {e}")))?
-        .filter_map(|t| t.ok())
         .collect();
 
-    Ok(Json(ThreadTurnErrorsResponse {
-        thread_id,
-        errors,
-    }))
+    Ok(Json(ThreadTurnErrorsResponse { thread_id, errors }))
 }
 
 // ── 待处理审批（列表）─────────────────────────────────────────────────────────
@@ -345,6 +292,24 @@ pub struct PendingQuery {
     pub thread_ids: Option<String>, // 以逗号分隔
 }
 
+/// 把 entity Model 投影为对外 DTO：解析 params_json。
+fn pending_model_to_dto(m: PendingServerRequestModel) -> PendingServerRequestDto {
+    let params: serde_json::Value = serde_json::from_str(&m.params_json)
+        .unwrap_or_else(|_| serde_json::Value::Object(Default::default()));
+    PendingServerRequestDto {
+        generation: m.generation,
+        request_id: m.request_id,
+        thread_id: m.thread_id,
+        turn_id: m.turn_id,
+        item_id: m.item_id,
+        method: m.method,
+        params,
+        status: m.status,
+        created_at: m.created_at,
+        updated_at: m.updated_at,
+    }
+}
+
 #[utoipa::path(
     get,
     path = "/api/pending-approvals",
@@ -359,12 +324,6 @@ pub async fn list_pending(
     State(state): State<AppState>,
     Query(q): Query<PendingQuery>,
 ) -> Result<Json<ListPendingResponse>, AppError> {
-    let conn = state
-        .db
-        .conn
-        .lock()
-        .map_err(|e| AppError::internal(format!("db lock: {e}")))?;
-
     // 过滤空/纯空白条目；全空时退化为"无过滤"（对齐 TS .filter(Boolean)）。
     let ids: Vec<String> = q
         .thread_ids
@@ -377,67 +336,21 @@ pub async fn list_pending(
         })
         .unwrap_or_default();
 
-    let requests = if ids.is_empty() {
-        let mut stmt = conn
-            .prepare(
-                "SELECT generation, request_id, thread_id, turn_id, item_id, method, \
-                 params_json, status, created_at, updated_at, resolved_at \
-                 FROM pending_server_requests \
-                 WHERE status = 'pending' \
-                 ORDER BY created_at",
-            )
-            .map_err(|e| AppError::internal(format!("prepare: {e}")))?;
-        let rows: Vec<PendingServerRequestDto> = stmt
-            .query_map([], parse_pending_row)
-            .map_err(|e| AppError::internal(format!("query: {e}")))?
-            .filter_map(|r| r.ok())
-            .collect();
-        rows
-    } else {
-        let placeholders = std::iter::repeat("?")
-            .take(ids.len())
-            .collect::<Vec<_>>()
-            .join(",");
-        let sql = format!(
-            "SELECT generation, request_id, thread_id, turn_id, item_id, method, \
-             params_json, status, created_at, updated_at, resolved_at \
-             FROM pending_server_requests \
-             WHERE status = 'pending' AND thread_id IN ({}) \
-             ORDER BY created_at",
-            placeholders
-        );
-        let v_refs: Vec<&dyn rusqlite::ToSql> =
-            ids.iter().map(|s| s as &dyn rusqlite::ToSql).collect();
-        let mut stmt = conn
-            .prepare(&sql)
-            .map_err(|e| AppError::internal(format!("prepare: {e}")))?;
-        let rows: Vec<PendingServerRequestDto> = stmt
-            .query_map(v_refs.as_slice(), parse_pending_row)
-            .map_err(|e| AppError::internal(format!("query: {e}")))?
-            .filter_map(|r| r.ok())
-            .collect();
-        rows
-    };
+    let mut query = PendingServerRequestEntity::find()
+        .filter(PendingServerRequestColumn::Status.eq("pending".to_string()));
+    if !ids.is_empty() {
+        query = query.filter(PendingServerRequestColumn::ThreadId.is_in(ids));
+    }
+    let rows = query
+        .order_by_asc(PendingServerRequestColumn::CreatedAt)
+        .all(&state.db)
+        .await
+        .map_err(|e| AppError::internal(format!("query pending_server_requests: {e}")))?
+        .into_iter()
+        .map(pending_model_to_dto)
+        .collect();
 
-    Ok(Json(ListPendingResponse { requests }))
-}
-
-fn parse_pending_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<PendingServerRequestDto> {
-    let params_json: String = r.get(6)?;
-    let params: serde_json::Value =
-        serde_json::from_str(&params_json).unwrap_or(serde_json::Value::Object(Default::default()));
-    Ok(PendingServerRequestDto {
-        generation: r.get(0)?,
-        request_id: r.get(1)?,
-        thread_id: r.get(2)?,
-        turn_id: r.get(3)?,
-        item_id: r.get(4)?,
-        method: r.get(5)?,
-        params,
-        status: r.get(7)?,
-        created_at: r.get(8)?,
-        updated_at: r.get(9)?,
-    })
+    Ok(Json(ListPendingResponse { requests: rows }))
 }
 
 // ── 响应待处理请求：POST /pending-approvals/:requestId/respond ──────────────
@@ -451,6 +364,35 @@ pub struct RespondRequestBody {
     /// 可选：发起响应的客户端标识（记录到 resolved_by）。
     #[serde(rename = "clientId")]
     pub client_id: Option<String>,
+}
+
+/// `respond_to_request` 事务闭包内部错误：转发失败（保留回滚语义）+ CAS 冲突。
+#[derive(Debug)]
+enum RespondTxnError {
+    /// CAS 未命中（rows_affected != 1），并发场景下其他请求已处理。
+    AlreadyHandled,
+    /// 转发到 app-server 失败 —— 事务必须回滚以保留 pending 状态。
+    Forward(String),
+    /// DB 层错误（向上传递 DbErr 方便外层包装）。
+    Db(DbErr),
+}
+
+impl std::fmt::Display for RespondTxnError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::AlreadyHandled => write!(f, "pending approval already handled"),
+            Self::Forward(e) => write!(f, "respond forward: {e}"),
+            Self::Db(e) => write!(f, "{e}"),
+        }
+    }
+}
+
+impl std::error::Error for RespondTxnError {}
+
+impl From<DbErr> for RespondTxnError {
+    fn from(e: DbErr) -> Self {
+        Self::Db(e)
+    }
 }
 
 #[utoipa::path(
@@ -473,7 +415,7 @@ pub async fn respond_to_request(
     Json(body): Json<serde_json::Value>,
 ) -> Result<Json<PendingServerRequestDto>, AppError> {
     let generation = state.codex.generation() as i64;
-    let now = chrono::Utc::now().timestamp_millis();
+    let now = now_ms();
 
     // H5：显式校验 result 存在性（TS 端使用 hasOwnProperty('result')）。
     // 注意：{"result": null} 视为存在（转发 null），仅当字段缺失时报 400。
@@ -495,27 +437,17 @@ pub async fn respond_to_request(
         .and_then(serde_json::Value::as_str)
         .map(|s| s.to_string());
 
-    // 1. 查询（必须在下方 await 客户端之前释放 DB 锁 ——
-    //    跨 `.await` 持有 MutexGuard 会导致 future 变为 !Send）。
-    let existing_status = {
-        let conn = state
-            .db
-            .conn
-            .lock()
-            .map_err(|e| AppError::internal(format!("db lock: {e}")))?;
-        let existing: Option<String> = conn
-            .query_row(
-                "SELECT status FROM pending_server_requests \
-                 WHERE generation=?1 AND request_id=?2",
-                rusqlite::params![generation, &request_id],
-                |r| r.get::<_, String>(0),
-            )
-            .optional()
-            .map_err(|e| AppError::internal(format!("query: {e}")))?;
-        existing
-    };
+    // 1. 预先查询（读阶段，可独立提交一次 SELECT）。SeaORM 的 .await 不再持有
+    //    MutexGuard，故可直接在同一 handler 中向下推进。
+    let existing: Option<PendingServerRequestModel> = PendingServerRequestEntity::find_by_id((
+        generation,
+        request_id.clone(),
+    ))
+    .one(&state.db)
+    .await
+    .map_err(|e| AppError::internal(format!("query pending: {e}")))?;
 
-    let existing_status = existing_status.ok_or_else(|| {
+    let existing = existing.ok_or_else(|| {
         AppError::business(
             ErrorCode::ApprovalsNotFound,
             StatusCode::NOT_FOUND,
@@ -523,7 +455,7 @@ pub async fn respond_to_request(
             None,
         )
     })?;
-    if existing_status != "pending" {
+    if existing.status != "pending" {
         return Err(AppError::business(
             ErrorCode::ApprovalsAlreadyResolved,
             StatusCode::CONFLICT,
@@ -532,7 +464,7 @@ pub async fn respond_to_request(
         ));
     }
 
-    // 2. 获取客户端（在不持有 DB 锁的情况下 await）。
+    // 2. 获取客户端（在事务外提前 await，避免在事务闭包内持有锁）。
     let client = state.codex.client().await.ok_or_else(|| {
         AppError::business(
             ErrorCode::ApprovalsServerNotConnected,
@@ -542,33 +474,49 @@ pub async fn respond_to_request(
         )
     })?;
 
-    // 3. 在事务内执行 CAS 更新并转发（转发失败将回滚）。
-    {
-        let conn = state
-            .db
-            .conn
-            .lock()
-            .map_err(|e| AppError::internal(format!("db lock: {e}")))?;
-        let tx = conn
-            .unchecked_transaction()
-            .map_err(|e| AppError::internal(format!("tx begin: {e}")))?;
-        let changes = tx
-            .execute(
-                "UPDATE pending_server_requests \
-                 SET status='resolved', resolved_by=?1, resolved_at=?2, updated_at=?3 \
-                 WHERE generation=?4 AND request_id=?5 AND status='pending'",
-                rusqlite::params![
-                    client_id.as_deref(),
-                    now,
-                    now,
-                    generation,
-                    &request_id,
-                ],
-            )
-            .map_err(|e| AppError::internal(format!("cas update: {e}")))?;
+    // 3. 事务：CAS 更新 + 转发。转发失败回滚（保持原 sqlite 语义）。
+    //    通过自定义错误类型区分 AlreadyHandled / Forward，事务外再映射回 AppError。
+    let txn_result: Result<(), TransactionError<RespondTxnError>> = state
+        .db
+        .transaction(|txn| {
+            // client 是 Arc,clone 廉价;closure 需 'static-friendly
+            let client = client.clone();
+            let request_id = request_id.clone();
+            let client_id = client_id.clone();
+            let id_value = parse_request_id_value(&request_id);
+            Box::pin(async move {
+                let mut am: PendingServerRequestActiveModel = existing.into();
+                am.status = Set("resolved".to_string());
+                am.resolved_by = Set(client_id.clone());
+                am.resolved_at = Set(Some(now));
+                am.updated_at = Set(now);
 
-        if changes != 1 {
-            // 不提交事务即可丢弃 tx（回滚）。
+                // CAS：仅在 status='pending' 时才更新；用复合主键定位行。
+                let update_res = PendingServerRequestEntity::update_many()
+                    .set(am)
+                    .filter(PendingServerRequestColumn::Generation.eq(generation))
+                    .filter(PendingServerRequestColumn::RequestId.eq(request_id.clone()))
+                    .filter(PendingServerRequestColumn::Status.eq("pending".to_string()))
+                    .exec(txn)
+                    .await?;
+
+                if update_res.rows_affected != 1 {
+                    // 不 commit → 自动回滚。
+                    return Err(RespondTxnError::AlreadyHandled);
+                }
+
+                // 在事务内转发到 app-server（失败时事务回滚，状态保留 pending）。
+                if let Err(e) = client.respond_to_server_request(id_value, result) {
+                    return Err(RespondTxnError::Forward(e.to_string()));
+                }
+                Ok(())
+            })
+        })
+        .await;
+
+    match txn_result {
+        Ok(()) => {}
+        Err(TransactionError::Transaction(RespondTxnError::AlreadyHandled)) => {
             return Err(AppError::business(
                 ErrorCode::ApprovalsAlreadyHandled,
                 StatusCode::CONFLICT,
@@ -576,34 +524,35 @@ pub async fn respond_to_request(
                 None,
             ));
         }
-
-        // 在事务内转发到 app-server（转发失败时事务回滚）。
-        let id_value = parse_request_id_value(&request_id);
-        if let Err(e) = client.respond_to_server_request(id_value, result) {
-            // 不提交直接丢弃 tx → 回滚，状态保持 pending。
+        Err(TransactionError::Transaction(RespondTxnError::Forward(e))) => {
             return Err(AppError::internal(format!("respond forward: {e}")));
         }
+        Err(TransactionError::Transaction(RespondTxnError::Db(e))) => {
+            return Err(AppError::internal(format!("cas update: {e}")));
+        }
+        Err(TransactionError::Connection(e)) => {
+            return Err(AppError::internal(format!("txn begin: {e}")));
+        }
+    }
 
-        tx.commit()
-            .map_err(|e| AppError::internal(format!("tx commit: {e}")))?;
-    };
-
-    // 4. 重新查询以构造 DTO（锁已释放，事务已消耗）。
-    let conn = state
-        .db
-        .conn
-        .lock()
-        .map_err(|e| AppError::internal(format!("db lock: {e}")))?;
-    let dto: PendingServerRequestDto = conn
-        .query_row(
-            "SELECT generation, request_id, thread_id, turn_id, item_id, method, params_json, \
-                    status, created_at, updated_at \
-             FROM pending_server_requests WHERE generation=?1 AND request_id=?2",
-            rusqlite::params![generation, &request_id],
-            parse_pending_row,
+    // 4. 重新查询以构造 DTO。
+    let updated: PendingServerRequestModel = PendingServerRequestEntity::find_by_id((
+        generation,
+        request_id.clone(),
+    ))
+    .one(&state.db)
+    .await
+    .map_err(|e| AppError::internal(format!("requery pending: {e}")))?
+    .ok_or_else(|| {
+        AppError::business(
+            ErrorCode::ApprovalsNotFound,
+            StatusCode::NOT_FOUND,
+            "Pending request not found".into(),
+            None,
         )
-        .map_err(|e| AppError::internal(format!("requery: {e}")))?;
-    Ok(Json(dto))
+    })?;
+
+    Ok(Json(pending_model_to_dto(updated)))
 }
 
 /// 将存储的 requestId（字符串）还原为 JSON Value，

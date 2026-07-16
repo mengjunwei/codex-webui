@@ -1,23 +1,19 @@
-//! 设置 CRUD 的 HTTP handler。
-//!
-//! 路由（挂载于 `/api/settings`）：
-//! - GET    /                —— 列出所有设置（可选 `?category=`）
-//! - GET    /:key            —— 获取单个设置
-//! - PATCH  /                —— 批量更新 `{ updates: [{ key, value }] }`
-//! - PATCH  /:key            —— 更新单个 `{ value }`（null 表示重置）
-//! - DELETE /:key            —— 重置回 env/default
+//! 设置 CRUD 的 HTTP handler(Settings 全部 async,SeaORM)。
 
-use crate::db::Db;
-use crate::error::{AppError, ErrorCode};
+use sea_orm::DatabaseConnection;
+use sea_orm::sea_query::Expr;
+use sea_orm::{ColumnTrait, EntityTrait, QueryFilter, TransactionTrait};
+
+use crate::entity::setting::{Column as SettingColumn, Entity as SettingEntity};
+use crate::error::{AppError, ErrorCode, Json};
 use crate::settings::{
-    default_as_value, find_def, validate_and_serialize, write_setting, ResolvedSetting,
+    default_as_value, find_def, validate_and_serialize, write_setting, SettingsReader,
 };
 use crate::state::AppState;
 use axum::{
     extract::{Path, State},
     http::StatusCode,
 };
-use crate::error::Json;
 use serde::{Deserialize, Serialize};
 
 // ── DTO ─────────────────────────────────────────────────────────────────────
@@ -39,7 +35,7 @@ pub struct SettingDto {
 }
 
 impl SettingDto {
-    fn from_resolved(r: &ResolvedSetting, constraints: serde_json::Value) -> Self {
+    fn from_resolved(r: &crate::settings::ResolvedSetting, constraints: serde_json::Value) -> Self {
         Self {
             key: r.key.to_string(),
             value: r.value.clone(),
@@ -50,7 +46,7 @@ impl SettingDto {
             },
             ty: r.def.ty.as_str(),
             category: r.def.category.as_str(),
-            description: r.def.description,
+            description: r.description(),
             default_value: default_as_value(r.def),
             constraints,
             updated_at: r.updated_at,
@@ -69,23 +65,17 @@ pub struct ListQuery {
     pub category: Option<String>,
 }
 
-// ── 仅用于 OpenAPI 文档的请求/响应包装 ──────────────────────────────────────
-// handler 实际用原始 serde_json::Value 提取/返回；这里给出结构化 schema 供前端参考。
-
-/// `GET /settings` 与 `PATCH /settings` 的响应包装。
 #[derive(Serialize, utoipa::ToSchema)]
 pub struct SettingListResponse {
     pub settings: Vec<SettingDto>,
 }
 
-/// `PATCH /settings` 批量更新中的一条 entry。
 #[derive(Deserialize, utoipa::ToSchema)]
 pub struct SettingBatchEntry {
     pub key: String,
     pub value: Option<serde_json::Value>,
 }
 
-/// `PATCH /settings` 的请求体。
 #[derive(Deserialize, utoipa::ToSchema)]
 pub struct SettingBatchUpdateBody {
     pub updates: Vec<SettingBatchEntry>,
@@ -100,15 +90,12 @@ pub struct SettingBatchUpdateBody {
     params(ListQuery),
     responses(
         (status = 200, description = "所有设置（可按 category 过滤）", body = SettingListResponse),
-        (status = 400, description = "非法 category", body = crate::error::ErrorResponse),
-        (status = 401, description = "未认证", body = crate::error::ErrorResponse),
     )
 )]
 pub async fn list(
     State(state): State<AppState>,
     axum::extract::Query(q): axum::extract::Query<ListQuery>,
 ) -> Result<Json<serde_json::Value>, AppError> {
-    // M5 修复：若提供 category 则进行校验。
     if let Some(ref cat) = q.category {
         if !matches!(cat.as_str(), "terminal" | "files" | "security" | "general") {
             return Err(AppError::business(
@@ -120,11 +107,11 @@ pub async fn list(
         }
     }
     let reader = state.settings_reader();
-    let resolved = reader.list_all(q.category.as_deref());
-    let dtos: Vec<SettingDto> = resolved
-        .iter()
-        .map(|r| SettingDto::from_resolved(r, constraints_for_key(&state.db, r.key)))
-        .collect();
+    let resolved = reader.list_all(q.category.as_deref()).await;
+    let mut dtos: Vec<SettingDto> = Vec::with_capacity(resolved.len());
+    for r in &resolved {
+        dtos.push(SettingDto::from_resolved(r, constraints_for_key(&state.db, r.key).await));
+    }
     Ok(Json(serde_json::json!({ "settings": dtos })))
 }
 
@@ -135,8 +122,6 @@ pub async fn list(
     params(("key" = String, Path, description = "设置项 key")),
     responses(
         (status = 200, description = "单个设置", body = SettingDto),
-        (status = 401, description = "未认证", body = crate::error::ErrorResponse),
-        (status = 404, description = "未知 key", body = crate::error::ErrorResponse),
     )
 )]
 pub async fn get_one(
@@ -152,7 +137,7 @@ pub async fn get_one(
         ));
     }
     let reader = state.settings_reader();
-    let r = reader.resolve(&key).ok_or_else(|| {
+    let r = reader.resolve(&key).await.ok_or_else(|| {
         AppError::business(
             ErrorCode::HttpNotFound,
             StatusCode::NOT_FOUND,
@@ -162,7 +147,7 @@ pub async fn get_one(
     })?;
     Ok(Json(SettingDto::from_resolved(
         &r,
-        constraints_for_key(&state.db, &key),
+        constraints_for_key(&state.db, &key).await,
     )))
 }
 
@@ -171,18 +156,12 @@ pub async fn get_one(
     path = "/api/settings",
     tag = "settings",
     request_body = SettingBatchUpdateBody,
-    responses(
-        (status = 200, description = "更新后的设置列表", body = SettingListResponse),
-        (status = 400, description = "updates 缺失/重复 key/值非法", body = crate::error::ErrorResponse),
-        (status = 401, description = "未认证", body = crate::error::ErrorResponse),
-        (status = 404, description = "未知 key", body = crate::error::ErrorResponse),
-    )
+    responses((status = 200, description = "更新后的设置列表", body = SettingListResponse))
 )]
 pub async fn update_batch(
     State(state): State<AppState>,
     Json(body): Json<serde_json::Value>,
 ) -> Result<Json<serde_json::Value>, AppError> {
-    // 显式校验 updates（对齐 TS settings.controller.ts；避免依赖 serde 的泛型 400）。
     let updates = body
         .get("updates")
         .and_then(serde_json::Value::as_array)
@@ -194,7 +173,6 @@ pub async fn update_batch(
                 None,
             )
         })?;
-    // 每个条目必须是对象 + 非空字符串 key（value 可选）。
     let mut parsed: Vec<(String, Option<serde_json::Value>)> = Vec::with_capacity(updates.len());
     for (idx, entry) in updates.iter().enumerate() {
         let obj = entry.as_object().ok_or_else(|| {
@@ -221,7 +199,6 @@ pub async fn update_batch(
         parsed.push((key.to_string(), obj.get("value").cloned()));
     }
 
-    // M7：检测重复 key（TS 抛出 settings.duplicate_key）。
     let mut seen = std::collections::HashSet::new();
     for (key, _) in &parsed {
         if !seen.insert(key.clone()) {
@@ -234,7 +211,6 @@ pub async fn update_batch(
         }
     }
 
-    // 先校验所有条目。
     let mut prepared: Vec<(String, Option<String>)> = Vec::with_capacity(parsed.len());
     for (key, value) in &parsed {
         let def = find_def(key).ok_or_else(|| {
@@ -254,54 +230,56 @@ pub async fn update_batch(
                     None,
                 )
             })?),
-            _ => None, // 缺失或显式 null → 重置回 env/default
+            _ => None,
         };
         prepared.push((key.clone(), serialized));
     }
 
-    // 持久化（用作用域隔离，以便在下方回读之前释放连接锁，
-    // 因为回读会再次调用 resolve() → conn.lock() —— 否则会死锁）。
-    {
-        let conn = state
-            .db
-            .conn
-            .lock()
-            .map_err(|e| AppError::internal(format!("db lock poisoned: {e}")))?;
-        let tx = conn
-            .unchecked_transaction()
-            .map_err(|e| AppError::internal(format!("tx begin: {e}")))?;
-        for (key, value) in &prepared {
-            // M5：检查 affected rows，与 write_setting 一致——行缺失（reconcile 未跑/被删）时报错，
-            // 而非静默成功（否则前端拿到 200 但值未写入）。
-            let changes = tx.execute(
-                "UPDATE settings SET value = ?1, updated_at = (strftime('%s','now')*1000) WHERE key = ?2",
-                rusqlite::params![value.as_deref(), key],
-            )
-            .map_err(|e| AppError::internal(format!("update {key}: {e}")))?;
-            if changes == 0 {
-                return Err(AppError::business(
-                    ErrorCode::SettingsNotFound,
-                    StatusCode::NOT_FOUND,
-                    format!("setting row not found for key '{key}' (was reconcile run?)"),
-                    None,
-                ));
-            }
-        }
-        tx.commit()
-            .map_err(|e| AppError::internal(format!("tx commit: {e}")))?;
-    }
-    // G3：批量写入后清空缓存（R4 让缓存覆盖 DB/env/default 全 key，漏清会导致后续
-    // list/get_one 命中 stale 缓存返回旧值；update_one/delete_one 已调用，此处补齐）。
+    // 事务:逐条 update_many .exec(txn)(rows_affected==0 判行缺失,报错对齐原行为)。
+    state
+        .db
+        .transaction::<_, _, AppError>(|txn| {
+            let prepared = prepared.clone();
+            Box::pin(async move {
+                for (key, value) in &prepared {
+                    let res = SettingEntity::update_many()
+                        .col_expr(SettingColumn::Value, Expr::value(value.clone()))
+                        .col_expr(
+                            SettingColumn::UpdatedAt,
+                            Expr::value(crate::multitenant::now_ms()),
+                        )
+                        .filter(SettingColumn::Key.eq(key.to_string()))
+                        .exec(txn)
+                        .await
+                        .map_err(|e| AppError::internal(format!("update {key}: {e}")))?;
+                    if res.rows_affected == 0 {
+                        return Err(AppError::business(
+                            ErrorCode::SettingsNotFound,
+                            StatusCode::NOT_FOUND,
+                            format!("setting row not found for key '{key}' (was reconcile run?)"),
+                            None,
+                        ));
+                    }
+                }
+                Ok(())
+            })
+        })
+        .await
+        .map_err(|e| AppError::internal(format!("batch tx: {e}")))?;
+
     state.invalidate_settings_cache();
 
-    // 返回更新后的设置（锁会在 resolve 内部安全地重新获取）。
-    let dtos: Vec<SettingDto> = prepared
-        .iter()
-        .filter_map(|(k, _)| {
-            let r = resolve(&state.db, k)?;
-            Some(SettingDto::from_resolved(&r, constraints_for_key(&state.db, k)))
-        })
-        .collect();
+    // 闭包异步重构:先 prepare 列表,再 for await 逐条 resolve。
+    let reader = state.settings_reader();
+    let mut dtos = Vec::with_capacity(prepared.len());
+    for (k, _) in &prepared {
+        if let Some(r) = reader.resolve(k).await {
+            dtos.push(SettingDto::from_resolved(
+                &r,
+                constraints_for_key(&state.db, k).await,
+            ));
+        }
+    }
     Ok(Json(serde_json::json!({ "settings": dtos })))
 }
 
@@ -311,12 +289,7 @@ pub async fn update_batch(
     tag = "settings",
     params(("key" = String, Path, description = "设置项 key")),
     request_body = UpdatePayload,
-    responses(
-        (status = 200, description = "更新后的设置（value 为 null 表示重置）", body = SettingDto),
-        (status = 400, description = "value 缺失/非法", body = crate::error::ErrorResponse),
-        (status = 401, description = "未认证", body = crate::error::ErrorResponse),
-        (status = 404, description = "未知 key", body = crate::error::ErrorResponse),
-    )
+    responses((status = 200, description = "更新后的设置", body = SettingDto))
 )]
 pub async fn update_one(
     State(state): State<AppState>,
@@ -331,8 +304,6 @@ pub async fn update_one(
             None,
         )
     })?;
-    // H3 修复：区分"value 字段缺失"（→ 400）和"value 为 null"（→ 重置）。
-    // TS settings.controller.ts:83 使用 hasOwnProperty('value') 进行区分。
     let has_value = body.get("value").is_some();
     if !has_value {
         let mut params = std::collections::BTreeMap::new();
@@ -346,7 +317,7 @@ pub async fn update_one(
     }
     let value = &body["value"];
     let serialized = if value.is_null() {
-        None // 显式 null → 重置为 env/default
+        None
     } else {
         Some(validate_and_serialize(def, value).map_err(|msg| {
             AppError::business(
@@ -358,22 +329,22 @@ pub async fn update_one(
         })?)
     };
     write_setting(&state.db, &key, serialized.as_deref())
+        .await
         .map_err(|e| AppError::internal(format!("write {key}: {e}")))?;
     state.invalidate_settings_cache();
 
-    let r = crate::settings::SettingsReader::new(&state.db, None)
-        .resolve(&key)
-        .ok_or_else(|| {
-            AppError::business(
-                ErrorCode::HttpNotFound,
-                StatusCode::NOT_FOUND,
-                "Setting not found".into(),
-                None,
-            )
-        })?;
+    let reader = state.settings_reader();
+    let r = reader.resolve(&key).await.ok_or_else(|| {
+        AppError::business(
+            ErrorCode::HttpNotFound,
+            StatusCode::NOT_FOUND,
+            "Setting not found".into(),
+            None,
+        )
+    })?;
     Ok(Json(SettingDto::from_resolved(
         &r,
-        constraints_for_key(&state.db, &key),
+        constraints_for_key(&state.db, &key).await,
     )))
 }
 
@@ -382,11 +353,7 @@ pub async fn update_one(
     path = "/api/settings/{key}",
     tag = "settings",
     params(("key" = String, Path, description = "设置项 key")),
-    responses(
-        (status = 200, description = "重置后的设置（回到 env/default）", body = SettingDto),
-        (status = 401, description = "未认证", body = crate::error::ErrorResponse),
-        (status = 404, description = "未知 key", body = crate::error::ErrorResponse),
-    )
+    responses((status = 200, description = "重置后的设置", body = SettingDto))
 )]
 pub async fn delete_one(
     State(state): State<AppState>,
@@ -401,10 +368,12 @@ pub async fn delete_one(
         ));
     }
     write_setting(&state.db, &key, None)
+        .await
         .map_err(|e| AppError::internal(format!("delete {key}: {e}")))?;
     state.invalidate_settings_cache();
 
-    let r = resolve(&state.db, &key).ok_or_else(|| {
+    let reader = state.settings_reader();
+    let r = reader.resolve(&key).await.ok_or_else(|| {
         AppError::business(
             ErrorCode::HttpNotFound,
             StatusCode::NOT_FOUND,
@@ -414,29 +383,20 @@ pub async fn delete_one(
     })?;
     Ok(Json(SettingDto::from_resolved(
         &r,
-        constraints_for_key(&state.db, &key),
+        constraints_for_key(&state.db, &key).await,
     )))
 }
 
-// ── 辅助函数 ──────────────────────────────────────────────────────────────────
-
-/// 从 `settings` 行加载 constraints JSON，缺失时默认为 `{}`。
-fn constraints_for_key(db: &Db, key: &str) -> serde_json::Value {
-    let conn = match db.conn.lock() {
-        Ok(c) => c,
-        Err(_) => return serde_json::json!({}),
-    };
-    conn.query_row(
-        "SELECT constraints FROM settings WHERE key = ?1",
-        [key],
-        |r| r.get::<_, String>(0),
-    )
-    .ok()
-    .and_then(|s| serde_json::from_str(&s).ok())
-    .unwrap_or(serde_json::json!({}))
+/// 从 `settings` 行加载 constraints JSON,缺失时默认为 `{}`。
+pub(crate) async fn constraints_for_key(db: &DatabaseConnection, key: &str) -> serde_json::Value {
+    if let Ok(Some(model)) = SettingEntity::find_by_id(key.to_string()).one(db).await {
+        if let Ok(c) = serde_json::from_str(&model.constraints) {
+            return c;
+        }
+    }
+    serde_json::json!({})
 }
 
-/// 供 handler 作用域使用的独立函数 `resolve`。
-fn resolve(db: &Db, key: &str) -> Option<ResolvedSetting> {
-    crate::settings::SettingsReader::new(db, None).resolve(key)
-}
+// 抑制 SettingsReader 未使用警告(命名空间导入备用)。
+#[allow(unused_imports)]
+use SettingsReader as _;

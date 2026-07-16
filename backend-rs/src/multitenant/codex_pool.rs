@@ -15,7 +15,6 @@ use crate::error::{AppError, ErrorCode};
 use crate::multitenant::api_keys;
 use axum::http::StatusCode;
 use serde_json::Value;
-use sqlx::PgPool;
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::process::Stdio;
@@ -51,7 +50,7 @@ impl TeamCodexManager {
     pub async fn client_for(
         &self,
         team_id: &str,
-        pool: &PgPool,
+        db: &sea_orm::DatabaseConnection,
         master_key: &str,
     ) -> Result<Arc<CodexJsonRpcClient>, AppError> {
         {
@@ -62,27 +61,27 @@ impl TeamCodexManager {
                 }
             }
         }
-        self.spawn_team(team_id, pool, master_key).await
+        self.spawn_team(team_id, db, master_key).await
     }
 
     /// 强制(重新)启动指定 team 的 codex 进程:先移除并销毁旧 client。
     pub async fn restart_team(
         &self,
         team_id: &str,
-        pool: &PgPool,
+        db: &sea_orm::DatabaseConnection,
         master_key: &str,
     ) -> Result<Arc<CodexJsonRpcClient>, AppError> {
         self.evict(team_id).await;
-        self.spawn_team(team_id, pool, master_key).await
+        self.spawn_team(team_id, db, master_key).await
     }
 
     async fn spawn_team(
         &self,
         team_id: &str,
-        pool: &PgPool,
+        db: &sea_orm::DatabaseConnection,
         master_key: &str,
     ) -> Result<Arc<CodexJsonRpcClient>, AppError> {
-        let plain_key = api_keys::get_active_plain_key(pool, team_id, master_key)
+        let plain_key = api_keys::get_active_plain_key(db, team_id, master_key)
             .await?
             .ok_or_else(|| {
                 AppError::business(

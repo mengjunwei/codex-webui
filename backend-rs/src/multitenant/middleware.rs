@@ -5,7 +5,7 @@ use crate::multitenant::auth::verify_access;
 use crate::state::AppState;
 use axum::body::Body;
 use axum::extract::State;
-use axum::http::{header, Request, StatusCode};
+use axum::http::{header, Request};
 use axum::middleware::Next;
 use axum::response::Response;
 
@@ -13,22 +13,14 @@ use axum::response::Response;
 #[derive(Debug, Clone)]
 pub struct UserId(pub String);
 
-/// 多租户受保护路由的鉴权中间件:提取 bearer access token → 校验 → 注入 UserId。
+/// 多租户受保护路由的鉴权中间件:提取 bearer access token -> 校验 -> 注入 UserId。
 ///
-/// 多租户未配置(mt_pg=None)→ 503;缺/坏 token → 401。
+/// 缺/坏 token -> 401。多租户持久化层(DatabaseConnection)在 AppState 必选,不再有 503 分支。
 pub async fn require_user_auth(
     State(state): State<AppState>,
     req: Request<Body>,
     next: Next,
 ) -> Result<Response, AppError> {
-    if state.mt_pg.is_none() {
-        return Err(AppError::business(
-            ErrorCode::HttpRequestFailed,
-            StatusCode::SERVICE_UNAVAILABLE,
-            "multitenant not configured".into(),
-            None,
-        ));
-    }
     let token = extract_bearer(&req).ok_or_else(|| {
         AppError::unauthorized(ErrorCode::AuthMissingHeader, "missing bearer token")
     })?;

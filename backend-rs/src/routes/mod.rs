@@ -207,7 +207,7 @@ async fn metrics_endpoint(axum::extract::State(state): axum::extract::State<AppS
 /// - `POST /api/onlyoffice/callback` — 公开(OO 保存回调)
 /// - `GET  /api/docs-json`    — 公开(OpenAPI 规格)
 /// - `/api/*` 下的其余路由 — 受 require_auth 保护
-pub fn build_router(state: AppState) -> Router {
+pub async fn build_router(state: AppState) -> Router {
     use crate::chat as chat_mod;
     use crate::codex_status_config as csc;
     use crate::files as fl;
@@ -220,7 +220,7 @@ pub fn build_router(state: AppState) -> Router {
     // 上传体积上限（取自 settings 的 `files.uploadMaxBytes`，默认 100 MB）。
     // axum 的 `Multipart` 提取器在缺少 `DefaultBodyLimit` 时回落到 2 MB 默认值，
     // 会让 /chat/upload 与 /files/upload 任何 >2 MB 的上传都被拒绝；这里显式覆盖。
-    let upload_limit = state.settings_reader().get_upload_max_bytes() as usize;
+    let upload_limit = state.settings_reader().get_upload_max_bytes().await as usize;
 
     // 受保护的 API 子路由。
     let api = Router::new()

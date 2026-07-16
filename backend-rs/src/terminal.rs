@@ -117,12 +117,12 @@ pub struct TerminalConfig {
 }
 
 impl TerminalConfig {
-    pub fn from_settings(reader: &SettingsReader<'_>) -> Self {
+    pub async fn from_settings(reader: &SettingsReader<'_>) -> Self {
         Self {
-            max_sessions: reader.get_number("terminal.maxSessions").map(|n| n as usize).unwrap_or(10),
-            grace_ms: reader.get_number("terminal.graceMs").map(|n| n as u64).unwrap_or(45_000),
-            scrollback: reader.get_number("terminal.scrollback").map(|n| n as usize).unwrap_or(5000),
-            default_cwd: reader.get_string("terminal.defaultCwd").filter(|s| !s.is_empty()),
+            max_sessions: reader.get_number("terminal.maxSessions").await.map(|n| n as usize).unwrap_or(10),
+            grace_ms: reader.get_number("terminal.graceMs").await.map(|n| n as u64).unwrap_or(45_000),
+            scrollback: reader.get_number("terminal.scrollback").await.map(|n| n as usize).unwrap_or(5000),
+            default_cwd: reader.get_string("terminal.defaultCwd").await.filter(|s| !s.is_empty()),
         }
     }
 }

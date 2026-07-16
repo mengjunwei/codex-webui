@@ -12,7 +12,6 @@ tower = { version = "0.5", features = ["util"] }
 tower-http = { version = "0.7", features = ["trace"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-rusqlite = { version = "0.36", features = ["bundled"] }
 thiserror = "2"
 anyhow = "1"
 tracing = "0.1"
@@ -44,7 +43,11 @@ url = "2"
 uuid = { version = "1", features = ["v4", "v7"] }
 # 多租户平台(M1):sqlx 数据层(async + 多方言 pg/mysql,与现有 rusqlite 共存) + 密码哈希 + 邀请码随机
 # 注:SeaORM 1.0 与 rusqlite 的 libsqlite3-sys links 冲突(SeaORM issue #2725),无法共存,故用 sqlx
-sqlx = { version = "0.7", default-features = false, features = ["runtime-tokio-rustls", "postgres", "macros"] }
+sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio-rustls", "postgres", "mysql"] }
+# SeaORM 全量数据层(PG/MySQL 多方言)。rusqlite 已删,无 libsqlite3-sys 冲突;sqlx 统一 0.8(sea-orm 1.1 依赖)。
+# sea-orm 不开 sqlx-sqlite 后端,不牵 libsqlite3-sys。multitenant + 业务代码全部迁 sea-orm。
+sea-orm = { version = "1.1", default-features = false, features = ["sqlx-postgres", "sqlx-mysql", "runtime-tokio-rustls", "macros", "with-json"] }
+sea-orm-migration = { version = "1.1", default-features = false, features = ["sqlx-postgres", "sqlx-mysql", "runtime-tokio-rustls"] }
 argon2 = "0.5"
 aes-gcm = "0.10"
 rand = "0.8"

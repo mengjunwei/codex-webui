@@ -80,7 +80,7 @@ pub async fn get_config(
 
     // 1. 解析 OnlyOffice URL（必填）。
     let onlyoffice_url = reader
-        .get_string("general.onlyofficeUrl")
+        .get_string("general.onlyofficeUrl").await
         .filter(|s| !s.is_empty())
         .ok_or_else(|| bad_request(
             ErrorCode::OnlyOfficeNotConfigured,
@@ -93,7 +93,7 @@ pub async fn get_config(
         ))?;
 
     // 2. 解析 JWT 密钥。
-    let secret = reader.get_string("general.onlyofficeJwtSecret");
+    let secret = reader.get_string("general.onlyofficeJwtSecret").await;
 
     // 3. 编辑模式必须有密钥。
     let editor_mode = if q.mode.as_deref() == Some("view") {
@@ -163,7 +163,7 @@ pub async fn get_config(
 
     // 7. 公共 base URL（对齐 TS 的 publicBaseUrl 设置或 host 请求头）。
     let base_url = reader
-        .get_string("general.publicBaseUrl")
+        .get_string("general.publicBaseUrl").await
         .filter(|s| !s.is_empty())
         .unwrap_or_default();
     // H3 修复：当 publicBaseUrl 为空时，从请求头自动探测
@@ -428,7 +428,7 @@ async fn callback_inner(
 
     // 1. 必须已配置 JWT 密钥。
     let secret = reader
-        .get_string("general.onlyofficeJwtSecret")
+        .get_string("general.onlyofficeJwtSecret").await
         .filter(|s| !s.is_empty())
         .ok_or_else(|| bad_request(ErrorCode::OnlyOfficeJwtRequired, "JWT secret not configured"))?;
 
@@ -458,7 +458,7 @@ async fn callback_inner(
 
     // 4. 校验下载 URL 的源是否与配置的 OnlyOffice 服务器一致。
     let onlyoffice_url = reader
-        .get_string("general.onlyofficeUrl")
+        .get_string("general.onlyofficeUrl").await
         .filter(|s| !s.is_empty())
         .ok_or_else(|| bad_request(ErrorCode::OnlyOfficeNotConfigured, "OnlyOffice URL not configured"))?;
     let download_url = body.url.as_deref().unwrap_or("");
@@ -469,7 +469,7 @@ async fn callback_inner(
 
     // 6. 带超时与大小限制地抓取，并原子写入。
     let max_bytes = reader
-        .get_number("general.onlyofficeSaveMaxBytes")
+        .get_number("general.onlyofficeSaveMaxBytes").await
         .map(|n| n as u64)
         .unwrap_or(DEFAULT_MAX_SAVE_BYTES);
 

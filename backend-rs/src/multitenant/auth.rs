@@ -5,16 +5,17 @@
 //! 用 claims.typ="mt_access" 与旧 token 区分;refresh token 为随机串,仅存 SHA-256 哈希。
 
 use crate::error::{AppError, ErrorCode};
-use crate::multitenant::models::{RefreshToken, User};
+use crate::multitenant::entity::{refresh_token, user};
 use crate::multitenant::{new_id, now_ms};
 use argon2::password_hash::{PasswordHash, PasswordHasher, PasswordVerifier, SaltString};
 use argon2::Argon2;
 use axum::http::StatusCode;
 use jsonwebtoken::{decode, encode, Algorithm, DecodingKey, EncodingKey, Header, Validation};
 use rand::rngs::OsRng;
+use sea_orm::entity::prelude::*;
+use sea_orm::{ActiveModelTrait, DatabaseConnection, EntityTrait, QueryFilter, Set};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use sqlx::postgres::PgPool;
 
 /// access token 有效期:15 分钟。
 const ACCESS_TTL_SECS: i64 = 15 * 60;
@@ -109,22 +110,25 @@ fn hash_refresh(raw: &str) -> String {
 }
 
 /// 为指定用户签发新的令牌对,并把 refresh 哈希落库。
-pub async fn issue_tokens(user_id: &str, pool: &PgPool, secret: &str) -> Result<AuthTokens, AppError> {
+pub async fn issue_tokens(
+    user_id: &str,
+    db: &DatabaseConnection,
+    secret: &str,
+) -> Result<AuthTokens, AppError> {
     let access = sign_access(user_id, secret)?;
     let (refresh_raw, refresh_hash) = generate_refresh();
     let now = now_ms();
-    sqlx::query(
-        "INSERT INTO refresh_tokens (id, user_id, token_hash, expires_at, revoked, created_at) \
-         VALUES ($1, $2, $3, $4, FALSE, $5)",
-    )
-    .bind(new_id())
-    .bind(user_id)
-    .bind(&refresh_hash)
-    .bind(now + REFRESH_TTL_SECS * 1000)
-    .bind(now)
-    .execute(pool)
-    .await
-    .map_err(|e| AppError::internal(format!("insert refresh token: {e}")))?;
+    let am = refresh_token::ActiveModel {
+        id: Set(new_id()),
+        user_id: Set(user_id.to_string()),
+        token_hash: Set(refresh_hash),
+        expires_at: Set(now + REFRESH_TTL_SECS * 1000),
+        revoked: Set(false),
+        created_at: Set(now),
+    };
+    am.insert(db)
+        .await
+        .map_err(|e| AppError::internal(format!("insert refresh token: {e}")))?;
 
     Ok(AuthTokens {
         access_token: access,
@@ -135,11 +139,12 @@ pub async fn issue_tokens(user_id: &str, pool: &PgPool, secret: &str) -> Result<
 
 // ── 业务:注册 / 登录 / 刷新 ─────────────────────────────────────────────
 
-const USER_COLUMNS: &str =
-    "id, email, password_hash, email_verified_at, display_name, created_at, updated_at";
-
 /// 注册新用户(邮箱 + 密码)。邮箱冲突 → 409,参数非法 → 400。
-pub async fn register_user(pool: &PgPool, email: &str, password: &str) -> Result<User, AppError> {
+pub async fn register_user(
+    db: &DatabaseConnection,
+    email: &str,
+    password: &str,
+) -> Result<user::Model, AppError> {
     let email = email.trim().to_lowercase();
     if !is_valid_email(&email) {
         return Err(AppError::business(
@@ -158,9 +163,10 @@ pub async fn register_user(pool: &PgPool, email: &str, password: &str) -> Result
         ));
     }
 
-    let existing: Option<(String,)> = sqlx::query_as("SELECT id FROM users WHERE email = $1")
-        .bind(&email)
-        .fetch_optional(pool)
+    // 查重:邮箱已注册则返回 409。
+    let existing = user::Entity::find()
+        .filter(user::Column::Email.eq(email.clone()))
+        .one(db)
         .await
         .map_err(|e| AppError::internal(format!("query existing user: {e}")))?;
     if existing.is_some() {
@@ -175,28 +181,37 @@ pub async fn register_user(pool: &PgPool, email: &str, password: &str) -> Result
     let hash = hash_password(password)?;
     let now = now_ms();
     let id = new_id();
-    let sql = format!(
-        "INSERT INTO users (id, email, password_hash, email_verified_at, display_name, created_at, updated_at) \
-         VALUES ($1, $2, $3, NULL, NULL, $4, $4) RETURNING {USER_COLUMNS}"
-    );
-    let user: User = sqlx::query_as(&sql)
-        .bind(id)
-        .bind(email)
-        .bind(hash)
-        .bind(now)
-        .fetch_one(pool)
+    let am = user::ActiveModel {
+        id: Set(id.clone()),
+        email: Set(email),
+        password_hash: Set(hash),
+        email_verified_at: Set(None),
+        display_name: Set(None),
+        created_at: Set(now),
+        updated_at: Set(now),
+    };
+    am.insert(db)
         .await
         .map_err(|e| AppError::internal(format!("insert user: {e}")))?;
-    Ok(user)
+    // insert 已返回 Model,但因 sea_orm 跨方言行为统一(避免 RETURNING 差异),显式回查一次。
+    user::Entity::find_by_id(id)
+        .one(db)
+        .await
+        .map_err(|e| AppError::internal(format!("reload user: {e}")))?
+        .ok_or_else(|| AppError::internal("inserted user missing on reload".into()))
 }
 
 /// 邮箱 + 密码登录,成功返回令牌对。凭据无效 → 401。
-pub async fn login(pool: &PgPool, secret: &str, email: &str, password: &str) -> Result<(User, AuthTokens), AppError> {
+pub async fn login(
+    db: &DatabaseConnection,
+    secret: &str,
+    email: &str,
+    password: &str,
+) -> Result<(user::Model, AuthTokens), AppError> {
     let email = email.trim().to_lowercase();
-    let sql = format!("SELECT {USER_COLUMNS} FROM users WHERE email = $1");
-    let user: Option<User> = sqlx::query_as(&sql)
-        .bind(&email)
-        .fetch_optional(pool)
+    let user = user::Entity::find()
+        .filter(user::Column::Email.eq(email))
+        .one(db)
         .await
         .map_err(|e| AppError::internal(format!("query user: {e}")))?;
     let user = match user {
@@ -214,26 +229,24 @@ pub async fn login(pool: &PgPool, secret: &str, email: &str, password: &str) -> 
             "invalid credentials",
         ));
     }
-    let tokens = issue_tokens(&user.id, pool, secret).await?;
+    let tokens = issue_tokens(&user.id, db, secret).await?;
     Ok((user, tokens))
 }
 
 /// 用 refresh token 换新令牌对(一次性轮转:旧 refresh 撤销)。无效/过期 → 401。
 pub async fn refresh_tokens(
-    pool: &PgPool,
+    db: &DatabaseConnection,
     secret: &str,
     refresh_raw: &str,
 ) -> Result<AuthTokens, AppError> {
     let h = hash_refresh(refresh_raw);
     let now = now_ms();
-    let row: Option<RefreshToken> = sqlx::query_as(
-        "SELECT id, user_id, token_hash, expires_at, revoked, created_at FROM refresh_tokens WHERE token_hash = $1",
-    )
-    .bind(&h)
-    .fetch_optional(pool)
-    .await
-    .map_err(|e| AppError::internal(format!("query refresh token: {e}")))?;
-    let rt = match row {
+    let rt = refresh_token::Entity::find()
+        .filter(refresh_token::Column::TokenHash.eq(h))
+        .one(db)
+        .await
+        .map_err(|e| AppError::internal(format!("query refresh token: {e}")))?;
+    let rt = match rt {
         Some(r) => r,
         None => {
             return Err(AppError::unauthorized(
@@ -248,12 +261,13 @@ pub async fn refresh_tokens(
             "refresh token expired or revoked",
         ));
     }
-    sqlx::query("UPDATE refresh_tokens SET revoked = TRUE WHERE id = $1")
-        .bind(&rt.id)
-        .execute(pool)
+    // 撤销旧 refresh(转 ActiveModel 更新 revoked 字段,避免 SQL 直写)。
+    let mut am: refresh_token::ActiveModel = rt.clone().into();
+    am.revoked = Set(true);
+    am.update(db)
         .await
         .map_err(|e| AppError::internal(format!("revoke refresh token: {e}")))?;
-    issue_tokens(&rt.user_id, pool, secret).await
+    issue_tokens(&rt.user_id, db, secret).await
 }
 
 // ── 辅助 ─────────────────────────────────────────────────────────────────

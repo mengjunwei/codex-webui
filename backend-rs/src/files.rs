@@ -131,7 +131,7 @@ async fn resolve(state: &AppState, input: &str) -> Result<ResolvedTarget, AppErr
     let canonical = tokio::fs::canonicalize(&p)
         .await
         .map_err(|_| not_found(format!("path not found: {raw}")))?;
-    if !within_workspace(state, &canonical) {
+    if !within_workspace(state, &canonical).await {
         return Err(forbidden("path is outside configured workspace roots"));
     }
     let meta = tokio::fs::metadata(&canonical)
@@ -163,8 +163,8 @@ async fn resolve(state: &AppState, input: &str) -> Result<ResolvedTarget, AppErr
     })
 }
 
-fn within_workspace(state: &AppState, p: &Path) -> bool {
-    let roots = workspace_roots(state);
+async fn within_workspace(state: &AppState, p: &Path) -> bool {
+    let roots = workspace_roots(state).await;
     let p_str = p.to_string_lossy().to_string();
     roots.iter().any(|r| is_within(p, Path::new(r)) || p_str == *r)
 }
@@ -174,10 +174,10 @@ fn is_within(child: &Path, parent: &Path) -> bool {
 }
 
 /// C3：判断路径是否为某个 workspace root（禁止删除/重命名/移动）。
-fn is_workspace_root(state: &AppState, p: &Path) -> bool {
+async fn is_workspace_root(state: &AppState, p: &Path) -> bool {
     let canonical = std::fs::canonicalize(p).unwrap_or_else(|_| p.to_path_buf());
     let canon_str = canonical.to_string_lossy().to_string();
-    workspace_roots(state).iter().any(|r| canon_str == *r)
+    workspace_roots(state).await.iter().any(|r| canon_str == *r)
 }
 
 /// 计算工作区根目录集合（配置根 + 家目录 + 动态根），供路径校验复用。
@@ -190,7 +190,7 @@ fn is_workspace_root(state: &AppState, p: &Path) -> bool {
 /// `\\?\C:\Users\xxx` 不会按字符串前缀匹配。家目录在运行时不会变化，因此用
 /// `OnceCell` 一次性规范化并缓存 —— 每次路径校验都重新 canonicalize
 /// 浪费系统调用且可能因为短期进程差异导致结果不一致。
-pub fn compute_workspace_roots(db: &crate::db::Db, dynamic_roots: &HashSet<String>) -> Vec<String> {
+pub async fn compute_workspace_roots(db: &sea_orm::DatabaseConnection, dynamic_roots: &HashSet<String>) -> Vec<String> {
     let mut out: HashSet<String> = HashSet::new();
     // 家目录 —— 规范化以匹配 Windows 上规范化后文件路径的逐字前缀（\\?\）
     // （修复评审提出的 C1）。home 不随运行时变化，用 OnceCell 缓存其 canonical
@@ -207,7 +207,7 @@ pub fn compute_workspace_roots(db: &crate::db::Db, dynamic_roots: &HashSet<Strin
     }
     // 从设置中读取已配置的 WORKSPACE_ROOTS（修复评审提出的 H1）。
     let reader = crate::settings::SettingsReader::new(db, None);
-    if let Some(roots_str) = reader.get_string("security.workspaceRoots") {
+    if let Some(roots_str) = reader.get_string("security.workspaceRoots").await {
         for root in roots_str.split(',').map(|s| s.trim()).filter(|s| !s.is_empty()) {
             if let Ok(c) = std::fs::canonicalize(root) {
                 out.insert(c.to_string_lossy().to_string());
@@ -221,18 +221,18 @@ pub fn compute_workspace_roots(db: &crate::db::Db, dynamic_roots: &HashSet<Strin
     out.into_iter().collect()
 }
 
-fn workspace_roots(state: &AppState) -> Vec<String> {
+async fn workspace_roots(state: &AppState) -> Vec<String> {
     let dyn_roots: HashSet<String> = state
         .dynamic_files_roots
         .lock()
         .map(|g| g.iter().cloned().collect())
         .unwrap_or_default();
-    compute_workspace_roots(&state.db, &dyn_roots)
+    compute_workspace_roots(&state.db, &dyn_roots).await
 }
 
 /// 判断规范化路径是否位于任一工作区根目录之下（含等于根本身）。
-pub fn is_path_in_workspace(db: &crate::db::Db, dynamic_roots: &HashSet<String>, p: &Path) -> bool {
-    let roots = compute_workspace_roots(db, dynamic_roots);
+pub async fn is_path_in_workspace(db: &sea_orm::DatabaseConnection, dynamic_roots: &HashSet<String>, p: &Path) -> bool {
+    let roots = compute_workspace_roots(db, dynamic_roots).await;
     let p_str = p.to_string_lossy().to_string();
     roots.iter().any(|r| is_within(p, Path::new(r)) || p_str == *r)
 }
@@ -244,8 +244,8 @@ pub fn is_path_in_workspace(db: &crate::db::Db, dynamic_roots: &HashSet<String>,
 /// 1. 配置的 `defaultCwd`（若设置则对所有终端生效）；
 /// 2. `thread:` 上下文 —— 必须显式提供 cwd，否则 `terminal.cwd_required`；
 /// 3. 其他上下文 —— 回落到家目录。
-pub fn resolve_terminal_cwd(
-    db: &crate::db::Db,
+pub async fn resolve_terminal_cwd(
+    db: &sea_orm::DatabaseConnection,
     dynamic_roots: &HashSet<String>,
     context_key: &str,
     requested: Option<&str>,
@@ -286,7 +286,7 @@ pub fn resolve_terminal_cwd(
             None,
         )
     })?;
-    if !is_path_in_workspace(db, dynamic_roots, &canon) {
+    if !is_path_in_workspace(db, dynamic_roots, &canon).await {
         return Err(AppError::business(
             ErrorCode::FilesPathOutsideWorkspace,
             StatusCode::FORBIDDEN,
@@ -519,7 +519,7 @@ pub async fn get_roots(State(state): State<AppState>) -> Result<Json<serde_json:
         .lock()
         .map(|g| g.iter().cloned().collect())
         .unwrap_or_default();
-    let mut roots = compute_workspace_roots(&state.db, &dyn_roots);
+    let mut roots = compute_workspace_roots(&state.db, &dyn_roots).await;
     roots.sort();
     Ok(Json(json!({
         "roots": roots,
@@ -570,7 +570,7 @@ pub async fn add_root(
         .await
         .map_err(|e| AppError::internal(format!("canonicalize: {e}")))?;
     // H3 修复：动态根目录必须位于已配置的根目录之内（对齐 TS isAllowedPath）。
-    if !within_workspace(&state, &canonical) {
+    if !within_workspace(&state, &canonical).await {
         return Err(forbidden("root must be within an existing workspace root"));
     }
     let s = canonical.to_string_lossy().to_string();
@@ -611,7 +611,7 @@ pub async fn read_tree(
     // H1 修复：从 settings 读取 excludedDirs（逗号分隔），而非硬编码。
     let reader = crate::settings::SettingsReader::new(&state.db, None);
     let excluded: Vec<String> = reader
-        .get_string("files.excludedDirs")
+        .get_string("files.excludedDirs").await
         .filter(|s| !s.is_empty())
         .map(|s| {
             s.split(',')
@@ -839,7 +839,7 @@ pub async fn delete_path(
             .ok_or_else(|| bad_request(ErrorCode::FilesNoParentFound, "parent path not found"))?;
         let parent_canon = tokio::fs::canonicalize(parent).await
             .map_err(|_| not_found("parent path not found"))?;
-        if !within_workspace(&state, &parent_canon) {
+        if !within_workspace(&state, &parent_canon).await {
             return Err(forbidden("path is outside configured workspace roots"));
         }
         tokio::fs::remove_file(raw).await
@@ -850,7 +850,7 @@ pub async fn delete_path(
     // 普通路径：解析（规范化）后按类型删除。
     let resolved = resolve(&state, raw).await?;
     // C3：禁止删除 workspace root 本身。
-    if is_workspace_root(&state, &resolved.resolved) {
+    if is_workspace_root(&state, &resolved.resolved).await {
         return Err(forbidden("cannot delete a workspace root directory"));
     }
     let recursive = matches!(q.recursive.as_deref(), Some("true") | Some("1"));
@@ -926,7 +926,7 @@ pub async fn create_file(
         tokio::fs::canonicalize(p.parent().unwrap_or(&p))
             .await
             .map_err(|e| AppError::internal(format!("parent canonicalize: {e}")))?;
-    if !within_workspace(&state, &canonical_parent) {
+    if !within_workspace(&state, &canonical_parent).await {
         return Err(forbidden("parent is outside workspace"));
     }
     if p.exists() && !body.overwrite.unwrap_or(false) {
@@ -938,7 +938,7 @@ pub async fn create_file(
     // 高优先级修复：符号链接逃逸检查（与 write_file 一致）—— 若目标已存在，
     // 写入前先规范化并校验是否位于 within_workspace 之内。
     if let Ok(canonical_target) = tokio::fs::canonicalize(&p).await {
-        if !within_workspace(&state, &canonical_target) {
+        if !within_workspace(&state, &canonical_target).await {
             return Err(forbidden("target resolves outside workspace (symlink escape?)"));
         }
     }
@@ -1028,7 +1028,7 @@ pub async fn create_directory(
         let canonical_ancestor = tokio::fs::canonicalize(&ancestor)
             .await
             .map_err(|_| not_found("nearest existing ancestor not found"))?;
-        if !within_workspace(&state, &canonical_ancestor) {
+        if !within_workspace(&state, &canonical_ancestor).await {
             return Err(forbidden("nearest existing ancestor is outside workspace"));
         }
         tokio::fs::create_dir_all(&p)
@@ -1038,7 +1038,7 @@ pub async fn create_directory(
         let canonical = tokio::fs::canonicalize(&p)
             .await
             .map_err(|e| AppError::internal(format!("canonicalize: {e}")))?;
-        if !within_workspace(&state, &canonical) {
+        if !within_workspace(&state, &canonical).await {
             let _ = tokio::fs::remove_dir(&p).await;
             return Err(forbidden("created path is outside workspace"));
         }
@@ -1050,7 +1050,7 @@ pub async fn create_directory(
         let canonical_parent = tokio::fs::canonicalize(parent)
             .await
             .map_err(|_| not_found("parent path not found"))?;
-        if !within_workspace(&state, &canonical_parent) {
+        if !within_workspace(&state, &canonical_parent).await {
             return Err(forbidden("parent is outside workspace"));
         }
         tokio::fs::create_dir(&p)
@@ -1099,13 +1099,13 @@ pub async fn write_file(
     let canonical_parent = tokio::fs::canonicalize(p.parent().unwrap_or(&p))
         .await
         .map_err(|e| AppError::internal(format!("parent: {e}")))?;
-    if !within_workspace(&state, &canonical_parent) {
+    if !within_workspace(&state, &canonical_parent).await {
         return Err(forbidden("parent is outside workspace"));
     }
     // H1 修复：若目标已存在，则规范化并校验是否位于工作区之内
     // （防止符号链接逃逸：工作区内的符号链接 → 工作区外的目标）。
     if let Ok(canonical_target) = tokio::fs::canonicalize(&p).await {
-        if !within_workspace(&state, &canonical_target) {
+        if !within_workspace(&state, &canonical_target).await {
             return Err(forbidden("target resolves outside workspace (symlink escape?)"));
         }
     }
@@ -1515,7 +1515,7 @@ pub async fn rename_path(
     }
     let resolved = resolve(&state, raw).await?;
     // C3：禁止重命名 workspace root。
-    if is_workspace_root(&state, &resolved.resolved) {
+    if is_workspace_root(&state, &resolved.resolved).await {
         return Err(forbidden("cannot rename a workspace root directory"));
     }
     let parent = resolved.resolved.parent()
@@ -1598,7 +1598,7 @@ async fn do_relocate(
     }
     let src = resolve(state, src_raw).await?;
     // C3：禁止移动 workspace root。
-    if is_move && is_workspace_root(state, &src.resolved) {
+    if is_move && is_workspace_root(state, &src.resolved).await {
         return Err(forbidden("cannot move a workspace root directory"));
     }
     // 解析目标的规范化路径：已存在 → 其本身；不存在 → canonical(parent)+文件名。
@@ -1613,7 +1613,7 @@ async fn do_relocate(
                 .join(Path::new(dst_raw).file_name().unwrap_or_default())
         }
     };
-    if !within_workspace(state, &dst_canonical) {
+    if !within_workspace(state, &dst_canonical).await {
         return Err(forbidden("destination is outside workspace"));
     }
     // C4：禁止复制/移动到自身或其子路径（对齐 TS path.relative 词法判断）。
@@ -1749,7 +1749,7 @@ pub async fn upload_files(
     let dest_canonical = tokio::fs::canonicalize(dest_raw)
         .await
         .map_err(|_| not_found("destination directory not found"))?;
-    if !within_workspace(&state, &dest_canonical) {
+    if !within_workspace(&state, &dest_canonical).await {
         return Err(forbidden("destination is outside workspace"));
     }
     if !dest_canonical.is_dir() {
@@ -1760,7 +1760,7 @@ pub async fn upload_files(
     // 上传字节上限（对齐 TS files.uploadMaxBytes，默认 100 MB）。
     let max_bytes: u64 = {
         let reader = crate::settings::SettingsReader::new(&state.db, None);
-        reader.get_upload_max_bytes()
+        reader.get_upload_max_bytes().await
     };
 
     let mut files = Vec::new();
@@ -1805,7 +1805,7 @@ pub async fn upload_files(
         // 高优先级修复：符号链接逃逸检查 —— 若目标已存在且为符号链接，
         // 写入前先规范化并校验是否位于 within_workspace 之内。
         if let Ok(canonical_target) = tokio::fs::canonicalize(&file_path).await {
-            if !within_workspace(&state, &canonical_target) {
+            if !within_workspace(&state, &canonical_target).await {
                 return Err(forbidden("target resolves outside workspace (symlink escape?)"));
             }
         }

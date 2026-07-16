@@ -10,10 +10,10 @@
 
 use crate::auth::AuthService;
 use crate::codex::{CodexProcessManager, LifecycleEvent};
-use crate::db::Db;
 use crate::error::AppError;
 use crate::terminal::{TerminalMetadataEvent, TerminalService};
 use crate::threads::ThreadResumeRegistry;
+use sea_orm::DatabaseConnection;
 use serde_json::{json, Value};
 use socketioxide::extract::{AckSender, Data as SocketData, SocketRef, State};
 use socketioxide::SocketIo;
@@ -108,7 +108,7 @@ pub struct RealtimeState {
     pub codex: Arc<CodexProcessManager>,
     pub terminal: Arc<TerminalService>,
     /// 用于终端 cwd 沙箱校验（工作区根目录）。
-    pub db: Arc<Db>,
+    pub db: DatabaseConnection,
     pub dynamic_files_roots: Arc<Mutex<HashSet<String>>>,
     /// socket↔thread 订阅(用于 codex 重启后 auto-resume)。
     pub active_threads: Arc<ActiveThreadRegistry>,
@@ -263,7 +263,7 @@ fn on_term_list(s: SocketRef, State(state): State<RealtimeState>, SocketData(dat
     }
 }
 
-fn on_term_open(s: SocketRef, State(state): State<RealtimeState>, SocketData(data): SocketData<Value>, ack: AckSender) {
+async fn on_term_open(s: SocketRef, State(state): State<RealtimeState>, SocketData(data): SocketData<Value>, ack: AckSender) {
     let ctx = data.get("contextKey").and_then(Value::as_str).unwrap_or("global").to_string();
     let cwd_in = data.get("cwd").and_then(Value::as_str);
     let cols = data.get("cols").and_then(Value::as_u64).map(|n| n as u16);
@@ -276,13 +276,13 @@ fn on_term_open(s: SocketRef, State(state): State<RealtimeState>, SocketData(dat
         .lock()
         .map(|g| g.iter().cloned().collect())
         .unwrap_or_default();
-    let cwd = match crate::files::resolve_terminal_cwd(
+    let cwd: String = match crate::files::resolve_terminal_cwd(
         &state.db,
         &dyn_roots,
         &ctx,
         cwd_in,
         default_cwd.as_deref(),
-    ) {
+    ).await {
         Ok(c) => c,
         Err(e) => {
             ack_term_err(&s, ack, e);
@@ -379,7 +379,7 @@ fn ack_term_err(s: &SocketRef, ack: AckSender, e: AppError) {
 /// 派生任务,将 codex + terminal 事件转发给 Socket.IO 客户端。
 /// M1 修复:pending-record 与 WS emit 合并,以防止 TOCTOU(DB 记录
 /// 必须在 WS 投递之前完成,以便 respond 端点能找到该行)。
-pub fn spawn_emit_tasks(io: SocketIo, codex: Arc<CodexProcessManager>, terminal: Arc<TerminalService>, db: Arc<crate::db::Db>, active: Arc<ActiveThreadRegistry>, resume_registry: Arc<ThreadResumeRegistry>) {
+pub fn spawn_emit_tasks(io: SocketIo, codex: Arc<CodexProcessManager>, terminal: Arc<TerminalService>, db: DatabaseConnection, active: Arc<ActiveThreadRegistry>, resume_registry: Arc<ThreadResumeRegistry>) {
     spawn_notification_emit(io.clone(), codex.clone());
     spawn_server_request_record_and_emit(io.clone(), codex.clone(), db);
     spawn_lifecycle_emit(io.clone(), codex.clone(), active, resume_registry);
@@ -479,7 +479,7 @@ fn spawn_notification_emit(io: SocketIo, codex: Arc<CodexProcessManager>) {
 ///
 /// WS emit 失败仅记录 warn，不影响 DB 记录 —— 客户端下次刷新 `GET /pending-approvals`
 /// 即可恢复。
-fn spawn_server_request_record_and_emit(io: SocketIo, codex: Arc<CodexProcessManager>, db: Arc<crate::db::Db>) {
+fn spawn_server_request_record_and_emit(io: SocketIo, codex: Arc<CodexProcessManager>, db: DatabaseConnection) {
     let mut rx = codex.subscribe_server_requests();
     tokio::spawn(async move {
         loop {
@@ -488,7 +488,7 @@ fn spawn_server_request_record_and_emit(io: SocketIo, codex: Arc<CodexProcessMan
                     // 阶段 1:记录到 DB(必须在 WS emit 之前完成)。
                     // MEDIUM-1 修复:若 DB 记录失败,则完全跳过 emit
                     // (防止出现无法响应的幽灵请求)。
-                    if let Err(e) = crate::event_subscribers::record_server_request(&db, &codex, &req) {
+                    if let Err(e) = crate::event_subscribers::record_server_request(&db, &codex, &req).await {
                         tracing::error!("record server request failed, skipping emit: {e}");
                         continue;
                     }

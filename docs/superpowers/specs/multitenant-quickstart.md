@@ -99,9 +99,18 @@ http://localhost:8172/api/docs(`/api/mt/*` 接口可在线试)。
 ## 单元测试
 
 ```bash
-cargo test --manifest-path backend-rs/Cargo.toml --lib multitenant::
-# 8 个测试:password 哈希/JWT/refresh-hash/email/邀请码 + AES 加解密×3
+cargo test --manifest-path backend-rs/Cargo.toml --lib
+# 44 个测试全绿(含 multitenant auth/api_keys/event_bus/routing/teams/logs/codex)
 ```
+
+## 数据层
+
+**SeaORM 1.1(PG/MySQL 多方言)**。rusqlite 已全量移除,`DATABASE_URL` 必选(postgres:// 或 mysql://)。
+
+- 迁移框架:`src/migration/`(sea-orm-migration,多方言建表,放弃 mt schema)
+- Entity:`src/multitenant/entity.rs`(8 multitenant 表)+ `src/entity.rs`(5 业务表)
+- 连接:`sea_orm::Database::connect(&cfg.database_url)` → `AppState.db: DatabaseConnection`
+- 测试:PG + MySQL 双方言需后续集成测试夹具(当前仅逻辑测试)
 
 ## 当前进度
 
@@ -111,4 +120,5 @@ cargo test --manifest-path backend-rs/Cargo.toml --lib multitenant::
 - ✅ **M4(部分)** Router trait + 一致性哈希 + EventBus(内存/Redis)+ Redis 集成(RedisEventBus)
 - ✅ **M5-A** write_tx 有界背压(根治 OOM)
 - ✅ **M6-A** Redis 限流(注册防滥用,按 IP 令牌桶)
-- ⏳ M4 接入(notification 流经 RedisEventBus + failover + 多 worker 分离)、M5-B Prometheus 指标、M6 计费/安全审计
+- ✅ **SeaORM 全量迁移** rusqlite→SeaORM 1.1(PG/MySQL 多方言),sqlx→0.8,SettingsReader 全 async,13 entity,44 测试全绿
+- ⏳ M4 接入(notification 流经 RedisEventBus + failover + 多 worker 分离)、M5-B Prometheus 指标、M6 计费/安全审计、PG+MySQL 集成测试夹具

@@ -5,17 +5,17 @@
 //! 经 SHA-256 派生 32 字节,密文格式 hex(nonce || ciphertext)。
 
 use crate::error::{AppError, ErrorCode};
-use crate::multitenant::models::TeamApiKey;
+use crate::multitenant::entity::team_api_key;
 use crate::multitenant::{new_id, now_ms};
 use aes_gcm::aead::{Aead, KeyInit};
 use aes_gcm::{Aes256Gcm, Key, Nonce};
 use axum::http::StatusCode;
 use rand::RngCore;
+use sea_orm::{
+    ActiveModelTrait, ColumnTrait, DatabaseConnection, EntityTrait, QueryFilter, QueryOrder, Set,
+    TransactionTrait,
+};
 use sha2::{Digest, Sha256};
-use sqlx::PgPool;
-
-const API_KEY_COLUMNS: &str =
-    "id, team_id, provider, encrypted_key, key_hint, set_by, is_active, created_at, updated_at";
 
 // ── 加解密 ───────────────────────────────────────────────────────────────
 
@@ -97,14 +97,18 @@ pub async fn validate_openai_key(key: &str) -> Result<(), AppError> {
 // ── 持久化 ───────────────────────────────────────────────────────────────
 
 /// 设置 team 的 active key:验证 → 加密 → 旧的置 inactive → 插入新 active(事务)。
+///
+/// SeaORM 1.1 跨方言一致策略:在事务内查出所有 active key,
+/// 逐条转 ActiveModel 翻 is_active=false 后 update;再 insert 新行。
+/// 避免依赖方言特定的批量 UPDATE … SET is_active=FALSE(部分方言不支持)。
 pub async fn set_team_api_key(
-    pool: &PgPool,
+    db: &DatabaseConnection,
     team_id: &str,
     set_by: &str,
     plain_key: &str,
     provider: &str,
     master: &str,
-) -> Result<TeamApiKey, AppError> {
+) -> Result<team_api_key::Model, AppError> {
     validate_openai_key(plain_key).await?;
     let enc = encrypt_key(plain_key, master)?;
     let hint = key_hint(plain_key);
@@ -116,67 +120,79 @@ pub async fn set_team_api_key(
         provider.trim()
     };
 
-    let mut tx = pool
-        .begin()
+    let k = db
+        .transaction(|txn| {
+            let id = id.clone();
+            let enc = enc.clone();
+            let hint = hint.clone();
+            let set_by = set_by.to_string();
+            let team_id = team_id.to_string();
+            let provider = provider.to_string();
+            Box::pin(async move {
+                // 先把该 team 所有 active 行转 inactive(逐条 update,跨方言一致)。
+                let active_rows = team_api_key::Entity::find()
+                    .filter(team_api_key::Column::TeamId.eq(team_id.clone()))
+                    .filter(team_api_key::Column::IsActive.eq(true))
+                    .all(txn)
+                    .await
+                    .map_err(|e| AppError::internal(format!("query active keys: {e}")))?;
+                for row in active_rows {
+                    let mut am: team_api_key::ActiveModel = row.into();
+                    am.is_active = Set(false);
+                    am.updated_at = Set(now);
+                    ActiveModelTrait::update(am, txn)
+                        .await
+                        .map_err(|e| AppError::internal(format!("deactivate old key: {e}")))?;
+                }
+                let am = team_api_key::ActiveModel {
+                    id: Set(id),
+                    team_id: Set(team_id),
+                    provider: Set(provider),
+                    encrypted_key: Set(enc),
+                    key_hint: Set(hint),
+                    set_by: Set(set_by),
+                    is_active: Set(true),
+                    created_at: Set(now),
+                    updated_at: Set(now),
+                };
+                am.insert(txn)
+                    .await
+                    .map_err(|e| AppError::internal(format!("insert api key: {e}")))
+            })
+        })
         .await
-        .map_err(|e| AppError::internal(format!("begin tx: {e}")))?;
-    sqlx::query(
-        "UPDATE team_api_keys SET is_active = FALSE, updated_at = $1 \
-         WHERE team_id = $2 AND is_active = TRUE",
-    )
-    .bind(now)
-    .bind(team_id)
-    .execute(&mut *tx)
-    .await
-    .map_err(|e| AppError::internal(format!("deactivate old keys: {e}")))?;
-    let k: TeamApiKey = sqlx::query_as(&format!(
-        "INSERT INTO team_api_keys (id, team_id, provider, encrypted_key, key_hint, set_by, is_active, created_at, updated_at) \
-         VALUES ($1, $2, $3, $4, $5, $6, TRUE, $7, $7) RETURNING {API_KEY_COLUMNS}"
-    ))
-    .bind(&id)
-    .bind(team_id)
-    .bind(provider)
-    .bind(&enc)
-    .bind(&hint)
-    .bind(set_by)
-    .bind(now)
-    .fetch_one(&mut *tx)
-    .await
-    .map_err(|e| AppError::internal(format!("insert api key: {e}")))?;
-    tx.commit()
-        .await
-        .map_err(|e| AppError::internal(format!("commit tx: {e}")))?;
+        .map_err(|e| AppError::internal(format!("tx: {e}")))?;
     Ok(k)
 }
 
 /// 列出 team 的全部 key(历史 + active,按 created_at 倒序)。
-pub async fn list_team_api_keys(pool: &PgPool, team_id: &str) -> Result<Vec<TeamApiKey>, AppError> {
-    let sql = format!(
-        "SELECT {API_KEY_COLUMNS} FROM team_api_keys WHERE team_id = $1 ORDER BY created_at DESC"
-    );
-    sqlx::query_as::<_, TeamApiKey>(&sql)
-        .bind(team_id)
-        .fetch_all(pool)
+pub async fn list_team_api_keys(
+    db: &DatabaseConnection,
+    team_id: &str,
+) -> Result<Vec<team_api_key::Model>, AppError> {
+    team_api_key::Entity::find()
+        .filter(team_api_key::Column::TeamId.eq(team_id.to_string()))
+        .order_by_desc(team_api_key::Column::CreatedAt)
+        .all(db)
         .await
         .map_err(|e| AppError::internal(format!("list api keys: {e}")))
 }
 
 /// 取 team 当前 active key 并解密明文(供 M3 注入 codex 用)。
 pub async fn get_active_plain_key(
-    pool: &PgPool,
+    db: &DatabaseConnection,
     team_id: &str,
     master: &str,
 ) -> Result<Option<String>, AppError> {
-    let row: Option<(String,)> = sqlx::query_as(
-        "SELECT encrypted_key FROM team_api_keys WHERE team_id = $1 AND is_active = TRUE \
-         ORDER BY created_at DESC LIMIT 1",
-    )
-    .bind(team_id)
-    .fetch_optional(pool)
-    .await
-    .map_err(|e| AppError::internal(format!("query active key: {e}")))?;
+    let row = team_api_key::Entity::find()
+        .filter(team_api_key::Column::TeamId.eq(team_id.to_string()))
+        .filter(team_api_key::Column::IsActive.eq(true))
+        .order_by_desc(team_api_key::Column::CreatedAt)
+        .one(db)
+        .await
+        .map_err(|e| AppError::internal(format!("query active key: {e}")))?;
     match row {
-        Some((enc,)) => Ok(Some(decrypt_key(&enc, master)?)),
+        Some(r) => Ok(Some(decrypt_key(&r.encrypted_key, master)?)),
         None => Ok(None),
     }
 }

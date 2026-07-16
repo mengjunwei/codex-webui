@@ -1,26 +1,39 @@
 //! team 管理:创建 / 列表 / 成员 / 邀请码 / 加入 / 踢除,以及成员校验 helper。
 //!
-//! 所有函数接 `&PgPool`(handler 在 M1.5 组装)。权限铁律:`require_member` /
+//! 所有函数接 `&DatabaseConnection`(handler 在 M1.5 组装)。权限铁律:`require_member` /
 //! `require_owner` 用于在 handler 里校验"当前 user 是否属于该 team / 是否 owner"。
+//!
+//! 注:本模块 entity 暂未声明 Relation 元数据,涉及多表 JOIN 走自定义 SELECT + 手动
+//! 投影,确保 PG/MySQL 行为一致(避免 SeaORM builder 隐式补 ON 子句)。
+
+pub use crate::multitenant::entity::invitation::Model as Invitation;
+pub use crate::multitenant::entity::team::Model as Team;
 
 use crate::error::{AppError, ErrorCode};
-pub use crate::multitenant::models::{Invitation, Team};
+use crate::multitenant::entity::invitation::{
+    ActiveModel as InvitationActiveModel, Column as InvitationColumn, Entity as InvitationEntity,
+};
+use crate::multitenant::entity::team::{
+    ActiveModel as TeamActiveModel, Column as TeamColumn, Entity as TeamEntity,
+};
+use crate::multitenant::entity::team_member::{
+    ActiveModel as TeamMemberActiveModel, Column as TeamMemberColumn, Entity as TeamMemberEntity,
+};
+use crate::multitenant::entity::user::{
+    Column as UserColumn, Entity as UserEntity, Model as UserModel,
+};
 use crate::multitenant::{new_id, now_ms};
 use axum::http::StatusCode;
+use sea_orm::entity::prelude::*;
+use sea_orm::{ActiveModelTrait, DatabaseConnection, QueryOrder, QuerySelect, Set, TransactionTrait};
 use rand::Rng;
 use serde::Serialize;
-use sqlx::postgres::PgPool;
-use sqlx::FromRow;
 
 pub const ROLE_OWNER: &str = "owner";
 pub const ROLE_MEMBER: &str = "member";
 
-const TEAM_COLUMNS: &str = "id, name, owner_id, created_at, updated_at";
-const INVITATION_COLUMNS: &str =
-    "id, team_id, code, created_by, expires_at, max_uses, used_count, created_at";
-
-/// 成员视图(联表 user + team_members),用于 list_members 返回。
-#[derive(Debug, FromRow, Serialize)]
+/// 成员视图(联表 user + team_member),用于 list_members 返回。
+#[derive(Debug, Serialize)]
 pub struct MemberView {
     pub user_id: String,
     pub email: String,
@@ -33,27 +46,26 @@ pub struct MemberView {
 
 /// 返回 user 在 team 中的 role;非成员返回 None。
 pub async fn member_role(
-    pool: &PgPool,
+    db: &DatabaseConnection,
     team_id: &str,
     user_id: &str,
 ) -> Result<Option<String>, AppError> {
-    let row: Option<(String,)> =
-        sqlx::query_as("SELECT role FROM team_members WHERE team_id = $1 AND user_id = $2")
-            .bind(team_id)
-            .bind(user_id)
-            .fetch_optional(pool)
-            .await
-            .map_err(|e| AppError::internal(format!("query member role: {e}")))?;
-    Ok(row.map(|(r,)| r))
+    let model = TeamMemberEntity::find()
+        .filter(TeamMemberColumn::TeamId.eq(team_id.to_string()))
+        .filter(TeamMemberColumn::UserId.eq(user_id.to_string()))
+        .one(db)
+        .await
+        .map_err(|e| AppError::internal(format!("query member role: {e}")))?;
+    Ok(model.map(|m| m.role))
 }
 
 /// 要求 user 是 team 成员,返回其 role;否则 403。
 pub async fn require_member(
-    pool: &PgPool,
+    db: &DatabaseConnection,
     team_id: &str,
     user_id: &str,
 ) -> Result<String, AppError> {
-    match member_role(pool, team_id, user_id).await? {
+    match member_role(db, team_id, user_id).await? {
         Some(r) => Ok(r),
         None => Err(AppError::business(
             ErrorCode::HttpForbidden,
@@ -66,11 +78,11 @@ pub async fn require_member(
 
 /// 要求 user 是 team 的 owner;否则 403。
 pub async fn require_owner(
-    pool: &PgPool,
+    db: &DatabaseConnection,
     team_id: &str,
     user_id: &str,
 ) -> Result<(), AppError> {
-    let role = require_member(pool, team_id, user_id).await?;
+    let role = require_member(db, team_id, user_id).await?;
     if role != ROLE_OWNER {
         return Err(AppError::business(
             ErrorCode::HttpForbidden,
@@ -85,7 +97,11 @@ pub async fn require_owner(
 // ── team CRUD ────────────────────────────────────────────────────────────
 
 /// 创建 team:owner 同时作为首个成员(role=owner)。事务保证 team 与成员记录同生。
-pub async fn create_team(pool: &PgPool, owner_id: &str, name: &str) -> Result<Team, AppError> {
+pub async fn create_team(
+    db: &DatabaseConnection,
+    owner_id: &str,
+    name: &str,
+) -> Result<Team, AppError> {
     let name = name.trim();
     if name.is_empty() || name.len() > 100 {
         return Err(AppError::business(
@@ -97,77 +113,117 @@ pub async fn create_team(pool: &PgPool, owner_id: &str, name: &str) -> Result<Te
     }
     let now = now_ms();
     let team_id = new_id();
-    let mut tx = pool
-        .begin()
-        .await
-        .map_err(|e| AppError::internal(format!("begin tx: {e}")))?;
-    let team: Team = sqlx::query_as(&format!(
-        "INSERT INTO teams (id, name, owner_id, created_at, updated_at) \
-         VALUES ($1, $2, $3, $4, $4) RETURNING {TEAM_COLUMNS}"
-    ))
-    .bind(&team_id)
-    .bind(name)
-    .bind(owner_id)
-    .bind(now)
-    .fetch_one(&mut *tx)
+
+    // 事务:team 插入 + owner 成员记录同生。
+    db.transaction(|txn| {
+        let team_id = team_id.clone();
+        let name = name.to_string();
+        let owner_id = owner_id.to_string();
+        Box::pin(async move {
+            let team_am = TeamActiveModel {
+                id: Set(team_id.clone()),
+                name: Set(name),
+                owner_id: Set(owner_id.clone()),
+                created_at: Set(now),
+                updated_at: Set(now),
+            };
+            team_am.insert(txn).await
+                .map_err(|e| AppError::internal(format!("insert team: {e}")))?;
+            let member_am = TeamMemberActiveModel {
+                team_id: Set(team_id),
+                user_id: Set(owner_id),
+                role: Set(ROLE_OWNER.to_string()),
+                joined_at: Set(now),
+            };
+            member_am.insert(txn).await
+                .map_err(|e| AppError::internal(format!("insert owner membership: {e}")))?;
+            Ok(())
+        })
+    })
     .await
-    .map_err(|e| AppError::internal(format!("insert team: {e}")))?;
-    sqlx::query(
-        "INSERT INTO team_members (team_id, user_id, role, joined_at) VALUES ($1, $2, $3, $4)",
-    )
-    .bind(&team_id)
-    .bind(owner_id)
-    .bind(ROLE_OWNER)
-    .bind(now)
-    .execute(&mut *tx)
-    .await
-    .map_err(|e| AppError::internal(format!("insert owner membership: {e}")))?;
-    tx.commit()
-        .await
-        .map_err(|e| AppError::internal(format!("commit tx: {e}")))?;
-    Ok(team)
+    .map_err(|e: sea_orm::TransactionError<AppError>| AppError::internal(format!("tx: {e}")))?;
+
+    // 等价原 RETURNING 字段:再用主键回查一遍。
+    load_team(db, &team_id).await
 }
+
+// ── 列表 ────────────────────────────────────────────────────────────────
 
 /// 列出 user 所属的全部 team(一人多 team),按创建时间倒序。
-pub async fn list_my_teams(pool: &PgPool, user_id: &str) -> Result<Vec<Team>, AppError> {
-    let sql = format!(
-        "SELECT t.id, t.name, t.owner_id, t.created_at, t.updated_at \
-         FROM teams t JOIN team_members m ON m.team_id = t.id \
-         WHERE m.user_id = $1 ORDER BY t.created_at DESC"
-    );
-    sqlx::query_as::<_, Team>(&sql)
-        .bind(user_id)
-        .fetch_all(pool)
+pub async fn list_my_teams(
+    db: &DatabaseConnection,
+    user_id: &str,
+) -> Result<Vec<Team>, AppError> {
+    let member_rows = TeamMemberEntity::find()
+        .filter(TeamMemberColumn::UserId.eq(user_id.to_string()))
+        .all(db)
         .await
-        .map_err(|e| AppError::internal(format!("list teams: {e}")))
+        .map_err(|e| AppError::internal(format!("list team members: {e}")))?;
+    let team_ids: Vec<String> = member_rows.into_iter().map(|m| m.team_id).collect();
+    if team_ids.is_empty() {
+        return Ok(vec![]);
+    }
+    let teams = TeamEntity::find()
+        .filter(TeamColumn::Id.is_in(team_ids))
+        .order_by_desc(TeamColumn::CreatedAt)
+        .all(db)
+        .await
+        .map_err(|e| AppError::internal(format!("list teams: {e}")))?;
+    Ok(teams)
 }
 
-/// 列出 team 全部成员(联表 users)。
-pub async fn list_members(pool: &PgPool, team_id: &str) -> Result<Vec<MemberView>, AppError> {
-    sqlx::query_as::<_, MemberView>(
-        "SELECT u.id AS user_id, u.email, u.display_name, m.role, m.joined_at \
-         FROM team_members m JOIN users u ON u.id = m.user_id \
-         WHERE m.team_id = $1 ORDER BY m.joined_at ASC",
-    )
-    .bind(team_id)
-    .fetch_all(pool)
-    .await
-    .map_err(|e| AppError::internal(format!("list members: {e}")))
+/// 列出 team 全部成员(两次查询 + 内存合并,避免跨方言 JOIN)。
+pub async fn list_members(
+    db: &DatabaseConnection,
+    team_id: &str,
+) -> Result<Vec<MemberView>, AppError> {
+    let member_rows = TeamMemberEntity::find()
+        .filter(TeamMemberColumn::TeamId.eq(team_id.to_string()))
+        .all(db)
+        .await
+        .map_err(|e| AppError::internal(format!("list members: {e}")))?;
+    let user_ids: Vec<String> = member_rows.iter().map(|m| m.user_id.clone()).collect();
+    let users: std::collections::HashMap<String, UserModel> = if user_ids.is_empty() {
+        std::collections::HashMap::new()
+    } else {
+        UserEntity::find()
+            .filter(UserColumn::Id.is_in(user_ids))
+            .all(db)
+            .await
+            .map_err(|e| AppError::internal(format!("list users: {e}")))?
+            .into_iter()
+            .map(|u| (u.id.clone(), u))
+            .collect()
+    };
+    let result: Vec<MemberView> = member_rows
+        .into_iter()
+        .filter_map(|m| {
+            let u = users.get(&m.user_id)?;
+            Some(MemberView {
+                user_id: u.id.clone(),
+                email: u.email.clone(),
+                display_name: u.display_name.clone(),
+                role: m.role.clone(),
+                joined_at: m.joined_at,
+            })
+        })
+        .collect();
+    Ok(result)
 }
 
 /// 踢除成员。owner 不可被踢(需先转让或解散),否则 400。
 pub async fn remove_member(
-    pool: &PgPool,
+    db: &DatabaseConnection,
     team_id: &str,
     user_id: &str,
 ) -> Result<(), AppError> {
-    let team: Option<(String,)> = sqlx::query_as("SELECT owner_id FROM teams WHERE id = $1")
-        .bind(team_id)
-        .fetch_optional(pool)
+    // 先查 owner 用于防护。
+    let team = TeamEntity::find_by_id(team_id.to_string())
+        .one(db)
         .await
         .map_err(|e| AppError::internal(format!("query team owner: {e}")))?;
-    if let Some((owner,)) = team.as_ref() {
-        if owner == user_id {
+    if let Some(t) = team.as_ref() {
+        if t.owner_id == user_id {
             return Err(AppError::business(
                 ErrorCode::HttpBadRequest,
                 StatusCode::BAD_REQUEST,
@@ -176,13 +232,13 @@ pub async fn remove_member(
             ));
         }
     }
-    let res = sqlx::query("DELETE FROM team_members WHERE team_id = $1 AND user_id = $2")
-        .bind(team_id)
-        .bind(user_id)
-        .execute(pool)
+    let res = TeamMemberEntity::delete_many()
+        .filter(TeamMemberColumn::TeamId.eq(team_id.to_string()))
+        .filter(TeamMemberColumn::UserId.eq(user_id.to_string()))
+        .exec(db)
         .await
         .map_err(|e| AppError::internal(format!("delete member: {e}")))?;
-    if res.rows_affected() == 0 {
+    if res.rows_affected == 0 {
         return Err(AppError::business(
             ErrorCode::HttpNotFound,
             StatusCode::NOT_FOUND,
@@ -197,7 +253,7 @@ pub async fn remove_member(
 
 /// owner 生成邀请码。expires_at/max_uses 为 None 表示不限。
 pub async fn create_invitation(
-    pool: &PgPool,
+    db: &DatabaseConnection,
     team_id: &str,
     created_by: &str,
     expires_at: Option<i64>,
@@ -206,110 +262,128 @@ pub async fn create_invitation(
     let code = gen_invite_code();
     let id = new_id();
     let now = now_ms();
-    let inv: Invitation = sqlx::query_as(&format!(
-        "INSERT INTO invitations (id, team_id, code, created_by, expires_at, max_uses, used_count, created_at) \
-         VALUES ($1, $2, $3, $4, $5, $6, 0, $7) RETURNING {INVITATION_COLUMNS}"
-    ))
-    .bind(&id)
-    .bind(team_id)
-    .bind(&code)
-    .bind(created_by)
-    .bind(expires_at)
-    .bind(max_uses)
-    .bind(now)
-    .fetch_one(pool)
-    .await
-    .map_err(|e| AppError::internal(format!("insert invitation: {e}")))?;
+    let inv_am = InvitationActiveModel {
+        id: Set(id.clone()),
+        team_id: Set(team_id.to_string()),
+        code: Set(code),
+        created_by: Set(created_by.to_string()),
+        expires_at: Set(expires_at),
+        max_uses: Set(max_uses),
+        used_count: Set(0),
+        created_at: Set(now),
+    };
+    inv_am.insert(db)
+        .await
+        .map_err(|e| AppError::internal(format!("insert invitation: {e}")))?;
+    let inv = InvitationEntity::find_by_id(id)
+        .one(db)
+        .await
+        .map_err(|e| AppError::internal(format!("reload invitation: {e}")))?
+        .ok_or_else(|| AppError::internal("inserted invitation not found".into()))?;
     Ok(inv)
 }
 
 /// 凭邀请码加入 team(成为 member)。幂等:已是成员直接返回 team。事务 + FOR UPDATE
 /// 防并发超额使用。码不存在/过期/用尽 → 4xx。
-pub async fn join_team(pool: &PgPool, user_id: &str, code: &str) -> Result<Team, AppError> {
-    let code = code.trim();
+pub async fn join_team(
+    db: &DatabaseConnection,
+    user_id: &str,
+    code: &str,
+) -> Result<Team, AppError> {
+    let code_str = code.trim().to_string();
     let now = now_ms();
-    let mut tx = pool
-        .begin()
+    let user_id = user_id.to_string();
+
+    let team_id: String = db
+        .transaction(|txn| {
+            let code_str = code_str.clone();
+            let user_id = user_id.clone();
+            Box::pin(async move {
+                // 行锁 invitation:SELECT ... FOR UPDATE(按 code 唯一索引锁定行)。
+                let inv = InvitationEntity::find()
+                    .filter(InvitationColumn::Code.eq(code_str))
+                    .lock(sea_orm::sea_query::LockType::Update)
+                    .one(txn)
+                    .await
+                    .map_err(|e| AppError::internal(format!("query invitation: {e}")))?
+                    .ok_or_else(|| {
+                        AppError::business(
+                            ErrorCode::HttpNotFound,
+                            StatusCode::NOT_FOUND,
+                            "invitation not found".into(),
+                            None,
+                        )
+                    })?;
+
+                if let Some(exp) = inv.expires_at {
+                    if exp < now {
+                        return Err(AppError::business(
+                            ErrorCode::HttpBadRequest,
+                            StatusCode::BAD_REQUEST,
+                            "invitation expired".into(),
+                            None,
+                        ));
+                    }
+                }
+                if let Some(max) = inv.max_uses {
+                    if inv.used_count >= max {
+                        return Err(AppError::business(
+                            ErrorCode::HttpBadRequest,
+                            StatusCode::BAD_REQUEST,
+                            "invitation usage limit reached".into(),
+                            None,
+                        ));
+                    }
+                }
+
+                // 幂等:已是成员则跳过插入与计数。
+                let existing = TeamMemberEntity::find()
+                    .filter(TeamMemberColumn::TeamId.eq(inv.team_id.clone()))
+                    .filter(TeamMemberColumn::UserId.eq(user_id.clone()))
+                    .one(txn)
+                    .await
+                    .map_err(|e| {
+                        AppError::internal(format!("query existing membership: {e}"))
+                    })?;
+
+                if existing.is_none() {
+                    let member_am = TeamMemberActiveModel {
+                        team_id: Set(inv.team_id.clone()),
+                        user_id: Set(user_id),
+                        role: Set(ROLE_MEMBER.to_string()),
+                        joined_at: Set(now),
+                    };
+                    member_am.insert(txn)
+                        .await
+                        .map_err(|e| AppError::internal(format!("insert membership: {e}")))?;
+                    // used_count + 1:采用 ActiveModel.update()(get model → set → update)。
+                    let mut inv_am: InvitationActiveModel = inv.clone().into();
+                    inv_am.used_count = Set(inv.used_count + 1);
+                    inv_am
+                        .update(txn)
+                        .await
+                        .map_err(|e| {
+                            AppError::internal(format!("update invitation used_count: {e}"))
+                        })?;
+                }
+
+                Ok::<_, AppError>(inv.team_id)
+            })
+        })
         .await
-        .map_err(|e| AppError::internal(format!("begin tx: {e}")))?;
+        .map_err(|e| AppError::internal(format!("tx: {e}")))?;
 
-    let inv: Option<Invitation> = sqlx::query_as(&format!(
-        "SELECT {INVITATION_COLUMNS} FROM invitations WHERE code = $1 FOR UPDATE"
-    ))
-    .bind(code)
-    .fetch_optional(&mut *tx)
-    .await
-    .map_err(|e| AppError::internal(format!("query invitation: {e}")))?;
-    let inv = match inv {
-        Some(i) => i,
-        None => {
-            return Err(AppError::business(
-                ErrorCode::HttpNotFound,
-                StatusCode::NOT_FOUND,
-                "invitation not found".into(),
-                None,
-            ))
-        }
-    };
-    if let Some(exp) = inv.expires_at {
-        if exp < now {
-            return Err(AppError::business(
-                ErrorCode::HttpBadRequest,
-                StatusCode::BAD_REQUEST,
-                "invitation expired".into(),
-                None,
-            ));
-        }
-    }
-    if let Some(max) = inv.max_uses {
-        if inv.used_count >= max {
-            return Err(AppError::business(
-                ErrorCode::HttpBadRequest,
-                StatusCode::BAD_REQUEST,
-                "invitation usage limit reached".into(),
-                None,
-            ));
-        }
-    }
+    // 取出最终 team(与原 SELECT 行为一致)。
+    load_team(db, &team_id).await
+}
 
-    // 幂等:已是成员则跳过插入与计数。
-    let existing: Option<(String,)> = sqlx::query_as(
-        "SELECT user_id FROM team_members WHERE team_id = $1 AND user_id = $2",
-    )
-    .bind(&inv.team_id)
-    .bind(user_id)
-    .fetch_optional(&mut *tx)
-    .await
-    .map_err(|e| AppError::internal(format!("query existing membership: {e}")))?;
-
-    if existing.is_none() {
-        sqlx::query(
-            "INSERT INTO team_members (team_id, user_id, role, joined_at) VALUES ($1, $2, $3, $4)",
-        )
-        .bind(&inv.team_id)
-        .bind(user_id)
-        .bind(ROLE_MEMBER)
-        .bind(now)
-        .execute(&mut *tx)
+/// 取 team 主键对应记录;找不到则内部 500。
+async fn load_team(db: &DatabaseConnection, team_id: &str) -> Result<Team, AppError> {
+    TeamEntity::find_by_id(team_id.to_string())
+        .one(db)
         .await
-        .map_err(|e| AppError::internal(format!("insert membership: {e}")))?;
-        sqlx::query("UPDATE invitations SET used_count = used_count + 1 WHERE id = $1")
-            .bind(&inv.id)
-            .execute(&mut *tx)
-            .await
-            .map_err(|e| AppError::internal(format!("update invitation used_count: {e}")))?;
-    }
-
-    let team: Team = sqlx::query_as(&format!("SELECT {TEAM_COLUMNS} FROM teams WHERE id = $1"))
-        .bind(&inv.team_id)
-        .fetch_one(&mut *tx)
-        .await
-        .map_err(|e| AppError::internal(format!("query team: {e}")))?;
-
-    tx.commit()
-        .await
-        .map_err(|e| AppError::internal(format!("commit tx: {e}")))?;
-    Ok(team)
+        .map_err(|e| AppError::internal(format!("query team: {e}")))?
+        .ok_or_else(|| AppError::internal("team vanished after join".into()))
 }
 
 // ── 辅助 ─────────────────────────────────────────────────────────────────

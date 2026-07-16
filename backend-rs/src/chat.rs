@@ -49,7 +49,7 @@ pub async fn upload_attachment(
     State(state): State<AppState>,
     mut multipart: axum::extract::Multipart,
 ) -> Result<Json<Value>, AppError> {
-    let max_bytes = state.settings_reader().get_upload_max_bytes();
+    let max_bytes = state.settings_reader().get_upload_max_bytes().await;
     let upload_root = ensure_upload_root()?;
     // 周期性清理超过 TTL 的陈旧上传（对齐 TS，节流到每小时一次）。
     // 用 spawn_blocking 包裹同步目录遍历，避免阻塞 tokio worker。
