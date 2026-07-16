@@ -104,12 +104,85 @@ CREATE TABLE IF NOT EXISTS audit_log (
 CREATE INDEX IF NOT EXISTS idx_audit_team ON audit_log(team_id, created_at DESC);
 "#;
 
+/// M1.7:现有 rusqlite 业务表迁到 PG(mt schema)。对应 drizzle 0000~0004 的 5 张表
+/// (thread_tabs 在 0005 已 DROP,不迁)。类型:SQLite text→VARCHAR/TEXT,integer→BIGINT。
+const MIGRATION_2026071604_BUSINESS: &str = r#"
+CREATE TABLE IF NOT EXISTS token_usage_snapshots (
+    thread_id VARCHAR(36) NOT NULL,
+    turn_id VARCHAR(64) NOT NULL,
+    total_tokens BIGINT NOT NULL,
+    input_tokens BIGINT NOT NULL,
+    cached_input_tokens BIGINT NOT NULL,
+    output_tokens BIGINT NOT NULL,
+    reasoning_output_tokens BIGINT NOT NULL,
+    last_total_tokens BIGINT NOT NULL,
+    last_input_tokens BIGINT NOT NULL,
+    last_cached_input_tokens BIGINT NOT NULL,
+    last_output_tokens BIGINT NOT NULL,
+    last_reasoning_output_tokens BIGINT NOT NULL,
+    model_context_window BIGINT,
+    raw_payload TEXT NOT NULL,
+    updated_at BIGINT NOT NULL,
+    PRIMARY KEY (thread_id, turn_id)
+);
+CREATE INDEX IF NOT EXISTS idx_token_usage_thread_updated ON token_usage_snapshots(thread_id, updated_at);
+
+CREATE TABLE IF NOT EXISTS turn_diffs (
+    thread_id VARCHAR(36) NOT NULL,
+    turn_id VARCHAR(64) NOT NULL,
+    diff TEXT NOT NULL,
+    updated_at BIGINT NOT NULL,
+    PRIMARY KEY (thread_id, turn_id)
+);
+CREATE INDEX IF NOT EXISTS idx_turn_diffs_thread ON turn_diffs(thread_id);
+
+CREATE TABLE IF NOT EXISTS settings (
+    key VARCHAR(128) PRIMARY KEY NOT NULL,
+    value TEXT,
+    type VARCHAR(32) NOT NULL,
+    category VARCHAR(64) NOT NULL,
+    description TEXT NOT NULL,
+    default_value TEXT NOT NULL,
+    constraints TEXT NOT NULL,
+    updated_at BIGINT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_settings_category ON settings(category);
+
+CREATE TABLE IF NOT EXISTS pending_server_requests (
+    generation BIGINT NOT NULL,
+    request_id VARCHAR(64) NOT NULL,
+    thread_id VARCHAR(36) NOT NULL,
+    turn_id VARCHAR(64),
+    item_id VARCHAR(128),
+    method VARCHAR(64) NOT NULL,
+    params_json TEXT NOT NULL,
+    status VARCHAR(32) NOT NULL,
+    resolved_by VARCHAR(128),
+    created_at BIGINT NOT NULL,
+    updated_at BIGINT NOT NULL,
+    resolved_at BIGINT,
+    PRIMARY KEY (generation, request_id)
+);
+CREATE INDEX IF NOT EXISTS idx_pending_requests_thread_status ON pending_server_requests(thread_id, status);
+CREATE INDEX IF NOT EXISTS idx_pending_requests_status_updated ON pending_server_requests(status, updated_at);
+
+CREATE TABLE IF NOT EXISTS turn_errors (
+    thread_id VARCHAR(36) NOT NULL,
+    turn_id VARCHAR(64) NOT NULL,
+    message TEXT NOT NULL,
+    created_at BIGINT NOT NULL,
+    PRIMARY KEY (thread_id, turn_id)
+);
+CREATE INDEX IF NOT EXISTS idx_turn_errors_thread ON turn_errors(thread_id);
+"#;
+
 /// 所有迁移(版本号 → SQL),按顺序应用。新增迁移在此追加。
 fn migrations() -> Vec<(&'static str, &'static str)> {
     vec![
         ("2026071601_initial", MIGRATION_2026071601_INITIAL),
         ("2026071602_api_keys", MIGRATION_2026071602_API_KEYS),
         ("2026071603_audit", MIGRATION_2026071603_AUDIT),
+        ("2026071604_business", MIGRATION_2026071604_BUSINESS),
     ]
 }
 
