@@ -389,6 +389,47 @@ pub fn spawn_emit_tasks(io: SocketIo, codex: Arc<CodexProcessManager>, terminal:
     spawn_terminal_metadata_emit(io, terminal);
 }
 
+/// M4 subscribe 端:订阅事件总线(RedisEventBus `codex:events`)→ emit 到 socket.io
+/// `thread:{tid}` room。完成实时闭环:codex(任意 worker)→ Redis → 本接入节点 → 前端。
+///
+/// 多机时,任意 worker 上 publish 的 codex 事件经 Redis 到达每个接入节点,
+/// 各节点 emit 给自己持有的订阅 socket(跨节点广播)。
+pub fn spawn_event_bus_emit(
+    io: SocketIo,
+    bus: std::sync::Arc<dyn crate::multitenant::event_bus::EventBus>,
+) {
+    tokio::spawn(async move {
+        let mut rx = match bus.subscribe("codex:events").await {
+            Ok(rx) => rx,
+            Err(e) => {
+                tracing::warn!(error = %e, "subscribe codex:events failed");
+                return;
+            }
+        };
+        while let Ok(payload) = rx.recv().await {
+            let msg: serde_json::Value = match serde_json::from_str(&payload) {
+                Ok(v) => v,
+                Err(_) => continue,
+            };
+            let thread_id = msg
+                .get("params")
+                .and_then(|p| p.get("threadId"))
+                .and_then(serde_json::Value::as_str);
+            let Some(ns) = io.of("/ws") else { continue };
+            let res = if let Some(tid) = thread_id {
+                ns.within(format!("thread:{tid}"))
+                    .emit("codex.notification", &msg)
+                    .await
+            } else {
+                ns.broadcast().emit("codex.notification", &msg).await
+            };
+            if let Err(e) = res {
+                tracing::warn!("emit event_bus notification failed: {e}");
+            }
+        }
+    });
+}
+
 fn spawn_notification_emit(io: SocketIo, codex: Arc<CodexProcessManager>) {
     let mut rx = codex.subscribe_notifications();
     // H6：循环体不再使用 codex，立即释放强引用，避免任务持有 service 阻止其回收

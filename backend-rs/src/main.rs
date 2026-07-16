@@ -103,6 +103,7 @@ async fn main() -> anyhow::Result<()> {
             base.join(".codex-webui-teams")
         }
     };
+    let mt_event_bus_for_emit = mt_event_bus.clone();
     let mt_team_codex = Arc::new(codex_webui::multitenant::codex_pool::TeamCodexManager::new(
         teams_root,
         cfg.codex_bin.clone(),
@@ -150,13 +151,18 @@ async fn main() -> anyhow::Result<()> {
     };
     let (ws_layer, io) = codex_webui::realtime::build(rt_state);
     codex_webui::realtime::spawn_emit_tasks(
-        io,
+        io.clone(),
         codex.clone(),
         terminal.clone(),
         db.clone(),
         active_threads.clone(),
         resume_registry.clone(),
     );
+
+    // M4 subscribe 端:Redis 事件总线 codex:events → socket.io emit(完成实时闭环)。
+    if let Some(bus) = mt_event_bus_for_emit {
+        codex_webui::realtime::spawn_event_bus_emit(io.clone(), bus);
+    }
 
     // codex 重启（generation 变化）时清空 resume 缓存——现由 realtime 的 lifecycle
     // emit 任务在 auto-resume 之前推进（见 realtime::spawn_lifecycle_emit），不再另起任务。
