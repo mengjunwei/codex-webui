@@ -12,6 +12,9 @@ docker run -d --name mt-pg \
   -e POSTGRES_PASSWORD=postgres \
   -e POSTGRES_DB=codexmt \
   -p 5432:5432 postgres:16
+
+# Redis(M4 事件总线 + M6 限流;可选 —— 未配置则这些功能禁用,核心多租户仍可用)
+docker run -d --name mt-redis -p 6379:6379 redis:7
 ```
 
 ## 配置 `.env`(backend-rs/.env 或环境变量)
@@ -20,6 +23,7 @@ docker run -d --name mt-pg \
 WEBUI_API_KEY=change-me-to-a-long-random-string-32+chars
 DATABASE_URL=postgres://postgres:postgres@localhost:5432/codexmt
 MASTER_KEY=another-long-random-string-32+chars
+REDIS_URL=redis://localhost:6379
 CODEX_BIN=codex
 HOST=0.0.0.0
 PORT=8172
@@ -104,6 +108,7 @@ cargo test --manifest-path backend-rs/Cargo.toml --lib multitenant::
 - ✅ **M1** 用户体系 + 多租户 + 认证 + team(创建/成员/邀请码/角色)
 - ✅ **M2** BYOK key 管理(AES-256-GCM 加密存储 + OpenAI 验证 + set/list/轮换)
 - ✅ **M3** TeamCodexManager + 多租户 thread 路由(per-team codex 进程 + team 校验 + PG 元数据双写)
-- ⏳ **M4** 分布式(接入/worker 分离 + Redis + 跨节点广播)—— 规模超大、需多机环境验证,后续会话推进
-- ⏳ **M5** 高可用 + 可观测 + 扩缩容(Redis/PG 主从 + Prometheus + OpenTelemetry)
-- ⏳ **M6** 打磨上线(防滥用 + 计费 + 安全审计)
+- ✅ **M4(部分)** Router trait + 一致性哈希 + EventBus(内存/Redis)+ Redis 集成(RedisEventBus)
+- ✅ **M5-A** write_tx 有界背压(根治 OOM)
+- ✅ **M6-A** Redis 限流(注册防滥用,按 IP 令牌桶)
+- ⏳ M4 接入(notification 流经 RedisEventBus + failover + 多 worker 分离)、M5-B Prometheus 指标、M6 计费/安全审计

@@ -13,6 +13,7 @@ pub mod migration;
 pub mod middleware;
 pub mod models;
 pub mod routing;
+pub mod rate_limit;
 pub mod teams;
 
 /// 当前 UTC 毫秒时间戳。

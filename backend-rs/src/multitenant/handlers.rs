@@ -15,6 +15,17 @@ use axum::Json;
 use serde::{Deserialize, Serialize};
 use sqlx::PgPool;
 
+/// 从 X-Forwarded-For 取客户端 IP(取第一个;无则 "unknown")。
+fn client_ip(headers: &axum::http::HeaderMap) -> String {
+    headers
+        .get("x-forwarded-for")
+        .and_then(|v| v.to_str().ok())
+        .and_then(|s| s.split(',').next())
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| "unknown".into())
+}
+
 /// 取多租户连接池;未配置 → 503。
 fn require_pool(state: &AppState) -> Result<&PgPool, AppError> {
     state.mt_pg.as_ref().ok_or_else(|| {
@@ -109,9 +120,18 @@ pub struct RefreshResp {
 
 pub async fn register(
     State(state): State<AppState>,
+    headers: axum::http::HeaderMap,
     crate::error::Json(body): crate::error::Json<RegisterBody>,
 ) -> Result<Json<AuthResp>, AppError> {
     let pool = require_pool(&state)?;
+    // M6-A 注册限流(防滥用):按 IP 每分钟 10 次;Redis 未配置则跳过。
+    if let Some(client) = &state.mt_redis {
+        let ip = client_ip(&headers);
+        let limiter = crate::multitenant::rate_limit::RedisRateLimiter::new(client.clone());
+        if !limiter.allow(&format!("rl:register:{ip}"), 10, 60).await? {
+            return Err(AppError::status(429));
+        }
+    }
     let secret = state.auth.jwt_secret();
     let user = auth::register_user(pool, &body.email, &body.password).await?;
     let tokens = auth::issue_tokens(&user.id, pool, secret).await?;
