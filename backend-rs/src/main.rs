@@ -164,6 +164,26 @@ async fn main() -> anyhow::Result<()> {
         codex_webui::realtime::spawn_event_bus_emit(io.clone(), bus);
     }
 
+    // M4 worker 心跳(REDIS_URL 配置时):周期注册本地 worker 到 Redis,
+    // 供 RedisRouter 路由 + 故障检测(心跳停 → TTL 过期 → team failover)。
+    if let Some(client) = mt_redis.clone() {
+        let worker_id = std::env::var("WORKER_ID")
+            .ok()
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+            .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+        let registry =
+            codex_webui::multitenant::routing::WorkerRegistry::new(client, worker_id);
+        tokio::spawn(async move {
+            loop {
+                if let Err(e) = registry.heartbeat(30).await {
+                    tracing::warn!(error = %e, "worker heartbeat failed");
+                }
+                tokio::time::sleep(std::time::Duration::from_secs(10)).await;
+            }
+        });
+    }
+
     // codex 重启（generation 变化）时清空 resume 缓存——现由 realtime 的 lifecycle
     // emit 任务在 auto-resume 之前推进（见 realtime::spawn_lifecycle_emit），不再另起任务。
 

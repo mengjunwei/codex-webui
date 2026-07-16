@@ -95,6 +95,104 @@ fn hash_str(s: &str) -> u64 {
     h.finish()
 }
 
+// ── worker 注册 + Redis 路由(M4 多机)──────────────────────────────────────
+
+/// worker 注册表:本地 worker 周期心跳(`SETEX worker:{id} ttl`),`RedisRouter` 据活着的
+/// worker 做一致性哈希路由。TTL 过期(心跳停止)即视为下线 → team failover 到其他 worker。
+pub struct WorkerRegistry {
+    client: redis::Client,
+    worker_id: String,
+}
+
+impl WorkerRegistry {
+    pub fn new(client: redis::Client, worker_id: String) -> Self {
+        Self { client, worker_id }
+    }
+
+    /// 心跳:加入 `workers` 集合 + `SETEX worker:{id} ttl`(过期即下线)。
+    pub async fn heartbeat(&self, ttl_secs: u64) -> Result<(), AppError> {
+        let mut conn = self
+            .client
+            .get_multiplexed_async_connection()
+            .await
+            .map_err(|e| AppError::internal(format!("redis connect: {e}")))?;
+        let _: i64 = redis::cmd("SADD")
+            .arg("workers")
+            .arg(&self.worker_id)
+            .query_async(&mut conn)
+            .await
+            .map_err(|e| AppError::internal(format!("redis sadd: {e}")))?;
+        let _: () = redis::cmd("SET")
+            .arg(format!("worker:{}", self.worker_id))
+            .arg(crate::multitenant::now_ms())
+            .arg("EX")
+            .arg(ttl_secs)
+            .query_async(&mut conn)
+            .await
+            .map_err(|e| AppError::internal(format!("redis setex: {e}")))?;
+        Ok(())
+    }
+
+    /// 列出当前活着的 worker(TTL 内)。用于路由 / 监控。
+    pub async fn list_workers(&self) -> Result<Vec<String>, AppError> {
+        let mut conn = self
+            .client
+            .get_multiplexed_async_connection()
+            .await
+            .map_err(|e| AppError::internal(format!("redis connect: {e}")))?;
+        let members: Vec<String> = redis::cmd("SMEMBERS")
+            .arg("workers")
+            .query_async(&mut conn)
+            .await
+            .map_err(|e| AppError::internal(format!("redis smembers: {e}")))?;
+        let mut alive = Vec::new();
+        for w in members {
+            let exists: i64 = redis::cmd("EXISTS")
+                .arg(format!("worker:{w}"))
+                .query_async(&mut conn)
+                .await
+                .unwrap_or(0);
+            if exists == 1 {
+                alive.push(w);
+            }
+        }
+        Ok(alive)
+    }
+}
+
+/// Redis 路由器(多机):读活着的 worker 列表 + 一致性哈希 `route(team_id)`。
+pub struct RedisRouter {
+    registry: WorkerRegistry,
+    vnodes: usize,
+}
+
+impl RedisRouter {
+    pub fn new(registry: WorkerRegistry, vnodes: usize) -> Self {
+        Self { registry, vnodes }
+    }
+}
+
+#[async_trait]
+impl Router for RedisRouter {
+    async fn route(&self, team_id: &str) -> Result<String, AppError> {
+        let workers = self.registry.list_workers().await?;
+        if workers.is_empty() {
+            return Err(AppError::internal("no workers available".into()));
+        }
+        let mut ring = ConsistentHash::new(self.vnodes);
+        for w in &workers {
+            ring.add(w);
+        }
+        ring.get(team_id)
+            .map(|s| s.to_string())
+            .ok_or_else(|| AppError::internal("consistent hash ring empty".into()))
+    }
+
+    async fn workers(&self) -> Vec<String> {
+        self.registry.list_workers().await.unwrap_or_default()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
