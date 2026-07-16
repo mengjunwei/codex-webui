@@ -35,6 +35,7 @@ fn state(api_key: &str) -> AppState {
         mt_team_codex: Arc::new(codex_webui::multitenant::codex_pool::TeamCodexManager::new(
             std::path::PathBuf::from("/tmp/mt-test"),
             "codex".into(),
+            None,
         )),
         mt_redis: None,
         auth: Arc::new(AuthService::new(api_key)),

@@ -62,6 +62,27 @@ async fn main() -> anyhow::Result<()> {
     // 主密钥:优先 MASTER_KEY,回退 webui_api_key(加密 team 的 OpenAI key 用)。
     let mt_master_key = cfg.master_key.clone().unwrap_or_else(|| cfg.webui_api_key.clone());
 
+    // Redis(M4 分布式协调;可选):未配置则跨节点功能禁用,单机功能不受影响。
+    let mt_redis = match &cfg.redis_url {
+        Some(url) => Some(
+            redis::Client::open(url.as_str())
+                .map_err(|e| anyhow::anyhow!("redis client: {e}"))?,
+        ),
+        None => {
+            tracing::warn!("REDIS_URL not set; distributed coordination disabled");
+            None
+        }
+    };
+
+    // 事件总线:Redis 配置则 RedisEventBus(多机跨节点广播),否则 None。
+    let mt_event_bus: Option<Arc<dyn codex_webui::multitenant::event_bus::EventBus>> =
+        match &mt_redis {
+            Some(client) => Some(Arc::new(
+                codex_webui::multitenant::event_bus::RedisEventBus::new(client.clone(), 256),
+            )),
+            None => None,
+        };
+
     // 多 team codex 进程管理器(M3):CODEX_TEAMS_HOME 或回退 ~/.codex-webui-teams。
     let teams_root: std::path::PathBuf = match std::env::var("CODEX_TEAMS_HOME")
         .ok()
@@ -80,19 +101,8 @@ async fn main() -> anyhow::Result<()> {
     let mt_team_codex = Arc::new(codex_webui::multitenant::codex_pool::TeamCodexManager::new(
         teams_root,
         cfg.codex_bin.clone(),
+        mt_event_bus,
     ));
-
-    // Redis(M4 分布式协调;可选):未配置则跨节点功能禁用,单机功能不受影响。
-    let mt_redis = match &cfg.redis_url {
-        Some(url) => Some(
-            redis::Client::open(url.as_str())
-                .map_err(|e| anyhow::anyhow!("redis client: {e}"))?,
-        ),
-        None => {
-            tracing::warn!("REDIS_URL not set; distributed coordination disabled");
-            None
-        }
-    };
 
     // 认证服务（在 AppState 之前创建，以便 realtime 模块共享）。
     let auth = Arc::new(AuthService::new(&cfg.webui_api_key));

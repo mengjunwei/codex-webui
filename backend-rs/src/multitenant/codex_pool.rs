@@ -29,14 +29,21 @@ pub struct TeamCodexManager {
     codex_bin: String,
     /// team_id → 活跃 client(按需启动,缓存复用)。
     clients: Mutex<HashMap<String, Arc<CodexJsonRpcClient>>>,
+    /// 事件总线(可选):把 codex notification 发布到 RedisEventBus,接入层订阅后 emit 前端。
+    event_bus: Option<Arc<dyn crate::multitenant::event_bus::EventBus>>,
 }
 
 impl TeamCodexManager {
-    pub fn new(teams_root: PathBuf, codex_bin: String) -> Self {
+    pub fn new(
+        teams_root: PathBuf,
+        codex_bin: String,
+        event_bus: Option<Arc<dyn crate::multitenant::event_bus::EventBus>>,
+    ) -> Self {
         Self {
             teams_root,
             codex_bin,
             clients: Mutex::new(HashMap::new()),
+            event_bus,
         }
     }
 
@@ -133,6 +140,21 @@ impl TeamCodexManager {
             .map_err(|e| AppError::internal(format!("codex initialized notify: {e}")))?;
 
         tracing::info!(team_id, "codex app-server initialized for team");
+
+        // M4 接入(发布端):codex notification → 事件总线(RedisEventBus)→ 接入层订阅 emit。
+        // 单机可用 `redis-cli SUBSCRIBE codex:events` 验证事件正在流转。
+        if let Some(bus) = self.event_bus.clone() {
+            let client_for_bus = client.clone();
+            tokio::spawn(async move {
+                let mut rx = client_for_bus.subscribe_notifications();
+                while let Ok(msg) = rx.recv().await {
+                    if let Ok(payload) = serde_json::to_string(&msg) {
+                        let _ = bus.publish("codex:events", &payload).await;
+                    }
+                }
+            });
+        }
+
         let mut map = self.clients.lock().await;
         map.insert(team_id.to_string(), client.clone());
         Ok(client)
