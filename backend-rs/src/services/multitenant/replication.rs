@@ -17,6 +17,7 @@ use crate::services::multitenant::rpc::WorkerRpcClient;
 use sea_orm::{ActiveModelTrait, ColumnTrait, DatabaseConnection, EntityTrait, QueryFilter, Set};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 /// 主租约有效期(主须在此周期内续约,否则副本可抢占)。需显著大于维护周期(15s)。
 pub const LEASE_TTL_MS: i64 = 120_000;
@@ -460,6 +461,132 @@ async fn read_range(path: &Path, start: u64, end: u64) -> Result<Vec<u8>, AppErr
     .map_err(|e| AppError::internal(format!("read_range: {e}")))
 }
 
+/// 复制单元类型别名(spec §2.1 / §2.2)。
+pub type ThreadRolloutMap = Arc<tokio::sync::Mutex<std::collections::HashMap<String, PathBuf>>>;
+pub type LocalOffsetMap = Arc<tokio::sync::Mutex<std::collections::HashMap<(String, String), u64>>>;
+
+/// 给定 thread_id,在 <codex_home>/sessions/ 下递归找其活跃 rollout 文件。
+/// 规则:文件名 stem 包含完整 thread_id 字符串,且 thread_id 前后必须是 `.`/`-`/文件边界
+/// (防 `8a3f` 误匹配 `8a3faaaa`);多命中取 mtime 最新;0 命中返回 None。
+pub async fn find_rollout_for_thread(codex_home: &Path, thread_id: &str) -> Option<PathBuf> {
+    let sessions = codex_home.join("sessions");
+    if !tokio::fs::metadata(&sessions).await.map(|m| m.is_dir()).unwrap_or(false) {
+        return None;
+    }
+    let mut best: Option<(PathBuf, std::time::SystemTime)> = None;
+    let mut stack = vec![sessions];
+    while let Some(dir) = stack.pop() {
+        let mut rd = match tokio::fs::read_dir(&dir).await {
+            Ok(r) => r,
+            Err(_) => continue,
+        };
+        while let Ok(Some(entry)) = rd.next_entry().await {
+            let p = entry.path();
+            let ft = match entry.file_type().await {
+                Ok(f) => f,
+                Err(_) => continue,
+            };
+            if ft.is_dir() {
+                stack.push(p);
+                continue;
+            }
+            let stem = match p.file_stem().and_then(|s| s.to_str()) {
+                Some(s) => s,
+                None => continue,
+            };
+            // 边界匹配:thread_id 在 stem 中,且前后必须是 `.`/`-` 或字符串边界。
+            let found = stem
+                .match_indices(thread_id)
+                .any(|(idx, _)| {
+                    let before_ok = idx == 0
+                        || stem.as_bytes().get(idx - 1).map(|b| *b == b'.' || *b == b'-').unwrap_or(false);
+                    let after_idx = idx + thread_id.len();
+                    let after_ok = after_idx >= stem.len()
+                        || stem.as_bytes().get(after_idx).map(|b| *b == b'.' || *b == b'-').unwrap_or(false);
+                    before_ok && after_ok
+                });
+            if !found {
+                continue;
+            }
+            let mt = tokio::fs::metadata(&p)
+                .await
+                .ok()
+                .and_then(|m| m.modified().ok())
+                .unwrap_or(std::time::SystemTime::UNIX_EPOCH);
+            match &best {
+                Some((_, best_mt)) if *best_mt >= mt => {}
+                _ => best = Some((p, mt)),
+            }
+        }
+    }
+    best.map(|(p, _)| p)
+}
+
+/// 安全拼接:rel 不能为空/绝对/含 .. / 反斜杠;
+/// canonicalize 后必须仍在 codex_home 内(防 symlink 逃逸)。
+pub async fn safe_join(codex_home: &Path, rel: &str) -> Result<PathBuf, AppError> {
+    if rel.is_empty()
+        || rel.starts_with('/')
+        || rel.starts_with('\\')
+        || rel.contains("..")
+        || rel.contains('\\')
+    {
+        return Err(AppError::internal(format!("invalid rel_path: {rel}")));
+    }
+    let candidate = codex_home.join(rel);
+    let canon_home = tokio::fs::canonicalize(codex_home)
+        .await
+        .map_err(|e| AppError::internal(format!("canonicalize codex_home: {e}")))?;
+    let canon_path = match tokio::fs::canonicalize(&candidate).await {
+        Ok(p) => p,
+        Err(_) => {
+            if let Some(parent) = candidate.parent() {
+                let canon_parent = tokio::fs::canonicalize(parent)
+                    .await
+                    .map_err(|e| AppError::internal(format!("canonicalize parent: {e}")))?;
+                if !canon_parent.starts_with(&canon_home) {
+                    return Err(AppError::internal(format!("path escapes codex_home: {rel}")));
+                }
+            }
+            candidate
+        }
+    };
+    if !canon_path.starts_with(&canon_home) {
+        return Err(AppError::internal(format!("path escapes codex_home: {rel}")));
+    }
+    Ok(canon_path)
+}
+
+/// 删除 Redis 中该 team 全部 thread 的 offset key(晋升成功后调,触发副本下次从 0 全量同步)。
+pub async fn delete_all_team_offsets(redis: &redis::Client, team_id: &str) {
+    let Ok(mut conn) = redis.get_multiplexed_async_connection().await else {
+        return;
+    };
+    let pattern = format!("repl:offset:{team_id}:*");
+    let mut cursor: u64 = 0;
+    loop {
+        let (next, keys): (u64, Vec<String>) = match redis::cmd("SCAN")
+            .arg(cursor)
+            .arg("MATCH")
+            .arg(&pattern)
+            .arg("COUNT")
+            .arg(100)
+            .query_async(&mut conn)
+            .await
+        {
+            Ok(v) => v,
+            Err(_) => return,
+        };
+        if !keys.is_empty() {
+            let _: Result<i64, _> = redis::cmd("DEL").arg(keys).query_async(&mut conn).await;
+        }
+        if next == 0 {
+            break;
+        }
+        cursor = next;
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -506,5 +633,61 @@ mod tests {
             bytes: b"x".to_vec(),
         };
         assert!(receive_rollout(&chunk, &home).await.is_err());
+    }
+
+    // ── HA 修复工具测试(spec §2.1.3 / §2.4.3)───────────────────────
+
+    #[tokio::test]
+    async fn find_rollout_for_thread_picks_correct_file() {
+        let tmp = std::env::temp_dir().join(format!("find-rt-{}", uuid::Uuid::new_v4()));
+        let sessions = tmp.join("sessions").join("2026").join("07").join("17");
+        tokio::fs::create_dir_all(&sessions).await.unwrap();
+
+        // 两个 thread 前 8 位相同(模拟 UUID 前缀冲突)。
+        let tid_a = "8a3f0000-0000-0000-0000-000000000001";
+        let tid_b = "8a3f0000-0000-0000-0000-000000000002";
+        let fa = sessions.join(format!("rollout-t1-{tid_a}.jsonl"));
+        let fb = sessions.join(format!("rollout-t2-{tid_b}.jsonl"));
+        tokio::fs::write(&fa, b"a").await.unwrap();
+        tokio::fs::write(&fb, b"b").await.unwrap();
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        tokio::fs::write(&fb, b"b-newer").await.unwrap();
+
+        let got = find_rollout_for_thread(&tmp, tid_b).await;
+        assert_eq!(got.as_deref(), Some(fb.as_path()));
+        let _ = tokio::fs::remove_dir_all(&tmp).await;
+    }
+
+    #[tokio::test]
+    async fn find_rollout_for_thread_no_match_returns_none() {
+        let tmp = std::env::temp_dir().join(format!("find-rt2-{}", uuid::Uuid::new_v4()));
+        let sessions = tmp.join("sessions");
+        tokio::fs::create_dir_all(&sessions).await.unwrap();
+        let got = find_rollout_for_thread(&tmp, "nonexistent-thread-id").await;
+        assert!(got.is_none());
+        let _ = tokio::fs::remove_dir_all(&tmp).await;
+    }
+
+    #[tokio::test]
+    async fn safe_join_rejects_symlink_escape() {
+        let base = std::env::temp_dir().join(format!("safejoin-{}", uuid::Uuid::new_v4()));
+        let outside = std::env::temp_dir().join(format!("outside-{}", uuid::Uuid::new_v4()));
+        tokio::fs::create_dir_all(&base).await.unwrap();
+        tokio::fs::create_dir_all(&outside).await.unwrap();
+
+        // 字符串层先拒:rel 含 ..
+        let bad = safe_join(&base, "../etc/passwd").await;
+        assert!(bad.is_err());
+
+        // unix 下 symlink 逃逸应被拒
+        #[cfg(unix)]
+        {
+            std::os::unix::fs::symlink(&outside, base.join("escape")).unwrap();
+            let r = safe_join(&base, "escape/file").await;
+            assert!(r.is_err(), "symlink escape must be rejected");
+        }
+
+        let _ = tokio::fs::remove_dir_all(&base).await;
+        let _ = tokio::fs::remove_dir_all(&outside).await;
     }
 }
