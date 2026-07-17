@@ -196,7 +196,26 @@ impl CodexProcessManager {
     async fn spawn_child(&self) -> Result<Arc<CodexJsonRpcClient>, RpcError> {
         tracing::info!("spawning {} app-server (stdio)", self.codex_bin);
 
+        // 注入 hooks 配置 + audit 表(per-user workspace 实施步骤 11)。
+        // 让 codex 在 tool/skill/plugin/mcp 调用前后回调 /hooks/codex。
+        if let Some(home) = &self.codex_home {
+            let port = std::env::var("CODEX_WEBUI_PORT")
+                .ok()
+                .and_then(|s| s.parse::<u16>().ok())
+                .unwrap_or(8172);
+            if let Err(e) = crate::services::workspace::hooks_config::write_hooks_config(
+                std::path::Path::new(home),
+                port,
+            )
+            .await
+            {
+                tracing::warn!(error = %e, "write_hooks_config failed (non-fatal)");
+            }
+        }
+
         let mut cmd = build_codex_command(&self.codex_bin);
+        // 注: codex 0.142.5 的 `app-server` 子命令不接受 --dangerously-bypass-hook-trust
+        // (那是 TUI 子命令的参数);hooks 通过 $CODEX_HOME/config.toml 自动启用,无需额外参数。
         cmd.args(["app-server", "--listen", "stdio://"]);
         cmd.stdin(Stdio::piped())
             .stdout(Stdio::piped())

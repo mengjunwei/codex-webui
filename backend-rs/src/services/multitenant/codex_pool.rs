@@ -319,13 +319,9 @@ impl TeamCodexManager {
         }
 
         let mut cmd = build_codex_command(&self.codex_bin);
-        // --dangerously-bypass-hook-trust:自动化场景不弹首次信任确认(per-user workspace 实施步骤 11)。
-        cmd.args([
-            "app-server",
-            "--listen",
-            "stdio://",
-            "--dangerously-bypass-hook-trust",
-        ]);
+        // 注: codex 0.142.5 的 `app-server` 子命令不接受 --dangerously-bypass-hook-trust
+        // (那是 TUI 子命令的参数);hooks 通过 $CODEX_HOME/config.toml 自动启用。
+        cmd.args(["app-server", "--listen", "stdio://"]);
         cmd.stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
