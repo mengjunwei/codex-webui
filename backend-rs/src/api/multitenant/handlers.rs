@@ -398,6 +398,18 @@ pub async fn mt_create_thread(
     if let Some(tid) = thread_id {
         double_write_thread_meta(db, tid, &body.team_id, &uid.0).await;
     }
+    // 主侧:把 thread 关联到其 rollout 文件,供 replicate_team_rollouts 精确读取。
+    if target == state.node_id {
+        if let Some(tid) = thread_id {
+            if let Some(p) = crate::services::multitenant::replication::find_rollout_for_thread(
+                &state.codex_home, tid,
+            )
+            .await
+            {
+                state.active_rollout.lock().await.insert(tid.to_string(), p);
+            }
+        }
+    }
     // 主侧:复制该 team 的 rollout 增量到副本(准实时 session 同步)。
     if target == state.node_id {
         let _ = crate::services::multitenant::replication::replicate_team_rollouts(
@@ -468,6 +480,16 @@ pub async fn mt_start_turn(
     };
     update_thread_activity(db, &thread_id).await;
     let _ = crate::services::multitenant::quota::incr_turn_usage(db, &team_id, None).await;
+    // 主侧:把 thread 关联到其 rollout 文件,供 replicate_team_rollouts 精确读取。
+    if target == state.node_id {
+        if let Some(p) = crate::services::multitenant::replication::find_rollout_for_thread(
+            &state.codex_home, &thread_id,
+        )
+        .await
+        {
+            state.active_rollout.lock().await.insert(thread_id.clone(), p);
+        }
+    }
     // 主侧:turn 完成后复制 rollout 增量到副本。
     if target == state.node_id {
         let _ = crate::services::multitenant::replication::replicate_team_rollouts(
