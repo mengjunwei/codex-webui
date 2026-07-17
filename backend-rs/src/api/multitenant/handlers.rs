@@ -22,7 +22,8 @@ use sea_orm::{DatabaseConnection, QueryOrder, Set};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-/// 从 X-Forwarded-For 取客户端 IP(取第一个;无则 "unknown")。
+/// 从 X-Forwarded-For 取客户端 IP(取第一段 = 原始客户端)。
+/// 安全注意:仅在可信反向代理覆写 XFF 时可信;裸暴露时该字段可被客户端伪造,需配 trusted proxies。
 fn client_ip(headers: &axum::http::HeaderMap) -> String {
     headers
         .get("x-forwarded-for")
@@ -124,12 +125,14 @@ pub async fn register(
     crate::error::Json(body): crate::error::Json<RegisterBody>,
 ) -> Result<Json<AuthResp>, AppError> {
     let db = require_db(&state);
-    // M6-A 注册限流(防滥用):按 IP 每分钟 10 次;Redis 未配置则跳过。
+    // M6-A 注册限流(防滥用):按 IP 每分钟 10 次;Redis 未配置跳过;Redis 故障 fail-open(不阻塞注册)。
     if let Some(client) = &state.mt_redis {
         let ip = client_ip(&headers);
         let limiter = crate::services::multitenant::rate_limit::RedisRateLimiter::new(client.clone());
-        if !limiter.allow(&format!("rl:register:{ip}"), 10, 60).await? {
-            return Err(AppError::status(429));
+        match limiter.allow(&format!("rl:register:{ip}"), 10, 60).await {
+            Ok(false) => return Err(AppError::status(429)),
+            Ok(true) => {}
+            Err(e) => tracing::warn!(error = %e, "register rate-limit check failed, fail-open"),
         }
     }
     metrics::counter!("mt_registrations_total").increment(1);
@@ -146,9 +149,21 @@ pub async fn register(
 
 pub async fn login(
     State(state): State<AppState>,
+    headers: axum::http::HeaderMap,
     crate::error::Json(body): crate::error::Json<LoginBody>,
 ) -> Result<Json<AuthResp>, AppError> {
     let db = require_db(&state);
+    // 登录限流(M6 防爆破):按 IP 每分钟 10 次;Redis 未配置跳过;Redis 故障 fail-open(不阻塞登录)。
+    if let Some(client) = &state.mt_redis {
+        let ip = client_ip(&headers);
+        let limiter = crate::services::multitenant::rate_limit::RedisRateLimiter::new(client.clone());
+        match limiter.allow(&format!("rl:login:{ip}"), 10, 60).await {
+            Ok(false) => return Err(AppError::status(429)),
+            Ok(true) => {}
+            Err(e) => tracing::warn!(error = %e, "login rate-limit check failed, fail-open"),
+        }
+    }
+    metrics::counter!("mt_logins_total").increment(1);
     let (user, tokens) =
         auth::login(db, state.auth.jwt_secret(), &body.email, &body.password).await?;
     Ok(Json(AuthResp {
@@ -286,6 +301,9 @@ pub async fn set_team_api_key(
     )
     .await?;
     audit::record(db, &team_id, &uid.0, "api_key_set", Some(&k.key_hint)).await;
+    // 轮换串联(M2):踢除该 team 持有旧 key 的 codex 进程;下次请求用新 key 重启
+    // (spawn 时重新解密 active key + 重写 auth.json)。
+    state.mt_team_codex.evict(&team_id).await;
     Ok(Json(k.into()))
 }
 
@@ -343,7 +361,7 @@ async fn require_thread_team(
     Ok(team_id)
 }
 
-/// 创建会话:成员校验 → 按 team 启动 codex → thread/start → PG 元数据双写。
+/// 创建会话:成员校验 → 主副本分配 → (本地直跑 / 转发主) → thread/start → PG 双写 + 主侧复制 rollout。
 pub async fn mt_create_thread(
     State(state): State<AppState>,
     Extension(uid): Extension<UserId>,
@@ -352,44 +370,45 @@ pub async fn mt_create_thread(
     let db = require_db(&state);
     teams::require_member(db, &body.team_id, &uid.0).await?;
     metrics::counter!("mt_threads_created_total").increment(1);
-    let client = state
-        .mt_team_codex
-        .client_for(&body.team_id, db, &state.mt_master_key)
-        .await?;
-    let resp = client
-        .request("thread/start", Some(Value::Object(body.rest)))
-        .await
-        .map_err(|e| AppError::internal(format!("codex thread/start: {e}")))?;
 
-    // PG threads 元数据双写(尽力提取 thread id;失败不阻塞)。
+    let target = resolve_worker(&state, &body.team_id).await?;
+    let resp = if target == state.node_id {
+        let lease = state
+            .mt_team_codex
+            .client_for(&body.team_id, db, &state.mt_master_key)
+            .await?;
+        lease
+            .client()
+            .request("thread/start", Some(Value::Object(body.rest)))
+            .await
+            .map_err(|e| AppError::internal(format!("codex thread/start: {e}")))?
+    } else {
+        let rpc_url = worker_rpc_url(&state, &target).await?;
+        state
+            .worker_rpc
+            .thread_start(&rpc_url, &body.team_id, &uid.0, Value::Object(body.rest))
+            .await?
+    };
+
+    // PG threads 元数据双写(共享库)。
     let thread_id = resp
         .get("id")
         .and_then(Value::as_str)
         .or_else(|| resp.get("threadId").and_then(Value::as_str));
     if let Some(tid) = thread_id {
-        let now = crate::services::multitenant::now_ms();
-        // 多方言一致:先 find_by_id,不存在则 insert(thread id 主键冲突直接跳过)。
-        match ThreadEntity::find_by_id(tid.to_string()).one(db).await {
-            Ok(Some(_)) => { /* 已存在,跳过双写 */ }
-            Ok(None) => {
-                let am = ThreadActiveModel {
-                    id: Set(tid.to_string()),
-                    team_id: Set(body.team_id.clone()),
-                    created_by_user_id: Set(uid.0.clone()),
-                    title: Set(None),
-                    status: Set("active".to_string()),
-                    created_at: Set(now),
-                    updated_at: Set(now),
-                    last_activity_at: Set(now),
-                };
-                if let Err(e) = am.insert(db).await {
-                    tracing::warn!(error = %e, "insert thread meta failed (non-fatal)");
-                }
-            }
-            Err(e) => {
-                tracing::warn!(error = %e, "query thread meta failed (non-fatal)");
-            }
-        }
+        double_write_thread_meta(db, tid, &body.team_id, &uid.0).await;
+    }
+    // 主侧:复制该 team 的 rollout 增量到副本(准实时 session 同步)。
+    if target == state.node_id {
+        let _ = crate::services::multitenant::replication::replicate_team_rollouts(
+            db,
+            &body.team_id,
+            &state.codex_home,
+            state.cluster.as_ref(),
+            state.mt_redis.as_ref(),
+            &state.worker_rpc,
+        )
+        .await;
     }
     Ok(Json(resp))
 }
@@ -411,7 +430,7 @@ pub async fn mt_list_threads(
     Ok(Json(list))
 }
 
-/// 对会话发起 turn:校验 thread 所属 team + 成员 → codex turn/start → 更新活跃时间。
+/// 对会话发起 turn:校验 thread 所属 team + 成员 → 配额 → 主副本选主节点 → (本地/转发) → 复制 rollout。
 pub async fn mt_start_turn(
     State(state): State<AppState>,
     Extension(uid): Extension<UserId>,
@@ -420,26 +439,44 @@ pub async fn mt_start_turn(
 ) -> Result<Json<Value>, AppError> {
     let db = require_db(&state);
     let team_id = require_thread_team(db, &thread_id, &uid.0).await?;
+    // 配额校验(M6):超额返回 429。
+    crate::services::multitenant::quota::check_turn_quota(db, &team_id).await?;
     metrics::counter!("mt_turns_total").increment(1);
-    let client = state
-        .mt_team_codex
-        .client_for(&team_id, db, &state.mt_master_key)
-        .await?;
+    let target = resolve_worker(&state, &team_id).await?;
     let mut params = body.0;
     if let Value::Object(ref mut map) = params {
         map.entry("threadId").or_insert(Value::String(thread_id.clone()));
     }
-    let resp = client
-        .request("turn/start", Some(params))
-        .await
-        .map_err(|e| AppError::internal(format!("codex turn/start: {e}")))?;
-    let now = crate::multitenant::now_ms();
-    // 仅更新 last_activity_at / updated_at;非阻塞(同旧实现 `_ =` 静默吞错)。
-    if let Ok(Some(model)) = ThreadEntity::find_by_id(thread_id.clone()).one(db).await {
-        let mut am: ThreadActiveModel = model.into();
-        am.last_activity_at = Set(now);
-        am.updated_at = Set(now);
-        let _ = am.update(db).await;
+    let resp = if target == state.node_id {
+        let lease = state
+            .mt_team_codex
+            .client_for(&team_id, db, &state.mt_master_key)
+            .await?;
+        lease
+            .client()
+            .request("turn/start", Some(params))
+            .await
+            .map_err(|e| AppError::internal(format!("codex turn/start: {e}")))?
+    } else {
+        let rpc_url = worker_rpc_url(&state, &target).await?;
+        state
+            .worker_rpc
+            .turn_start(&rpc_url, &thread_id, &team_id, params)
+            .await?
+    };
+    update_thread_activity(db, &thread_id).await;
+    let _ = crate::services::multitenant::quota::incr_turn_usage(db, &team_id, None).await;
+    // 主侧:turn 完成后复制 rollout 增量到副本。
+    if target == state.node_id {
+        let _ = crate::services::multitenant::replication::replicate_team_rollouts(
+            db,
+            &team_id,
+            &state.codex_home,
+            state.cluster.as_ref(),
+            state.mt_redis.as_ref(),
+            &state.worker_rpc,
+        )
+        .await;
     }
     Ok(Json(resp))
 }
@@ -453,4 +490,311 @@ pub async fn list_audit(
     let db = require_db(&state);
     teams::require_owner(db, &team_id, &uid.0).await?;
     Ok(Json(audit::list(db, &team_id, 200).await?))
+}
+
+// ── 多副本路由辅助 ──────────────────────────────────────────────────────
+
+/// 选目标节点:查/分配 session_replicas,返回该 team 的主节点。
+async fn resolve_worker(state: &AppState, team_id: &str) -> Result<String, AppError> {
+    let row = crate::services::multitenant::replication::get_or_assign(
+        &state.db,
+        team_id,
+        state.cluster.as_ref(),
+    )
+    .await?;
+    Ok(row.primary_node)
+}
+
+/// 解析节点内网 RPC 地址(转发到主节点时用)。
+async fn worker_rpc_url(state: &AppState, node_id: &str) -> Result<String, AppError> {
+    state
+        .cluster
+        .node_rpc_addr(node_id)
+        .await
+        .ok_or_else(|| AppError::internal(format!("no rpc addr for node {node_id}")))
+}
+
+/// threads 元数据双写:不存在则 insert(主键冲突等价跳过)。非阻塞。
+async fn double_write_thread_meta(db: &DatabaseConnection, tid: &str, team_id: &str, created_by: &str) {
+    match ThreadEntity::find_by_id(tid.to_string()).one(db).await {
+        Ok(Some(_)) => { /* 已存在,跳过 */ }
+        Ok(None) => {
+            let now = crate::services::multitenant::now_ms();
+            let am = ThreadActiveModel {
+                id: Set(tid.to_string()),
+                team_id: Set(team_id.to_string()),
+                created_by_user_id: Set(created_by.to_string()),
+                title: Set(None),
+                status: Set("active".to_string()),
+                created_at: Set(now),
+                updated_at: Set(now),
+                last_activity_at: Set(now),
+            };
+            if let Err(e) = am.insert(db).await {
+                tracing::warn!(error = %e, "insert thread meta failed (non-fatal)");
+            }
+        }
+        Err(e) => tracing::warn!(error = %e, "query thread meta failed (non-fatal)"),
+    }
+}
+
+/// 更新会话活跃时间(last_activity_at / updated_at)。非阻塞。
+async fn update_thread_activity(db: &DatabaseConnection, thread_id: &str) {
+    let now = crate::services::multitenant::now_ms();
+    if let Ok(Some(model)) = ThreadEntity::find_by_id(thread_id.to_string()).one(db).await {
+        let mut am: ThreadActiveModel = model.into();
+        am.last_activity_at = Set(now);
+        am.updated_at = Set(now);
+        let _ = am.update(db).await;
+    }
+}
+
+// ── 审批(M4 双保险):列出未处理 + resolve 回传 codex ──────────────────────
+
+/// 列出会话的未处理审批(team 隔离;前端重连拉取,双保险)。
+pub async fn mt_list_approvals(
+    State(state): State<AppState>,
+    Extension(uid): Extension<UserId>,
+    Path((thread_id,)): Path<(String,)>,
+) -> Result<Json<Vec<crate::db::entity::pending_server_request::Model>>, AppError> {
+    let db = require_db(&state);
+    let team_id = require_thread_team(db, &thread_id, &uid.0).await?;
+    use crate::db::entity::pending_server_request::{Column as PSRColumn, Entity as PSREntity};
+    let list = PSREntity::find()
+        .filter(PSRColumn::TeamId.eq(team_id))
+        .filter(PSRColumn::ThreadId.eq(thread_id))
+        .filter(PSRColumn::Status.eq("pending"))
+        .all(db)
+        .await
+        .map_err(|e| AppError::internal(format!("list approvals: {e}")))?;
+    Ok(Json(list))
+}
+
+#[derive(Deserialize)]
+pub struct ResolveApprovalBody {
+    #[serde(rename = "requestId")]
+    pub request_id: String,
+    pub approved: bool,
+    pub result: Option<Value>,
+}
+
+/// 解析审批:经路由回传到持有会话的 worker 的 codex 进程,并更新 pending 状态。
+pub async fn mt_resolve_approval(
+    State(state): State<AppState>,
+    Extension(uid): Extension<UserId>,
+    Path((thread_id,)): Path<(String,)>,
+    crate::error::Json(body): crate::error::Json<ResolveApprovalBody>,
+) -> Result<StatusCode, AppError> {
+    let db = require_db(&state);
+    let team_id = require_thread_team(db, &thread_id, &uid.0).await?;
+    let target = resolve_worker(&state, &team_id).await?;
+    let id_val = parse_request_id(&body.request_id);
+    let ok = if target == state.node_id {
+        let lease = state
+            .mt_team_codex
+            .client_for(&team_id, db, &state.mt_master_key)
+            .await?;
+        if body.approved {
+            lease
+                .client()
+                .respond_to_server_request(
+                    id_val,
+                    body.result.unwrap_or(Value::Object(Default::default())),
+                )
+                .is_ok()
+        } else {
+            lease
+                .client()
+                .respond_to_server_request_with_error(id_val, -32000, "denied by user")
+                .is_ok()
+        }
+    } else {
+        let rpc_url = worker_rpc_url(&state, &target).await?;
+        state
+            .worker_rpc
+            .approval_respond(
+                &rpc_url,
+                &team_id,
+                &body.request_id,
+                body.approved,
+                body.result.clone(),
+            )
+            .await
+            .is_ok()
+    };
+    if ok {
+        // 仅在成功回传 codex 后标记已处理;失败则保留 pending 供前端重试(避免审批死锁)。
+        let _ = mark_approval_resolved(db, &team_id, &body.request_id, &uid.0, body.approved).await;
+        Ok(StatusCode::NO_CONTENT)
+    } else {
+        Err(AppError::internal("failed to respond to codex".into()))
+    }
+}
+
+/// 字符串 request_id → codex id Value(数字优先,否则原样字符串)。
+fn parse_request_id(s: &str) -> Value {
+    if let Ok(n) = s.parse::<i64>() {
+        Value::Number(serde_json::Number::from(n))
+    } else {
+        Value::String(s.to_string())
+    }
+}
+
+/// 标记审批已处理(尽力,非阻塞)。
+async fn mark_approval_resolved(
+    db: &DatabaseConnection,
+    team_id: &str,
+    request_id: &str,
+    user_id: &str,
+    approved: bool,
+) -> Result<(), AppError> {
+    use crate::db::entity::pending_server_request::{ActiveModel as PSRActive, Entity as PSREntity};
+    let gen_ = crate::services::multitenant::event_persist::team_generation(team_id);
+    let row = PSREntity::find_by_id((gen_, request_id.to_string()))
+        .one(db)
+        .await
+        .map_err(|e| AppError::internal(format!("query approval: {e}")))?;
+    if let Some(model) = row {
+        let mut am: PSRActive = model.into();
+        let now = crate::services::multitenant::now_ms();
+        am.status = Set(if approved { "approved" } else { "rejected" }.to_string());
+        am.resolved_by = Set(Some(user_id.to_string()));
+        am.resolved_at = Set(Some(now));
+        am.updated_at = Set(now);
+        let _ = am.update(db).await;
+    }
+    Ok(())
+}
+
+// ── mt 会话操作补全(M4)──────────────────────────────────────────────────
+
+/// 读取会话 token 用量(thread 维度;team 经 require_thread_team 校验)。
+pub async fn mt_token_usage(
+    State(state): State<AppState>,
+    Extension(uid): Extension<UserId>,
+    Path((thread_id,)): Path<(String,)>,
+) -> Result<Json<Vec<crate::db::entity::token_usage_snapshot::Model>>, AppError> {
+    let db = require_db(&state);
+    require_thread_team(db, &thread_id, &uid.0).await?;
+    use crate::db::entity::token_usage_snapshot::{Column as TUCol, Entity as TUEntity};
+    let list = TUEntity::find()
+        .filter(TUCol::ThreadId.eq(thread_id))
+        .all(db)
+        .await
+        .map_err(|e| AppError::internal(format!("list token usage: {e}")))?;
+    Ok(Json(list))
+}
+
+/// 读取会话 turn diff(thread 维度)。
+pub async fn mt_turn_diffs(
+    State(state): State<AppState>,
+    Extension(uid): Extension<UserId>,
+    Path((thread_id,)): Path<(String,)>,
+) -> Result<Json<Vec<crate::db::entity::turn_diff::Model>>, AppError> {
+    let db = require_db(&state);
+    require_thread_team(db, &thread_id, &uid.0).await?;
+    use crate::db::entity::turn_diff::{Column as TDCol, Entity as TDEntity};
+    let list = TDEntity::find()
+        .filter(TDCol::ThreadId.eq(thread_id))
+        .all(db)
+        .await
+        .map_err(|e| AppError::internal(format!("list turn diffs: {e}")))?;
+    Ok(Json(list))
+}
+
+/// 读取会话 turn 错误(thread 维度)。
+pub async fn mt_turn_errors(
+    State(state): State<AppState>,
+    Extension(uid): Extension<UserId>,
+    Path((thread_id,)): Path<(String,)>,
+) -> Result<Json<Vec<crate::db::entity::turn_error::Model>>, AppError> {
+    let db = require_db(&state);
+    require_thread_team(db, &thread_id, &uid.0).await?;
+    use crate::db::entity::turn_error::{Column as TECol, Entity as TEEntity};
+    let list = TEEntity::find()
+        .filter(TECol::ThreadId.eq(thread_id))
+        .all(db)
+        .await
+        .map_err(|e| AppError::internal(format!("list turn errors: {e}")))?;
+    Ok(Json(list))
+}
+
+/// 归档会话(更新 threads.status)。
+pub async fn mt_archive_thread(
+    State(state): State<AppState>,
+    Extension(uid): Extension<UserId>,
+    Path((thread_id,)): Path<(String,)>,
+) -> Result<StatusCode, AppError> {
+    let db = require_db(&state);
+    require_thread_team(db, &thread_id, &uid.0).await?;
+    if let Ok(Some(model)) = ThreadEntity::find_by_id(thread_id).one(db).await {
+        let mut am: ThreadActiveModel = model.into();
+        am.status = Set("archived".to_string());
+        am.updated_at = Set(crate::services::multitenant::now_ms());
+        let _ = am.update(db).await;
+    }
+    Ok(StatusCode::NO_CONTENT)
+}
+
+#[derive(Deserialize)]
+pub struct RenameThreadBody {
+    pub name: String,
+}
+
+/// 重命名会话(更新 threads.title)。
+pub async fn mt_rename_thread(
+    State(state): State<AppState>,
+    Extension(uid): Extension<UserId>,
+    Path((thread_id,)): Path<(String,)>,
+    crate::error::Json(body): crate::error::Json<RenameThreadBody>,
+) -> Result<StatusCode, AppError> {
+    let db = require_db(&state);
+    require_thread_team(db, &thread_id, &uid.0).await?;
+    if let Ok(Some(model)) = ThreadEntity::find_by_id(thread_id).one(db).await {
+        let mut am: ThreadActiveModel = model.into();
+        am.title = Set(Some(body.name));
+        am.updated_at = Set(crate::services::multitenant::now_ms());
+        let _ = am.update(db).await;
+    }
+    Ok(StatusCode::NO_CONTENT)
+}
+
+#[derive(Deserialize)]
+pub struct InvokeThreadBody {
+    pub method: String,
+    pub params: Option<Value>,
+}
+
+/// 通用 codex 会话方法转发(fork / rollback / resume 等经路由到目标 worker)。
+pub async fn mt_invoke_thread(
+    State(state): State<AppState>,
+    Extension(uid): Extension<UserId>,
+    Path((thread_id,)): Path<(String,)>,
+    crate::error::Json(body): crate::error::Json<InvokeThreadBody>,
+) -> Result<Json<Value>, AppError> {
+    let db = require_db(&state);
+    let team_id = require_thread_team(db, &thread_id, &uid.0).await?;
+    let target = resolve_worker(&state, &team_id).await?;
+    let mut params = body.params.unwrap_or(Value::Object(Default::default()));
+    if let Value::Object(ref mut m) = params {
+        m.entry("threadId").or_insert(Value::String(thread_id.clone()));
+    }
+    let resp = if target == state.node_id {
+        let lease = state
+            .mt_team_codex
+            .client_for(&team_id, db, &state.mt_master_key)
+            .await?;
+        lease
+            .client()
+            .request(&body.method, Some(params))
+            .await
+            .map_err(|e| AppError::internal(format!("codex {}: {e}", body.method)))?
+    } else {
+        let rpc_url = worker_rpc_url(&state, &target).await?;
+        state
+            .worker_rpc
+            .thread_invoke(&rpc_url, &team_id, &thread_id, &body.method, params)
+            .await?
+    };
+    Ok(Json(resp))
 }

@@ -62,7 +62,7 @@ impl ThreadResumeRegistry {
             .lock()
             .unwrap()
             .get(thread_id)
-            .filter(|(gen, _)| *gen == g)
+            .filter(|(gen_, _)| *gen_ == g)
             .map(|(_, v)| v.clone())
     }
 

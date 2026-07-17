@@ -9,6 +9,7 @@
 
 use crate::error::AppError;
 use async_trait::async_trait;
+use sea_orm::EntityTrait;
 use std::collections::hash_map::DefaultHasher;
 use std::collections::HashSet;
 use std::hash::{Hash, Hasher};
@@ -158,17 +159,62 @@ impl WorkerRegistry {
         }
         Ok(alive)
     }
+
+    /// 心跳(带本 worker 对外 RPC 地址):除写入时间戳心跳键外,额外登记
+    /// `worker:rpc:{id}` = rpc_url(同 TTL,续期),供 ingress 解析 worker 的内网 RPC 地址。
+    pub async fn heartbeat_with_rpc(
+        &self,
+        ttl_secs: u64,
+        rpc_url: &str,
+    ) -> Result<(), AppError> {
+        self.heartbeat(ttl_secs).await?;
+        let mut conn = self
+            .client
+            .get_multiplexed_async_connection()
+            .await
+            .map_err(|e| AppError::internal(format!("redis connect: {e}")))?;
+        let _: () = redis::cmd("SET")
+            .arg(format!("worker:rpc:{}", self.worker_id))
+            .arg(rpc_url)
+            .arg("EX")
+            .arg(ttl_secs)
+            .query_async(&mut conn)
+            .await
+            .map_err(|e| AppError::internal(format!("redis set rpc: {e}")))?;
+        Ok(())
+    }
+
+    /// 解析某 worker 的内网 RPC 地址(TTL 内有效);无则 None。
+    pub async fn worker_rpc_url(&self, worker_id: &str) -> Result<Option<String>, AppError> {
+        let mut conn = self
+            .client
+            .get_multiplexed_async_connection()
+            .await
+            .map_err(|e| AppError::internal(format!("redis connect: {e}")))?;
+        let v: Option<String> = redis::cmd("GET")
+            .arg(format!("worker:rpc:{worker_id}"))
+            .query_async(&mut conn)
+            .await
+            .map_err(|e| AppError::internal(format!("redis get rpc: {e}")))?;
+        Ok(v.filter(|s| !s.is_empty()))
+    }
 }
 
-/// Redis 路由器(多机):读活着的 worker 列表 + 一致性哈希 `route(team_id)`。
+/// Redis 路由器(多机):team_routes 覆盖表优先(防节点抖动回切)+ 一致性哈希;
+/// failover(覆盖的 worker 下线)时落新 worker 并记 mapped_reason。
 pub struct RedisRouter {
     registry: WorkerRegistry,
     vnodes: usize,
+    db: sea_orm::DatabaseConnection,
 }
 
 impl RedisRouter {
-    pub fn new(registry: WorkerRegistry, vnodes: usize) -> Self {
-        Self { registry, vnodes }
+    pub fn new(
+        registry: WorkerRegistry,
+        vnodes: usize,
+        db: sea_orm::DatabaseConnection,
+    ) -> Self {
+        Self { registry, vnodes, db }
     }
 }
 
@@ -179,18 +225,69 @@ impl Router for RedisRouter {
         if workers.is_empty() {
             return Err(AppError::internal("no workers available".into()));
         }
+        // 1. team_routes 覆盖(防节点抖动回切)。
+        let stored = crate::db::entities::team_route::Entity::find_by_id(team_id.to_string())
+            .one(&self.db)
+            .await
+            .map_err(|e| AppError::internal(format!("query team_route: {e}")))?;
+        if let Some(m) = &stored {
+            if workers.contains(&m.worker_id) {
+                return Ok(m.worker_id.clone()); // 覆盖的 worker 仍活 → 复用。
+            }
+        }
+        // 2. 一致性哈希选 worker(stored 失效 = failover)。
         let mut ring = ConsistentHash::new(self.vnodes);
         for w in &workers {
             ring.add(w);
         }
-        ring.get(team_id)
+        let target = ring
+            .get(team_id)
             .map(|s| s.to_string())
-            .ok_or_else(|| AppError::internal("consistent hash ring empty".into()))
+            .ok_or_else(|| AppError::internal("consistent hash ring empty".into()))?;
+        // 3. 记录决策(initial / failover)。
+        let reason = if stored.is_some() { "failover" } else { "initial" };
+        let _ = upsert_team_route(&self.db, team_id, &target, reason).await;
+        if stored.is_some() {
+            metrics::counter!("mt_failover_total").increment(1);
+        }
+        Ok(target)
     }
 
     async fn workers(&self) -> Vec<String> {
         self.registry.list_workers().await.unwrap_or_default()
     }
+}
+
+/// upsert team_routes(team_id → worker_id + reason)。跨方言:find_by_id 后 update / insert。
+async fn upsert_team_route(
+    db: &sea_orm::DatabaseConnection,
+    team_id: &str,
+    worker_id: &str,
+    reason: &str,
+) -> Result<(), AppError> {
+    use crate::db::entities::team_route::{ActiveModel, Entity};
+    use sea_orm::{ActiveModelTrait, Set};
+    let now = crate::services::multitenant::now_ms();
+    let existing = Entity::find_by_id(team_id.to_string())
+        .one(db)
+        .await
+        .map_err(|e| AppError::internal(format!("query team_route: {e}")))?;
+    if let Some(model) = existing {
+        let mut am: ActiveModel = model.into();
+        am.worker_id = Set(worker_id.to_string());
+        am.mapped_at = Set(now);
+        am.mapped_reason = Set(reason.to_string());
+        let _ = am.update(db).await;
+    } else {
+        let am = ActiveModel {
+            team_id: Set(team_id.to_string()),
+            worker_id: Set(worker_id.to_string()),
+            mapped_at: Set(now),
+            mapped_reason: Set(reason.to_string()),
+        };
+        let _ = am.insert(db).await;
+    }
+    Ok(())
 }
 
 #[cfg(test)]

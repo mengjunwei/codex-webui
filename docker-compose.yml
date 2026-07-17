@@ -1,23 +1,78 @@
+# 多副本 HA Codex 平台 —— 开发/单机部署(docker-compose)。
+#
+# 架构:全局 CODEX_HOME + per-team codex 进程 + session 级 rollout 增量复制到副本 +
+# 探活 + 副本晋升。所有节点同配置(无 ingress/worker 角色之分)。
+#
+# 多机扩展:复制 codex-webui 服务为多副本,各设 WORKER_ID + WORKER_RPC_URL(对内可达),
+# 共享同一 PG/Redis。LB 轮询打到任一节点;非主节点内部转发到该 team 的主节点。
+#
+# 依赖:PostgreSQL(元数据)+ Redis(事件总线/限流/复制 offset/集群心跳)。
+
 services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: codex
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-codex}
+      POSTGRES_DB: codex
+    volumes:
+      - pg_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U codex"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    restart: unless-stopped
+
+  redis:
+    image: redis:7-alpine
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    restart: unless-stopped
+
   codex-webui:
-    image: ghcr.io/limlll/codex-webui:latest
-    # To build locally instead of pulling from GHCR:
-    # build:
-    #   context: .
-    #   args:
-    #     CODEX_CLI_VERSION: "0.123.0"
+    build:
+      context: .
+      args:
+        CODEX_CLI_VERSION: "0.123.0"
+    # image: ghcr.io/limlll/codex-webui:latest
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
     ports:
       - "${PORT:-8172}:8172"
     environment:
       NODE_ENV: production
       PORT: 8172
+      HOST: 0.0.0.0
+      # ── 必填 ──
       WEBUI_API_KEY: ${WEBUI_API_KEY:?Set WEBUI_API_KEY in .env}
-      WORKSPACE_ROOTS: /workspaces
+      DATABASE_URL: postgres://codex:${POSTGRES_PASSWORD:-codex}@postgres:5432/codex
+      REDIS_URL: redis://redis:6379
+      # ── 全局 CODEX_HOME(所有 team 共用)──
+      CODEX_HOME: /root/.codex-webui/home
+      # ── 多副本 HA ──
+      WORKER_ID: ${WORKER_ID:-}
+      WORKER_RPC_URL: ${WORKER_RPC_URL:-http://codex-webui:8173}
+      WORKER_RPC_TOKEN: ${WORKER_RPC_TOKEN:-}
+      INTERNAL_RPC_PORT: ${INTERNAL_RPC_PORT:-8173}
+      # ── 加密主密钥 ──
+      MASTER_KEY: ${MASTER_KEY:-}
+      # ── 旧单用户兼容 ──
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      WORKSPACE_ROOTS: /workspaces
     volumes:
       - root_home:/root
       - workspaces:/workspaces
-    # Codex sandbox (bubblewrap) needs user namespaces + mount capabilities
+    # Codex sandbox(bubblewrap)需要 user namespace + mount 能力
     cap_add:
       - SYS_ADMIN
     security_opt:
@@ -26,5 +81,7 @@ services:
     restart: unless-stopped
 
 volumes:
+  pg_data:
+  redis_data:
   root_home:
   workspaces:

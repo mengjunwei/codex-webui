@@ -3,13 +3,16 @@
 use crate::auth::AuthService;
 use crate::codex::CodexProcessManager;
 use crate::services::codex_status::CodexStatusService;
+use crate::services::multitenant::cluster::ClusterMembership;
 use crate::services::multitenant::codex_pool::TeamCodexManager;
+use crate::services::multitenant::rpc::WorkerRpcClient;
 use metrics_exporter_prometheus::PrometheusHandle;
 use crate::services::settings::ValueSource;
 use crate::services::terminal::TerminalService;
 use crate::services::threads::ThreadResumeRegistry;
 use sea_orm::DatabaseConnection;
 use std::collections::{HashMap, HashSet};
+use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
 /// settings 内存缓存条目：(value, source, updated_at)。
@@ -21,9 +24,9 @@ pub struct AppState {
     pub db: DatabaseConnection,
     /// 主密钥(加密 team API key)。来自 MASTER_KEY 或回退 webui_api_key。
     pub mt_master_key: String,
-    /// 按 team 启动 codex 进程的管理器(M3)。
+    /// 按 team 启动 codex 进程的管理器(per-team 进程,共享全局 CODEX_HOME)。
     pub mt_team_codex: Arc<TeamCodexManager>,
-    /// Redis 客户端(M4 分布式协调;None = 未配置,跨节点功能禁用)。
+    /// Redis 客户端(事件总线/限流/复制 offset;None = 未配置)。
     pub mt_redis: Option<redis::Client>,
     /// Prometheus 指标 handle(供 /metrics 暴露;None = 未启用指标)。
     pub metrics_handle: Option<PrometheusHandle>,
@@ -38,6 +41,17 @@ pub struct AppState {
     pub dynamic_files_roots: Arc<Mutex<HashSet<String>>>,
     /// settings 内存缓存（对齐 TS SettingsService.cache）。
     pub settings_cache: SettingsCache,
+    // ── 多副本 HA(全局 CODEX_HOME + session 复制)─────────────────────────
+    /// 全局 CODEX_HOME(所有 team 共用)。
+    pub codex_home: PathBuf,
+    /// 本节点 id。
+    pub node_id: String,
+    /// 集群成员 + 探活(选主副本/反亲和/晋升判定/解析节点 RPC 地址)。
+    pub cluster: Arc<dyn ClusterMembership>,
+    /// 节点间内网 RPC 客户端(非主节点转发到该 team 主节点)。
+    pub worker_rpc: Arc<WorkerRpcClient>,
+    /// 内网 RPC 鉴权 token(WORKER_RPC_TOKEN;None=不校验)。
+    pub internal_token: Option<String>,
 }
 
 impl AppState {

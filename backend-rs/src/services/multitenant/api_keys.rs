@@ -178,11 +178,13 @@ pub async fn list_team_api_keys(
         .map_err(|e| AppError::internal(format!("list api keys: {e}")))
 }
 
-/// 取 team 当前 active key 并解密明文(供 M3 注入 codex 用)。
+/// 取 team 当前 active key 并解密明文(供注入 codex 用)。
+/// 密钥轮转(M6):解密优先用当前 master,失败回退 `master_previous`(旧 master 加密的 key)。
 pub async fn get_active_plain_key(
     db: &DatabaseConnection,
     team_id: &str,
     master: &str,
+    master_previous: Option<&str>,
 ) -> Result<Option<String>, AppError> {
     let row = team_api_key::Entity::find()
         .filter(team_api_key::Column::TeamId.eq(team_id.to_string()))
@@ -192,7 +194,16 @@ pub async fn get_active_plain_key(
         .await
         .map_err(|e| AppError::internal(format!("query active key: {e}")))?;
     match row {
-        Some(r) => Ok(Some(decrypt_key(&r.encrypted_key, master)?)),
+        Some(r) => {
+            let enc = r.encrypted_key.as_str();
+            let plain = decrypt_key(enc, master)
+                .ok()
+                .or_else(|| master_previous.and_then(|p| decrypt_key(enc, p).ok()))
+                .ok_or_else(|| {
+                    AppError::internal("decrypt api key failed (master key rotation?)".into())
+                })?;
+            Ok(Some(plain))
+        }
         None => Ok(None),
     }
 }

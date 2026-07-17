@@ -322,7 +322,7 @@ async fn read_as_resume(state: &AppState, thread_id: &str, cached: Value) -> Val
     match fresh_opt {
         Some(fresh) => {
             let mut merged = cached;
-            if let (Some(fresh_thread), Value::Object(ref mut m)) =
+            if let (Some(fresh_thread), Value::Object(m)) =
                 (fresh.get("thread").cloned(), &mut merged)
             {
                 m.insert("thread".into(), fresh_thread);

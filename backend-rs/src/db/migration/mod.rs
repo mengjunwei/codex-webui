@@ -11,6 +11,10 @@ mod m20260716_0001_initial;
 mod m20260716_0002_api_keys;
 mod m20260716_0003_audit;
 mod m20260716_0004_business;
+mod m20260716_0005_business_team_id;
+mod m20260716_0006_quota;
+mod m20260716_0007_team_routes;
+mod m20260716_0008_session_replicas;
 
 pub struct Migrator;
 
@@ -21,6 +25,10 @@ impl MigratorTrait for Migrator {
             Box::new(m20260716_0002_api_keys::Migration),
             Box::new(m20260716_0003_audit::Migration),
             Box::new(m20260716_0004_business::Migration),
+            Box::new(m20260716_0005_business_team_id::Migration),
+            Box::new(m20260716_0006_quota::Migration),
+            Box::new(m20260716_0007_team_routes::Migration),
+            Box::new(m20260716_0008_session_replicas::Migration),
         ]
     }
 }

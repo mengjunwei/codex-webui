@@ -5,7 +5,7 @@
 
 给 [OpenAI Codex CLI](https://github.com/openai/codex) 做的 Web 前端。把命令行交互搬到浏览器里，支持多线程并发、文件管理、终端、插件市场等。
 
-后端用 NestJS 通过 stdio JSON-RPC 和 `codex app-server` 通信，前端 React + Vite，中间用 Socket.IO 实时推送。
+**后端已用 Rust(axum + SeaORM)重写**,并支持**多租户 SaaS**(team 隔离、BYOK、多机横向扩展):通过 stdio JSON-RPC 与 `codex app-server` 通信,前端 React + Vite,Socket.IO 实时推送;多租户元数据落 PostgreSQL,分布式协调(路由/粘性/事件总线/限流)用 Redis。设计详见 [`docs/superpowers/specs/2026-07-16-multitenant-platform-design.md`](./docs/superpowers/specs/2026-07-16-multitenant-platform-design.md),快速上手见 [`docs/superpowers/specs/multitenant-quickstart.md`](./docs/superpowers/specs/multitenant-quickstart.md)。
 
 [English](./README.en.md)
 

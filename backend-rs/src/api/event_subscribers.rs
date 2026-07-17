@@ -134,6 +134,7 @@ async fn upsert_token_usage(
         let am = TokenUsageActive {
             thread_id: Set(thread_id.to_string()),
             turn_id: Set(turn_id.to_string()),
+            team_id: Set(None),
             total_tokens: Set(read_i64(total, "totalTokens")),
             input_tokens: Set(read_i64(total, "inputTokens")),
             cached_input_tokens: Set(read_i64(total, "cachedInputTokens")),
@@ -246,6 +247,7 @@ async fn persist_turn_diff(
         let am = TurnDiffActive {
             thread_id: Set(thread_id.to_string()),
             turn_id: Set(turn_id.to_string()),
+            team_id: Set(None),
             diff: Set(diff.to_string()),
             updated_at: Set(now),
         };
@@ -337,6 +339,7 @@ async fn upsert_turn_error(
         let am = TurnErrorActive {
             thread_id: Set(thread_id.to_string()),
             turn_id: Set(turn_id.to_string()),
+            team_id: Set(None),
             message: Set(message.to_string()),
             created_at: Set(now),
         };
@@ -407,6 +410,7 @@ pub async fn record_server_request(
             generation: Set(generation),
             request_id: Set(request_id),
             thread_id: Set(thread_id.to_string()),
+            team_id: Set(None),
             turn_id: Set(turn_id.map(|s| s.to_string())),
             item_id: Set(item_id.map(|s| s.to_string())),
             method: Set(method.to_string()),

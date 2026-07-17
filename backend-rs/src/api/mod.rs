@@ -342,6 +342,19 @@ pub async fn build_router(state: AppState) -> Router {
         .route("/teams/{teamId}/audit", get(mt::list_audit))
         .route("/threads", post(mt::mt_create_thread).get(mt::mt_list_threads))
         .route("/threads/{threadId}/turns", post(mt::mt_start_turn))
+        .route("/threads/{threadId}/invoke", post(mt::mt_invoke_thread))
+        .route("/threads/{threadId}/token-usage", get(mt::mt_token_usage))
+        .route("/threads/{threadId}/turn-diffs", get(mt::mt_turn_diffs))
+        .route("/threads/{threadId}/turn-errors", get(mt::mt_turn_errors))
+        .route("/threads/{threadId}/archive", post(mt::mt_archive_thread))
+        .route(
+            "/threads/{threadId}/name",
+            axum::routing::patch(mt::mt_rename_thread),
+        )
+        .route(
+            "/threads/{threadId}/approvals",
+            get(mt::mt_list_approvals).post(mt::mt_resolve_approval),
+        )
         .route(
             "/teams/{teamId}/members/{userId}",
             axum::routing::delete(mt::remove_member),

@@ -3,9 +3,15 @@
 pub mod api_keys;
 pub mod audit;
 pub mod auth;
+pub mod cluster;
 pub mod codex_pool;
 pub mod event_bus;
+pub mod event_persist;
+pub mod pool_policy;
+pub mod quota;
 pub mod rate_limit;
+pub mod replication;
+pub mod rpc;
 pub mod teams;
 
 /// 当前 UTC 毫秒时间戳。

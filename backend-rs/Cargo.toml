@@ -1,7 +1,11 @@
 [package]
 name = "codex-webui"
 version = "0.1.0"
-edition = "2021"
+edition = "2024"
+
+[features]
+# 启用 memberlist gossip 探活实现(默认用 RedisCluster 心跳,本环境可编译)。
+memberlist-backend = []
 
 [dependencies]
 axum = { version = "0.8", features = ["multipart"] }
@@ -62,7 +66,7 @@ bzip2-rs = "0.1"
 lzma-rust2 = "0.16"
 rust-embed = "8"
 mime_guess = "2"
-
+memberlist = "0.8.5"
 [dev-dependencies]
 tower = { version = "0.5", features = ["util"] }
 http-body-util = "0.1"

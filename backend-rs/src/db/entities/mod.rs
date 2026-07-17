@@ -180,3 +180,68 @@ pub mod audit_log {
     pub enum Relation {}
     impl ActiveModelBehavior for ActiveModel {}
 }
+
+/// 计费/配额(M6 预留):per-team 配额上限 + 滑动用量。0 = 不限。
+pub mod team_quota {
+    use sea_orm::entity::prelude::*;
+    #[derive(Clone, Debug, PartialEq, DeriveEntityModel, serde::Serialize)]
+    #[sea_orm(table_name = "team_quotas")]
+    pub struct Model {
+        #[sea_orm(primary_key, column_type = "String(StringLen::N(36))")]
+        pub team_id: String,
+        #[sea_orm(column_type = "String(StringLen::N(32))")]
+        pub plan: String,
+        pub turn_quota_hourly: i64,
+        pub token_quota_monthly: i64,
+        pub used_turns_hour: i64,
+        pub hour_bucket: i64,
+        pub used_tokens_month: i64,
+        #[sea_orm(column_type = "String(StringLen::N(7))")]
+        pub month_bucket: String,
+        pub updated_at: i64,
+    }
+    #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]
+    pub enum Relation {}
+    impl ActiveModelBehavior for ActiveModel {}
+}
+
+/// team→worker 路由覆盖(M4 failover 决策记录,防节点抖动回切)。
+pub mod team_route {
+    use sea_orm::entity::prelude::*;
+    #[derive(Clone, Debug, PartialEq, DeriveEntityModel, serde::Serialize)]
+    #[sea_orm(table_name = "team_routes")]
+    pub struct Model {
+        #[sea_orm(primary_key, column_type = "String(StringLen::N(36))")]
+        pub team_id: String,
+        #[sea_orm(column_type = "String(StringLen::N(64))")]
+        pub worker_id: String,
+        pub mapped_at: i64,
+        #[sea_orm(column_type = "String(StringLen::N(16))")]
+        pub mapped_reason: String,
+    }
+    #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]
+    pub enum Relation {}
+    impl ActiveModelBehavior for ActiveModel {}
+}
+
+/// per-team 主副本映射(active-passive HA):team_id → primary_node + replica_node。
+pub mod session_replica {
+    use sea_orm::entity::prelude::*;
+    #[derive(Clone, Debug, PartialEq, DeriveEntityModel, serde::Serialize)]
+    #[sea_orm(table_name = "session_replicas")]
+    pub struct Model {
+        #[sea_orm(primary_key, column_type = "String(StringLen::N(36))")]
+        pub team_id: String,
+        #[sea_orm(column_type = "String(StringLen::N(64))")]
+        pub primary_node: String,
+        #[sea_orm(column_type = "String(StringLen::N(64))")]
+        pub replica_node: Option<String>,
+        #[sea_orm(column_type = "String(StringLen::N(16))")]
+        pub status: String,
+        pub primary_lease_until: i64,
+        pub updated_at: i64,
+    }
+    #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]
+    pub enum Relation {}
+    impl ActiveModelBehavior for ActiveModel {}
+}

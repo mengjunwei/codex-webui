@@ -11,6 +11,9 @@ pub mod token_usage_snapshot {
         pub thread_id: String,
         #[sea_orm(primary_key, column_type = "String(StringLen::N(64))")]
         pub turn_id: String,
+        /// 多租户隔离:从 threads.team_id 推导并填入(m0005)。可空(历史数据过渡)。
+        #[sea_orm(column_type = "String(StringLen::N(36))", nullable)]
+        pub team_id: Option<String>,
         pub total_tokens: i64,
         pub input_tokens: i64,
         pub cached_input_tokens: i64,
@@ -41,6 +44,9 @@ pub mod turn_diff {
         pub thread_id: String,
         #[sea_orm(primary_key, column_type = "String(StringLen::N(64))")]
         pub turn_id: String,
+        /// 多租户隔离(m0005)。
+        #[sea_orm(column_type = "String(StringLen::N(36))", nullable)]
+        pub team_id: Option<String>,
         #[sea_orm(column_type = "Text")]
         pub diff: String,
         pub updated_at: i64,
@@ -89,6 +95,9 @@ pub mod pending_server_request {
         pub request_id: String,
         #[sea_orm(column_type = "String(StringLen::N(36))")]
         pub thread_id: String,
+        /// 多租户隔离(m0005)。
+        #[sea_orm(column_type = "String(StringLen::N(36))", nullable)]
+        pub team_id: Option<String>,
         #[sea_orm(column_type = "String(StringLen::N(64))")]
         pub turn_id: Option<String>,
         #[sea_orm(column_type = "String(StringLen::N(128))")]
@@ -120,6 +129,9 @@ pub mod turn_error {
         pub thread_id: String,
         #[sea_orm(primary_key, column_type = "String(StringLen::N(64))")]
         pub turn_id: String,
+        /// 多租户隔离(m0005)。
+        #[sea_orm(column_type = "String(StringLen::N(36))", nullable)]
+        pub team_id: Option<String>,
         #[sea_orm(column_type = "Text")]
         pub message: String,
         pub created_at: i64,
