@@ -4,8 +4,8 @@ version = "0.1.0"
 edition = "2024"
 
 [features]
-# 启用 memberlist gossip 探活实现(默认用 RedisCluster 心跳,本环境可编译)。
-memberlist-backend = []
+# 启用 memberlist gossip 探活实现 + 必需 features(禁 default 省编译时间)。
+memberlist-backend = ["memberlist/tokio", "memberlist/tcp"]
 
 [dependencies]
 axum = { version = "0.8", features = ["multipart"] }
@@ -66,7 +66,8 @@ bzip2-rs = "0.1"
 lzma-rust2 = "0.16"
 rust-embed = "8"
 mime_guess = "2"
-memberlist = "0.8.5"
+memberlist = { version = "0.8.5", default-features = false }
+nodecraft = { version = "0.9", default-features = false, features = ["default"] }
 [dev-dependencies]
 tower = { version = "0.5", features = ["util"] }
 http-body-util = "0.1"

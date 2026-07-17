@@ -102,21 +102,183 @@ impl ClusterMembership for RedisCluster {
     }
 }
 
-// ── memberlist 实现(feature gate;transport/delegate 联调待部署期)─────────
+// ── memberlist 实现(feature gate; memberlist 0.8.5 CompositeDelegate + TokioNetTransport)──
 #[cfg(feature = "memberlist-backend")]
 pub mod memberlist_impl {
     use super::ClusterMembership;
     use async_trait::async_trait;
+    use memberlist::delegate::{AliveDelegate, CompositeDelegate, EventDelegate, VoidDelegate};
+    use memberlist::proto::{MaybeResolvedAddress, NodeState};
+    use memberlist::tokio::{TokioSocketAddrResolver, TokioTcp, TokioTcpMemberlist};
+    use memberlist::Options as MlOptions;
+    use memberlist::net::NetTransportOptions;
+    use nodecraft::NodeId;
+    use std::collections::HashSet;
+    use std::net::SocketAddr;
+    use std::sync::Arc;
+
+    // ── AliveDelegate: 仅做类型占位，实际探活由 online_members() 驱动 ────────────
+    pub struct HaAliveDelegate {
+        alive: Arc<tokio::sync::RwLock<HashSet<NodeId>>>,
+        _node_id: NodeId,
+    }
+
+    impl AliveDelegate for HaAliveDelegate {
+        type Id = NodeId;
+        type Address = SocketAddr;
+        type Error = std::io::Error;
+
+        async fn notify_alive(
+            &self,
+            _peer: Arc<NodeState<Self::Id, Self::Address>>,
+        ) -> Result<(), Self::Error> {
+            // memberlist 内部已有状态机; 我们在 EventDelegate 里跟踪 join/leave。
+            Ok(())
+        }
+    }
+
+    // ── EventDelegate: 跟踪节点加入/离开 ──────────────────────────────────────────
+    pub struct HaEventDelegate {
+        alive: Arc<tokio::sync::RwLock<HashSet<NodeId>>>,
+    }
+
+    impl EventDelegate for HaEventDelegate {
+        type Id = NodeId;
+        type Address = SocketAddr;
+
+        async fn notify_join(&self, node: Arc<NodeState<Self::Id, Self::Address>>) {
+            let id = node.id().clone();
+            if let Ok(mut g) = self.alive.try_write() {
+                g.insert(id);
+            }
+        }
+
+        async fn notify_leave(&self, node: Arc<NodeState<Self::Id, Self::Address>>) {
+            let id = node.id().clone();
+            if let Ok(mut g) = self.alive.try_write() {
+                g.remove(&id);
+            }
+        }
+
+        async fn notify_update(&self, _node: Arc<NodeState<Self::Id, Self::Address>>) {}
+    }
+
+    // CompositeDelegate: Alive + Event 由我们提供，其余用 VoidDelegate。
+    pub type HaDelegate = CompositeDelegate<
+        NodeId,
+        SocketAddr,
+        HaAliveDelegate,
+        VoidDelegate<NodeId, SocketAddr>,
+        HaEventDelegate,
+        VoidDelegate<NodeId, SocketAddr>,
+        VoidDelegate<NodeId, SocketAddr>,
+        VoidDelegate<NodeId, SocketAddr>,
+    >;
 
     pub struct MemberlistCluster {
-        node_id: String,
+        pub node_id: String,
+        pub memberlist: Arc<TokioTcpMemberlist<NodeId, TokioSocketAddrResolver, HaDelegate>>,
+        pub alive: Arc<tokio::sync::RwLock<HashSet<NodeId>>>,
+        pub redis: redis::Client,
+        pub own_rpc_url: String,
     }
 
     impl MemberlistCluster {
-        pub async fn new(node_id: String, _bind: &str, _join: &[String]) -> anyhow::Result<Self> {
-            anyhow::bail!(
-                "MemberlistCluster not yet wired: enable feature and complete transport/delegate construction"
+        pub async fn new(
+            node_id_str: String,
+            bind: &str,
+            seeds: &[String],
+            redis: redis::Client,
+            own_rpc_url: String,
+        ) -> anyhow::Result<Self> {
+            let bind_addr: SocketAddr = bind
+                .parse()
+                .map_err(|e| anyhow::anyhow!("parse bind {bind}: {e}"))?;
+
+            let node_id = NodeId::new(&node_id_str)
+                .map_err(|e| anyhow::anyhow!("NodeId::new({node_id_str}): {e}"))?;
+
+            let alive = Arc::new(tokio::sync::RwLock::new(HashSet::from([node_id.clone()])));
+
+            let alive_delegate = HaAliveDelegate {
+                alive: alive.clone(),
+                _node_id: node_id.clone(),
+            };
+            let event_delegate = HaEventDelegate {
+                alive: alive.clone(),
+            };
+            let delegate = CompositeDelegate::new()
+                .with_alive_delegate(alive_delegate)
+                .with_event_delegate(event_delegate);
+
+            // NetTransportOptions: NodeId + bind_addresses + default resolver/stream_layer
+            let mut transport_opts = NetTransportOptions::<NodeId, TokioSocketAddrResolver, TokioTcp>::new(
+                node_id.clone(),
             );
+            transport_opts.add_bind_address(bind_addr);
+
+            let opts = MlOptions::default();
+
+            let m = TokioTcpMemberlist::<NodeId, TokioSocketAddrResolver, HaDelegate>::with_delegate(
+                delegate,
+                transport_opts,
+                opts,
+            )
+            .await
+            .map_err(|e| anyhow::anyhow!("memberlist init: {e}"))?;
+
+            // Seed join
+            for seed in seeds {
+                let addr: SocketAddr = match seed.trim().parse() {
+                    Ok(a) => a,
+                    Err(_) => continue,
+                };
+                let _ = m.join(MaybeResolvedAddress::Unresolved(addr)).await;
+            }
+
+            // Redis 心跳: 每 10s SETEX cluster:node:{id} = rpc_url, TTL 30s
+            let redis_hb = redis.clone();
+            let hb_node = node_id_str.clone();
+            let hb_rpc = own_rpc_url.clone();
+            tokio::spawn(async move {
+                loop {
+                    if let Ok(mut conn) = redis_hb.get_multiplexed_async_connection().await {
+                        let _: Result<(), _> = redis::cmd("SET")
+                            .arg(format!("cluster:node:{hb_node}"))
+                            .arg(&hb_rpc)
+                            .arg("EX")
+                            .arg(30)
+                            .query_async(&mut conn)
+                            .await;
+                        let _: Result<i64, _> = redis::cmd("SADD")
+                            .arg("cluster:nodes")
+                            .arg(&hb_node)
+                            .query_async(&mut conn)
+                            .await;
+                    }
+                    tokio::time::sleep(std::time::Duration::from_secs(10)).await;
+                }
+            });
+
+            Ok(Self {
+                node_id: node_id_str,
+                memberlist: Arc::new(m),
+                alive,
+                redis,
+                own_rpc_url,
+            })
+        }
+
+        /// 通过 memberlist online_members 获取存活节点 id 列表。
+        pub async fn alive_node_ids(&self) -> Vec<String> {
+            // 优先用 memberlist 内置状态(gossip 已检测 dead/failed)
+            let members = self.memberlist.online_members().await;
+            if !members.is_empty() {
+                return members.into_iter().map(|n| n.id().to_string()).collect();
+            }
+            // fallback: 从 EventDelegate 维护的 set 读
+            let g = self.alive.read().await;
+            g.iter().map(|id| id.to_string()).collect()
         }
     }
 
@@ -125,11 +287,22 @@ pub mod memberlist_impl {
         fn local_node_id(&self) -> &str {
             &self.node_id
         }
+
         async fn alive_nodes(&self) -> Vec<String> {
-            vec![self.node_id.clone()]
+            self.alive_node_ids().await
         }
-        async fn node_rpc_addr(&self, _node_id: &str) -> Option<String> {
-            None
+
+        async fn node_rpc_addr(&self, node_id: &str) -> Option<String> {
+            if node_id == self.node_id {
+                return Some(self.own_rpc_url.clone());
+            }
+            let mut conn = self.redis.get_multiplexed_async_connection().await.ok()?;
+            let v: Option<String> = redis::cmd("GET")
+                .arg(format!("cluster:node:{node_id}"))
+                .query_async(&mut conn)
+                .await
+                .ok()?;
+            v.filter(|s| !s.is_empty())
         }
     }
 }
@@ -166,4 +339,18 @@ impl ClusterMembership for SingleCluster {
 /// 判定某节点是否 alive。
 pub async fn is_alive<C: ClusterMembership + ?Sized>(cluster: &C, node_id: &str) -> bool {
     cluster.alive_nodes().await.iter().any(|n| n == node_id)
+}
+
+#[cfg(test)]
+mod tests {
+    #[cfg(feature = "memberlist-backend")]
+    #[test]
+    fn memberlist_cluster_types_compile() {
+        // 验证 MemberlistCluster 类型 + CompositeDelegate + NodeId 均可引用。
+        use super::memberlist_impl::{HaDelegate, MemberlistCluster};
+        use nodecraft::NodeId;
+        let _: fn() -> NodeId = || NodeId::new("test-node").unwrap();
+        let _ = std::marker::PhantomData::<MemberlistCluster>;
+        let _ = std::marker::PhantomData::<HaDelegate>;
+    }
 }
