@@ -17,7 +17,7 @@ docker run -d --name mt-pg \
 docker run -d --name mt-redis -p 6379:6379 redis:7
 ```
 
-## 配置 `.env`(backend-rs/.env 或环境变量)
+## 配置 `config.toml`(backend-rs/config.toml.example)
 
 ```env
 WEBUI_API_KEY=change-me-to-a-long-random-string-32+chars

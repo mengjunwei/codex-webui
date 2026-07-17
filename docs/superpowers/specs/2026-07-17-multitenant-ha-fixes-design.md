@@ -160,9 +160,10 @@ if let Some(c) = redis {
 
 ### 修复 4:内网 RPC 鉴权硬化
 
-#### 2.4.1 `Config::from_env`:`INTERNAL_RPC_TOKEN` 必填
+#### 2.4.1 `Config::load`:`INTERNAL_RPC_TOKEN` 必填
 
 ```rust
+> ⚠️ 以下代码为设计时草案，实际实现已改为 TOML-only 配置，见 `src/config.rs`。
 let internal_token = env::var("INTERNAL_RPC_TOKEN")
     .ok()
     .map(|s| s.trim().to_string())
@@ -175,7 +176,7 @@ if internal_token.len() < 32 {
 
 `internal_token` 类型从 `Option<String>` 改为 `String`(`AppState`、`main.rs`、`WorkerRpcClient` 构造同步改)。
 
-`.env.example` 增:
+`config.toml.example` 增:
 ```
 INTERNAL_RPC_TOKEN=please-generate-with-openssl-rand-hex-32
 ```
@@ -223,7 +224,7 @@ async fn safe_join(codex_home: &Path, rel: &str) -> Result<PathBuf, AppError> {
 
 ### 修复 5:CODEX_HOME 共享——保留架构,补文档
 
-**不改代码。** 在 spec 与 `.env.example` 中增一节明确:
+**不改代码。** 在 spec 与 `config.toml.example` 中增一节明确:
 
 ```
 # 多 team 单 host 部署注意:
@@ -322,7 +323,7 @@ async fn safe_join(codex_home: &Path, rel: &str) -> Result<PathBuf, AppError> {
 | `find_rollout_for_thread` 时间窗不准(同 thread 多文件) | 选 mtime 最新;`mt_create_thread` 后立即调一次预热 active_rollout |
 | canonicalize 在首次写入前文件不存在 | `tokio::fs::canonicalize` 失败 → fall back 到 `codex_home.join(rel)`,仅当 parent 已存在时 |
 | offset 进程内 fallback 重启归零 → 副本首次重传全量 | 单节点无副本无影响;多节点首次切换有 ~1 次重传,接受 |
-| `INTERNAL_RPC_TOKEN` 必填破坏现有部署 | `.env.example` 注释明确;`Config::from_env` 错误信息指向 openssl rand hex 32 |
+| `INTERNAL_RPC_TOKEN` 必填破坏现有部署 | `config.toml.example` 注释明确;`Config::load` 错误信息指向 openssl rand hex 32 |
 
 ---
 
@@ -333,7 +334,7 @@ async fn safe_join(codex_home: &Path, rel: &str) -> Result<PathBuf, AppError> {
 3. `replication.rs`:新增 `find_rollout_for_thread` / `safe_join` / `delete_all_offsets`;改 `replicate_team_rollouts` 用 active_rollout;offset send-成功才推进;`promote_if_primary_down` 加 lease CAS + 重置 offset;`receive_rollout` 用 `safe_join`。单测。
 4. `handlers.rs::mt_create_thread` / `mt_start_turn`:调 codex 后调 `find_rollout_for_thread` 写 active_rollout。
 5. `main.rs`:装配新字段;`internal_token` 改 unwrap。
-6. `.env.example`:增 `INTERNAL_RPC_TOKEN`;加 CODEX_HOME 多 team 注释。
+6. `config.toml.example`:增 `INTERNAL_RPC_TOKEN`;加 CODEX_HOME 多 team 注释。
 7. `docs/superpowers/specs/2026-07-16-multitenant-platform-design.md`:增失败语义 + 多 team 部署建议两节。
 8. `cluster.rs`:把 `MemberlistCluster` stub 替换为真正接通;`Config` 新增 `memberlist_seeds` / `memberlist_bind`,`worker_id` 改必填;`main.rs` 加分支装配。
 
@@ -356,7 +357,7 @@ async fn safe_join(codex_home: &Path, rel: &str) -> Result<PathBuf, AppError> {
 
 ### 9.3 新增配置项
 
-`Config::from_env` 新增 / 改:
+`Config::load` 新增 / 改:
 
 ```rust
 // worker_id:Option<String> → String,启动必填 ≥16 字节

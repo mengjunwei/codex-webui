@@ -22,15 +22,10 @@ use std::path::{Path, PathBuf};
 // 节点角色
 // ─────────────────────────────────────────────────────────────
 
-/// 节点角色:接入层(路由 + 转发)/ 工作层(进程池 + 内网 RPC)/ 兼容单机。
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize, Default)]
-#[serde(rename_all = "lowercase")]
-pub enum NodeRole {
-    Ingress,
-    Worker,
-    #[default]
-    Both,
-}
+// 注:历史上 NodeRole 分 ingress / worker / both 三种,但实际部署中**每个节点
+// 都是 ingress + worker 一体**(每个节点同时跑 HTTP 路由、内网 RPC、codex 进程池、
+// memberlist/redis 探活),不再按角色分流。详见 docs/superpowers/specs/2026-07-16-...
+// 如未来需要单角色节点(纯 ingress 路由或纯 worker 执行),再恢复 NodeRole 字段。
 
 // ─────────────────────────────────────────────────────────────
 // 子结构:全部 #[derive(Deserialize)] 直接 TOML 映射
@@ -68,8 +63,6 @@ fn default_log_level() -> String {
 
 #[derive(Clone, Debug, Deserialize)]
 pub struct ClusterConfig {
-    #[serde(default)]
-    pub node_role: NodeRole,
     #[serde(default = "default_internal_rpc_host")]
     pub internal_rpc_host: String,
     /// 默认 = `server.port + 1`(运行时派生,toml 里可显式覆盖)。

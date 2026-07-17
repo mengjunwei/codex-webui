@@ -1,3 +1,7 @@
+> ⚠️ **历史快照**：本文档的 Config 字段访问方式已随 TOML-only 重构变更。
+>  → ; → ;
+>  → ;节点角色已移除。
+
 # Per-User Workspace + Codex Hook Webhook Implementation Plan
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.

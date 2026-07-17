@@ -160,8 +160,8 @@ impl WorkerRegistry {
         Ok(alive)
     }
 
-    /// 心跳(带本 worker 对外 RPC 地址):除写入时间戳心跳键外,额外登记
-    /// `worker:rpc:{id}` = rpc_url(同 TTL,续期),供 ingress 解析 worker 的内网 RPC 地址。
+    /// 心跳(带本节点对外 RPC 地址):除写入时间戳心跳键外,额外登记
+    /// `worker:rpc:{id}` = rpc_url(同 TTL,续期),供其它节点解析内网 RPC 地址。
     pub async fn heartbeat_with_rpc(
         &self,
         ttl_secs: u64,

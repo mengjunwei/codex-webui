@@ -30,9 +30,9 @@ log_level = "info"
 webui_api_key = "REPLACE_WITH_RANDOM_SECRET_AT_LEAST_16_CHARS"
 
 [server.cluster]
-# 节点角色: ingress | worker | both(默认)
-node_role = "both"
-# 内网 RPC 监听地址(worker 对 ingress 暴露;ingress 转发用)
+# 注:每个节点都是 ingress + worker 一体(同时跑 HTTP 路由 + 内网 RPC + codex 进程池 +
+# memberlist/redis 探活),无角色分流。多机部署时所有节点配同一份 config.toml。
+# 内网 RPC 监听地址(对外暴露给其它节点转发调用)
 internal_rpc_host = "127.0.0.1"
 # 内网 RPC 监听端口(默认 = server.port + 1)
 internal_rpc_port = 8173

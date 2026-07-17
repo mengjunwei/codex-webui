@@ -1,9 +1,11 @@
-//! worker 内网 RPC server(M4):暴露 codex 调用给 ingress 转发。
+//! 内网 RPC server(M4):把本节点的 codex 调用能力暴露给其它节点转发。
 //!
+//! 每个 backend 节点同时跑内网 RPC server 与 HTTP API(单二进制双角色)。
 //! 独立 axum app,监听 `INTERNAL_RPC_HOST:INTERNAL_RPC_PORT`,路由 `/internal/*`。
-//! 请求头 `x-internal-token` 校验(`WORKER_RPC_TOKEN`;未配置则不校验 —— 仅限内网部署)。
+//! 请求头 `x-internal-token` 校验(security.internal_rpc_token;未配置则不校验 —— 仅限内网部署)。
 //!
-//! worker 只负责跑 codex 并返回结果;threads 元数据双写由 ingress 在 PG 完成(共享库)。
+//! 处理来自其它节点的 codex 调用转发(turn/start/approve/fork 等),
+//! threads 元数据双写由主节点在 PG 完成(共享库)。
 
 use crate::error::{AppError, ErrorCode};
 use crate::services::multitenant::replication::RolloutChunk;
@@ -155,7 +157,7 @@ struct ApprovalRespondReq {
     result: Option<Value>,
 }
 
-/// 响应审批(ingress 转发而来):把决定回传到该 team 的 codex 进程。
+/// 响应审批(其它节点转发而来):把决定回传到该 team 的 codex 进程。
 async fn approval_respond(
     State(state): State<AppState>,
     headers: axum::http::HeaderMap,
@@ -207,7 +209,7 @@ struct InvokeReq {
     params: Option<Value>,
 }
 
-/// 通用 codex 会话方法执行(fork/rollback/resume 等,ingress 转发而来)。
+/// 通用 codex 会话方法执行(fork/rollback/resume 等,其它节点转发而来)。
 async fn thread_invoke(
     State(state): State<AppState>,
     headers: axum::http::HeaderMap,

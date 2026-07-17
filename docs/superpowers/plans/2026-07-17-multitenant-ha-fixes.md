@@ -1,3 +1,7 @@
+> ⚠️ **历史快照**：本文档是实施时的步骤记录，已不反映当前架构。
+> 配置系统已重构为 TOML-only（无 dotenvy / .env / Config::from_env），
+> 节点角色已移除（所有节点均 ingress+worker 一体）。
+
 # 多副本 HA 修复实施计划
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
