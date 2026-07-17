@@ -34,22 +34,24 @@ use tokio::signal;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    let _ = dotenvy::dotenv();
     codex_webui::api::logs::mark_process_start();
 
-    let cfg = Config::from_env()?;
-    let _guards = logging::init(&cfg.log_level, cfg.otlp_endpoint.as_deref());
+    let cfg = Config::load()?;
+    let _guards = logging::init(&cfg.server.log_level, cfg.otel.endpoint.as_deref());
 
     let metrics_handle = metrics_exporter_prometheus::PrometheusBuilder::new()
         .install_recorder()
         .map_err(|e| anyhow::anyhow!("prometheus recorder: {e}"))?;
 
-    // 把 HTTP 端口传给 codex spawn(per-user workspace 实施步骤 11)。
-    unsafe { std::env::set_var("CODEX_WEBUI_PORT", cfg.port.to_string()); }
+    tracing::info!(
+        port = cfg.server.port,
+        url = %cfg.database_url(),
+        driver = ?cfg.database.driver,
+        "starting codex-webui (multi-replica HA)"
+    );
 
-    tracing::info!(port = cfg.port, url = %cfg.database_url, "starting codex-webui (multi-replica HA)");
-
-    let db: DatabaseConnection = sea_orm::Database::connect(&cfg.database_url)
+    let db_url = cfg.database_url();
+    let db: DatabaseConnection = sea_orm::Database::connect(&db_url)
         .await
         .map_err(|e| anyhow::anyhow!("connect database: {e}"))?;
     Migrator::up(&db, None)
@@ -57,14 +59,14 @@ async fn main() -> anyhow::Result<()> {
         .map_err(|e| anyhow::anyhow!("run migrations: {e}"))?;
     reconcile_settings(&db).await?;
 
-    let mt_master_key = cfg.master_key.clone().unwrap_or_else(|| cfg.webui_api_key.clone());
+    let mt_master_key = cfg.effective_master_key().to_string();
 
-    let mt_redis = match &cfg.redis_url {
+    let mt_redis = match &cfg.redis_url() {
         Some(url) => Some(
             redis::Client::open(url.as_str()).map_err(|e| anyhow::anyhow!("redis client: {e}"))?,
         ),
         None => {
-            tracing::warn!("REDIS_URL not set; running single-node (no replication/failover)");
+            tracing::warn!("redis not configured; running single-node (no replication/failover)");
             None
         }
     };
@@ -79,7 +81,7 @@ async fn main() -> anyhow::Result<()> {
         });
 
     // 全局 CODEX_HOME(所有 team 共用;team 仅前端 UI 隔离)。
-    let codex_home: PathBuf = cfg.codex_home.clone().map(PathBuf::from).unwrap_or_else(|| {
+    let codex_home: PathBuf = cfg.codex_home().map(PathBuf::from).unwrap_or_else(|| {
         let base = std::env::var("USERPROFILE")
             .or_else(|_| std::env::var("HOME"))
             .map(PathBuf::from)
@@ -91,28 +93,28 @@ async fn main() -> anyhow::Result<()> {
         .map_err(|e| anyhow::anyhow!("create codex_home: {e}"))?;
 
     // 节点 id + 内网 RPC(均由 Config 必填校验,此处直接 clone)。
-    let node_id = cfg.worker_id.clone();
-    let internal_token = cfg.internal_token.clone();
+    let node_id = cfg.cluster.worker_id.clone();
+    let internal_token = cfg.security.internal_rpc_token.clone();
     let own_rpc_url = cfg
-        .worker_rpc_url
-        .clone()
-        .unwrap_or_else(|| format!("http://127.0.0.1:{}", cfg.internal_rpc_port));
+        .worker_rpc_url()
+        .map(|s| s.to_string())
+        .unwrap_or_else(|| format!("http://127.0.0.1:{}", cfg.internal_rpc_port()));
 
     // cluster 三分支:memberlist(SEEDS 非空) → RedisCluster(有 Redis) → SingleCluster(单机)。
-    let cluster: Arc<dyn ClusterMembership> = if !cfg.memberlist_seeds.is_empty() {
+    let cluster: Arc<dyn ClusterMembership> = if !cfg.memberlist.memberlist_seeds.is_empty() {
         #[cfg(feature = "memberlist-backend")]
         {
             let redis = mt_redis.clone()
                 .ok_or_else(|| anyhow::anyhow!("REDIS_URL required when MEMBERLIST_SEEDS is set"))?;
             let rpc = own_rpc_url.clone();
             let ml = MemberlistCluster::new(
-                cfg.worker_id.clone(),
-                &cfg.memberlist_bind,
-                &cfg.memberlist_seeds,
+                cfg.cluster.worker_id.clone(),
+                &cfg.memberlist.memberlist_bind,
+                &cfg.memberlist.memberlist_seeds,
                 redis,
                 rpc,
             ).await?;
-            tracing::info!(seeds = ?cfg.memberlist_seeds, "memberlist cluster started");
+            tracing::info!(seeds = ?cfg.memberlist.memberlist_seeds, "memberlist cluster started");
             Arc::new(ml)
         }
         #[cfg(not(feature = "memberlist-backend"))]
@@ -129,27 +131,27 @@ async fn main() -> anyhow::Result<()> {
     let worker_rpc = Arc::new(WorkerRpcClient::new(Some(internal_token.clone())));
 
     let pool_config = PoolConfig::new(
-        cfg.max_processes_per_team,
-        cfg.max_global_processes,
-        cfg.idle_evict_secs,
-        cfg.max_concurrent_per_process,
-        cfg.process_scale_threshold,
+        cfg.process_pool.max_processes_per_team,
+        cfg.process_pool.max_global_processes,
+        cfg.process_pool.idle_evict_secs,
+        cfg.process_pool.max_concurrent_per_process,
+        cfg.process_pool.process_scale_threshold,
     );
     let mt_team_codex = Arc::new(
         codex_webui::services::multitenant::codex_pool::TeamCodexManager::new(
             codex_home.clone(),
-            cfg.codex_bin.clone(),
+            cfg.codex_bin().to_string(),
             mt_event_bus.clone(),
             pool_config,
-            cfg.master_key_previous.clone(),
+            cfg.master_key_previous().map(|s| s.to_string()),
         ),
     );
     mt_team_codex.start_idle_reaper();
 
-    let auth = Arc::new(AuthService::new(&cfg.webui_api_key));
+    let auth = Arc::new(AuthService::new(cfg.webui_api_key()));
     let codex = Arc::new(CodexProcessManager::new(
-        cfg.codex_bin.clone(),
-        cfg.codex_home.clone(),
+        cfg.codex_bin().to_string(),
+        cfg.codex_home().map(|s| s.to_string()),
     ));
     let codex_bg = codex.clone();
     tokio::spawn(async move { codex_bg.start().await; });
@@ -215,9 +217,9 @@ async fn main() -> anyhow::Result<()> {
         cluster: cluster.clone(),
         worker_rpc: worker_rpc.clone(),
         internal_token: internal_token.clone(),
-        hook_token: cfg.internal_hook_token.clone(),
+        hook_token: cfg.security.internal_hook_token.clone(),
         audit_writer: audit_writer.clone(),
-        http_bind_port: cfg.port,
+        http_bind_port: cfg.server.port,
         active_rollout,
         local_offsets,
     };
@@ -249,7 +251,7 @@ async fn main() -> anyhow::Result<()> {
     {
         let internal_state = state.clone();
         let internal_app = build_internal_router(internal_state);
-        let addr = format!("{}:{}", cfg.internal_rpc_host, cfg.internal_rpc_port);
+        let addr = format!("{}:{}", cfg.cluster.internal_rpc_host, cfg.internal_rpc_port());
         tokio::spawn(async move {
             let listener = match tokio::net::TcpListener::bind(&addr).await {
                 Ok(l) => l,
@@ -278,8 +280,8 @@ async fn main() -> anyhow::Result<()> {
     // 把 app merge 进 hook router
     let app = app.merge(hook_router);
 
-    let listener = tokio::net::TcpListener::bind((cfg.host.as_str(), cfg.port)).await?;
-    tracing::info!("listening on {}:{}", cfg.host, cfg.port);
+    let listener = tokio::net::TcpListener::bind((cfg.server.host.as_str(), cfg.server.port)).await?;
+    tracing::info!("listening on {}:{}", cfg.server.host, cfg.server.port);
 
     let server = axum::serve(listener, app).with_graceful_shutdown(shutdown_signal());
     server.await?;
