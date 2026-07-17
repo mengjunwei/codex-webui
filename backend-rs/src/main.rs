@@ -21,6 +21,8 @@ use codex_webui::{
     services::threads::ThreadResumeRegistry,
     state::AppState,
 };
+#[cfg(feature = "memberlist-backend")]
+use codex_webui::services::multitenant::cluster::memberlist_impl::MemberlistCluster;
 use sea_orm::DatabaseConnection;
 use sea_orm_migration::MigratorTrait;
 use std::collections::{HashMap, HashSet};
@@ -92,10 +94,32 @@ async fn main() -> anyhow::Result<()> {
         .clone()
         .unwrap_or_else(|| format!("http://127.0.0.1:{}", cfg.internal_rpc_port));
 
-    // cluster:有 Redis → RedisCluster(gossip 心跳);无 → SingleCluster(仅自己)。
-    let cluster: Arc<dyn ClusterMembership> = match &mt_redis {
-        Some(c) => Arc::new(RedisCluster::new(c.clone(), node_id.clone())),
-        None => Arc::new(SingleCluster::new(node_id.clone(), own_rpc_url.clone())),
+    // cluster 三分支:memberlist(SEEDS 非空) → RedisCluster(有 Redis) → SingleCluster(单机)。
+    let cluster: Arc<dyn ClusterMembership> = if !cfg.memberlist_seeds.is_empty() {
+        #[cfg(feature = "memberlist-backend")]
+        {
+            let redis = mt_redis.clone()
+                .ok_or_else(|| anyhow::anyhow!("REDIS_URL required when MEMBERLIST_SEEDS is set"))?;
+            let rpc = own_rpc_url.clone();
+            let ml = MemberlistCluster::new(
+                cfg.worker_id.clone(),
+                &cfg.memberlist_bind,
+                &cfg.memberlist_seeds,
+                redis,
+                rpc,
+            ).await?;
+            tracing::info!(seeds = ?cfg.memberlist_seeds, "memberlist cluster started");
+            Arc::new(ml)
+        }
+        #[cfg(not(feature = "memberlist-backend"))]
+        {
+            anyhow::bail!("MEMBERLIST_SEEDS set but memberlist-backend feature not enabled; \
+                           rebuild with --features memberlist-backend");
+        }
+    } else if let Some(c) = mt_redis.clone() {
+        Arc::new(RedisCluster::new(c, node_id.clone()))
+    } else {
+        Arc::new(SingleCluster::new(node_id.clone(), own_rpc_url.clone()))
     };
 
     let worker_rpc = Arc::new(WorkerRpcClient::new(Some(internal_token.clone())));
