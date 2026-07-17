@@ -142,13 +142,28 @@ async fn handle_inner(state: &AppState, payload: HookPayload) -> Result<HookResp
     }
 
     // 其他事件:仅 audit,放行
+    // payload 优先用 raw(完整 hook payload),fallback 到 {tool_input|tool_output} 合成对象,
+    // 避免 raw 缺失时落库为 "null" 字符串。
+    let audit_payload = if !payload.raw.is_null() {
+        payload.raw.clone()
+    } else {
+        let mut obj = serde_json::Map::new();
+        if let Some(t) = &payload.tool_input {
+            obj.insert("tool_input".into(), t.clone());
+        }
+        if let Some(o) = &payload.tool_output {
+            obj.insert("tool_output".into(), o.clone());
+        }
+        Value::Object(obj)
+    };
+
     state.audit_writer.submit(ws::audit_writer::AuditEvent {
         team_id: Some(team),
         user_id: Some(user),
         thread_id: payload.session_id.clone(),
         event_type: event_type.clone(),
         tool_name: payload.tool_name.clone(),
-        payload: payload.raw.clone(),
+        payload: audit_payload,
         decision: None,
     });
 

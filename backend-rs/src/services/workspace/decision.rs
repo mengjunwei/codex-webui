@@ -26,6 +26,11 @@ pub fn target_path(tool_input: &Value) -> Option<PathBuf> {
     None
 }
 
+/// 规范化路径分隔符为 `/`,便于跨平台字符串比较。
+fn normalize(p: &Path) -> String {
+    p.to_string_lossy().replace('\\', "/")
+}
+
 /// 决策入口。
 pub fn decide_pre_tool_use(
     role: &str,
@@ -33,24 +38,28 @@ pub fn decide_pre_tool_use(
     target: &Path,
     codex_home: &Path,
 ) -> Decision {
+    let target_str = normalize(target);
+    let home_str = normalize(codex_home);
+    let home_clean = home_str.trim_end_matches('/');
+
     // 1) 越界:写出 CODEX_HOME 外 → Deny
-    //    不依赖 canonicalize(Windows 上 `\\?\C:\...` UNC 前缀会让 starts_with 永远为 false)。
-    //    直接比对字符串前缀,并把 `..` 视作越界(简单可靠,目标路径里出现 `..` 即认为不可信)。
-    let target_str = target.to_string_lossy();
+    //    - 路径里出现 `..` 即视为不可信
+    //    - 前缀不匹配 codex_home 也视为越界(覆盖 Windows / 与 \\ 差异)
     if target_str.contains("..") {
         return Decision::Deny;
     }
-    let home_str = codex_home.to_string_lossy();
-    let home_clean = home_str.trim_end_matches('/').trim_end_matches('\\');
-    if !target_str.starts_with(home_clean) {
+    // 路径若为绝对路径(以 / 或盘符起),必须以 home_clean 起。
+    // 相对路径(没 / 前缀且没盘符)允许(如 `foo.txt`)— sandbox 阶段已校验 cwd。
+    let looks_absolute = target_str.starts_with('/')
+        || (target_str.len() >= 2 && target_str.as_bytes()[1] == b':');
+    if looks_absolute && !target_str.starts_with(home_clean) {
         return Decision::Deny;
     }
 
     // 2) 写 team 共享盘,member → Deny
     if role == "member" && is_writing_tool(tool_name) {
         // 路径里包含 /teams/ 但不是 /members/ → shared
-        let normalized = target_str.replace('\\', "/");
-        if normalized.contains("/teams/") && !normalized.contains("/members/") {
+        if target_str.contains("/teams/") && !target_str.contains("/members/") {
             return Decision::Deny;
         }
     }
