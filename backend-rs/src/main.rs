@@ -162,6 +162,9 @@ async fn main() -> anyhow::Result<()> {
 
     let status_service = Arc::new(codex_webui::services::codex_status::CodexStatusService::new(codex.clone()));
 
+    let active_rollout = Arc::new(tokio::sync::Mutex::new(HashMap::new()));
+    let local_offsets = Arc::new(tokio::sync::Mutex::new(HashMap::new()));
+
     let state = AppState {
         db: db.clone(),
         mt_master_key: mt_master_key.clone(),
@@ -180,6 +183,8 @@ async fn main() -> anyhow::Result<()> {
         cluster: cluster.clone(),
         worker_rpc: worker_rpc.clone(),
         internal_token: internal_token.clone(),
+        active_rollout,
+        local_offsets,
     };
 
     // cluster 心跳 task(RedisCluster:周期登记本节点 + rpc 地址)。

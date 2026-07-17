@@ -52,6 +52,14 @@ pub struct AppState {
     pub worker_rpc: Arc<WorkerRpcClient>,
     /// 内网 RPC 鉴权 token(INTERNAL_RPC_TOKEN;启动必填 ≥32 字节)。
     pub internal_token: String,
+
+    // ── HA 修复(spec 2026-07-17 §2.1 / §2.2)────────────────────────
+    /// 主侧:thread_id → 当前该 thread 活跃 rollout 文件绝对路径。
+    /// 由 mt_create_thread / mt_start_turn 调 codex 后写入;
+    /// 复制循环按此表精确读取文件,避免 UUID 子串误匹配。
+    pub active_rollout: Arc<tokio::sync::Mutex<HashMap<String, PathBuf>>>,
+    /// 无 Redis 时 offset fallback 存储(进程内);重启归零接受。
+    pub local_offsets: Arc<tokio::sync::Mutex<HashMap<(String, String), u64>>>,
 }
 
 impl AppState {
