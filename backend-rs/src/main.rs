@@ -284,6 +284,8 @@ async fn run_replica_maintenance(state: &AppState) {
                 &team_id,
                 state.cluster.as_ref(),
                 state.mt_redis.as_ref(),
+                &state.active_rollout,
+                &state.local_offsets,
             )
             .await
             {

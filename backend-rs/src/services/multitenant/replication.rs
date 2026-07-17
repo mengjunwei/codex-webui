@@ -371,20 +371,27 @@ pub async fn promote_if_primary_down(
     team_id: &str,
     cluster: &dyn ClusterMembership,
     redis: Option<&redis::Client>,
+    active_rollout: &ThreadRolloutMap,
+    local_offsets: &LocalOffsetMap,
 ) -> Result<bool, AppError> {
     let Some(row) = get(db, team_id).await? else {
         return Ok(false);
     };
     let me = cluster.local_node_id();
     if row.replica_node.as_deref() != Some(me) {
-        return Ok(false); // 不是该 team 副本。
+        return Ok(false);
     }
     let primary_alive = cluster.alive_nodes().await.iter().any(|n| n == &row.primary_node);
-    let lease_valid = row.primary_lease_until > now_ms();
-    if primary_alive && lease_valid {
-        return Ok(false); // 主健康。
+    let now = now_ms();
+    let lease_expired = row.primary_lease_until < now;
+    if primary_alive && !lease_expired {
+        return Ok(false);
     }
-    // Redis 抢占租约(SET NX):防止多个副本同时晋升(脑裂)。
+    // lease CAS 守门(spec §2.3.1):即使 Redis SET NX 成功,本地看 lease 未过期 → 不晋升。
+    if row.primary_lease_until >= now {
+        return Ok(false);
+    }
+    // Redis 抢占租约(SET NX):防止多个副本同时晋升。
     if !try_acquire_primary(redis, team_id, me).await {
         tracing::info!(team_id, "primary lease still held by another, skip promote");
         return Ok(false);
@@ -393,6 +400,9 @@ pub async fn promote_if_primary_down(
     let alive = cluster.alive_nodes().await;
     let new_replica = alive.into_iter().find(|n| n != me);
     set_primary(db, team_id, me, new_replica.as_deref()).await?;
+    // 晋升成功 → 删 Redis + 进程内 offset,触发下次从 0 全量同步(spec §2.3.3)。
+    delete_all_team_offsets_dual(redis, local_offsets, team_id).await;
+    let _ = active_rollout; // 占位:下次 mt_start_turn / mt_create_thread 重新发现文件。
     metrics::counter!("replica_promotions_total").increment(1);
     tracing::info!(team_id, "replica promoted to primary");
     Ok(true)
