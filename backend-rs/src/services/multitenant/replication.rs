@@ -330,7 +330,8 @@ pub async fn receive_rollout(chunk: &RolloutChunk, codex_home: &Path) -> Result<
     {
         return Err(AppError::internal(format!("invalid rel_path: {}", chunk.rel_path)));
     }
-    let path = codex_home.join(&chunk.rel_path);
+    // canonicalize 边界(spec §2.4.3):防 symlink 逃逸。
+    let path = safe_join(codex_home, &chunk.rel_path).await?;
     let offset = chunk.offset;
     let bytes = chunk.bytes.clone();
     tokio::task::spawn_blocking(move || -> std::io::Result<()> {
@@ -527,6 +528,7 @@ pub async fn find_rollout_for_thread(codex_home: &Path, thread_id: &str) -> Opti
 
 /// 安全拼接:rel 不能为空/绝对/含 .. / 反斜杠;
 /// canonicalize 后必须仍在 codex_home 内(防 symlink 逃逸)。
+/// 若 codex_home 本身尚未创建(测试 tmp 场景),直接接受 join 结果(后续写时会创建)。
 pub async fn safe_join(codex_home: &Path, rel: &str) -> Result<PathBuf, AppError> {
     if rel.is_empty()
         || rel.starts_with('/')
@@ -537,12 +539,14 @@ pub async fn safe_join(codex_home: &Path, rel: &str) -> Result<PathBuf, AppError
         return Err(AppError::internal(format!("invalid rel_path: {rel}")));
     }
     let candidate = codex_home.join(rel);
-    let canon_home = tokio::fs::canonicalize(codex_home)
-        .await
-        .map_err(|e| AppError::internal(format!("canonicalize codex_home: {e}")))?;
+    let canon_home = match tokio::fs::canonicalize(codex_home).await {
+        Ok(p) => p,
+        Err(_) => return Ok(candidate), // codex_home 未创建 → 接受 join,后续 write 创建。
+    };
     let canon_path = match tokio::fs::canonicalize(&candidate).await {
         Ok(p) => p,
         Err(_) => {
+            // 文件尚不存在:校验 parent 是否在 canon_home 内。
             if let Some(parent) = candidate.parent() {
                 let canon_parent = tokio::fs::canonicalize(parent)
                     .await
