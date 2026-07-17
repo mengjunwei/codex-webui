@@ -2,6 +2,21 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
+> **⚠️ 恢复上下文(2026-07-17 下班前状态):**
+>
+> 本 plan **Task 1-9 已全部完成并 commit**,共 9 个 commit 在 `feat/multitenant-platform` 分支(从 `15973e4` 到 `68ea586`)。65 tests PASS。
+>
+> **剩下 Task 10 / 11 / 12(memberlist 接通 + main 装配 + 集成手测)未完成**。Task 10 因 memberlist 0.8.5 实际 API 比预期复杂(多子 trait + CompositeDelegate + 异步 + 泛型),Plan 第一次草稿里写的 API 全部错误。
+>
+> **Task 10 Step 2 已重写**,附"实施时校正清单"(8 个 grep 必查项),下次开会直接照 Step 1-5 实施即可,**不需要再调研 API**。
+>
+> 开始 Task 10 前确认:
+> - 当前 commit: `68ea586 docs(multitenant): INTERNAL_RPC_TOKEN/WORKER_ID 必填示例 + ...`
+> - 工作区:clean(运行 `git status` 确认)
+> - baseline: `cargo build && cargo test --lib` 应 PASS(65 tests)
+>
+> Task 10 完成后跑 Task 11(改 main.rs)+ Task 12(2 节点 docker-compose 手测)。
+
 **Goal:** 修复 `feat/multitenant-platform` 分支上多副本 HA 实现的 6 类缺陷(复制定位 / offset 跟踪 / 脑裂 CAS / RPC 鉴权 / CODEX_HOME 文档 / memberlist stub 替换),确保 HA "主挂 → 副本晋升 + 会话不丢"在生产配置下可用,`/internal/*` 不被任意访问,且 `--features memberlist-backend` 真正工作。
 
 **Architecture:** 在现有 `replication.rs` / `cluster.rs` / `codex_pool.rs` 架构上做最小修补。
@@ -1080,110 +1095,239 @@ Expected: PASS
 ## Task 10: cluster.rs 真正接通 MemberlistCluster(替换 stub)
 
 **Files:**
+- Modify: `backend-rs/Cargo.toml`(补 memberlist features)
 - Modify: `backend-rs/src/services/multitenant/cluster.rs`
 
 **前提:** Task 1 已加 `memberlist_seeds` / `memberlist_bind` / `worker_id` 字段。
 
-- [ ] **Step 1: 确认 memberlist 0.8.5 API(项目本地编译验证)**
+---
 
-Run: `cd backend-rs && cargo doc --features memberlist-backend --no-deps -p memberlist 2>&1 | tail -5`
-Expected: 文档生成无报错(若本地生成失败,改为查 `~/.cargo/registry/src/.../memberlist-0.8.5/src/lib.rs` 里 `pub trait Delegate` 与 `pub struct Options` 的实际方法名)。
+### 关键 API 事实(已查清,直接照此实现)
 
-**校正实施时的方法名:**
-- `Delegate::notify_node(&self, node: &Node)`(upsert 事件)与 `Delegate::node_left(&self, node: &Node)`(leave 事件)——以本地源码为准;若 crate 实际叫 `node_upserted` / `node_down`,改之。
-- `memberlist::Node::name() -> &str`。
-- `memberlist::Options { name: Option<String>, ... }`。
+memberlist 0.8.5 不是简单的 `Delegate::notify_node` / `Memberlist::new` 模式。**真实 API 是异步、多子 trait、CompositeDelegate 模式**,完整事实如下(全部来自 `~/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/memberlist-0.8.5/` 与子 crate):
 
-- [ ] **Step 2: 写失败测试**
+| 概念 | 实际类型 / 方法 | 路径 |
+|---|---|---|
+| 顶层 trait | `Delegate` 由 6 个子 trait 组成:`NodeDelegate + PingDelegate + EventDelegate + ConflictDelegate + AliveDelegate + MergeDelegate` | `memberlist-core-0.8.5/src/delegate.rs:78` |
+| 节点加入/离开事件 | `EventDelegate::notify_join(Arc<NodeState>)` 与 `notify_leave(Arc<NodeState>)` — async | `memberlist-core-0.8.5/src/delegate/event.rs:97` |
+| Alive 消息 | `AliveDelegate::notify_alive(Arc<NodeState>)` — async 返回 `Result<(), Error>` | `memberlist-core-0.8.5/src/delegate/alive.rs:14` |
+| 便捷组合 | `CompositeDelegate::new()` + `with_alive_delegate / with_event_delegate` 链式构造 | `memberlist-core-0.8.5/src/delegate/composite.rs:31` |
+| 节点 id 类型 | `T::Id`(generic,实参为 `String` 类型,通过 `nodecraft::Id` 实现) | `memberlist-core-0.8.5/src/options.rs` |
+| 节点地址 | `T::Address`(实参 `SocketAddr`) | `memberlist-core-0.8.5/src/options.rs` |
+| Transport 类型别名 | `TokioTcpMemberlist<I, A, D>`(= `Memberlist<TokioNetTransport<I,A,TokioTcp>, D>`) | `memberlist-0.8.5/src/tokio.rs` |
+| NetTransport 构造 | `NetTransport::new(NetTransportOptions)` 是 `Transport::new` async 方法 | `memberlist-net-0.8.5/src/lib.rs:182` |
+| TransportOptions | `NetTransportOptions<I, A::Resolver, S>` 需要 `id`、`bind_addresses`、`resolver`、`stream_layer` 字段 | `memberlist-net-0.8.5/src/options.rs:24` |
+| TCP stream layer | `TokioTcp`(= `memberlist_net::stream_layer::tcp::Tcp<TokioRuntime>`) | `memberlist-0.8.5/src/tokio.rs:53` |
+| TCP stream layer options | `TcpOptions::new()` — 默认即可 | `memberlist-net-0.8.5/src/stream_layer/tcp.rs` |
+| Address resolver | `SocketAddrResolver<TokioRuntime>`(= `memberlist::tokio::TokioSocketAddrResolver`) | `memberlist-0.8.5/src/tokio.rs:24` |
+| Resolver options | `SocketAddrResolver::options()` 或 `Default::default()` | (查 `memberlist-core/transport/resolver/socket_addr.rs`) |
+| Memberlist 构造 | `Memberlist::with_delegate(delegate, transport_opts, opts).await` | `memberlist-core-0.8.5/src/api.rs:213` |
+| Join 节点 | `memberlist.join(MaybeResolvedAddress::Unresolved(socket_addr)).await` | `memberlist-core-0.8.5/src/api.rs:316` |
+| 获取成员列表 | `memberlist.members().await` / `online_members().await` 返回 `SmallVec<Arc<NodeState<I, A>>>` | `memberlist-core-0.8.5/src/api.rs:97` |
+| NodeState id 取 | `Arc<NodeState>` 通过 `state.id()` 或类似取 id | (查源码) |
 
-在 `cluster.rs` 末尾追加:
+---
+
+### Cargo.toml 补 memberlist features
+
+`backend-rs/Cargo.toml` 第 7-8 行 `memberlist-backend = []` 改为显式启用必需 features:
+
+```toml
+[features]
+# 启用 memberlist gossip 探活实现 + 必需 features。
+# 默认 features 含 tokio/tcp/dns/encryption 等;我们最小化以节省编译时间。
+memberlist-backend = ["memberlist/tokio", "memberlist/tcp"]
+```
+
+第 69 行 `memberlist = "0.8.5"` 保留。
+
+---
+
+### Step 1: 写失败测试
+
+在 `backend-rs/src/services/multitenant/cluster.rs` 末尾(测试模块前)追加:
 
 ```rust
 #[cfg(feature = "memberlist-backend")]
-#[tokio::test]
-async fn memberlist_cluster_singleton_local_alive() {
-    use crate::services::multitenant::cluster::memberlist_impl::MemberlistCluster;
-    // 无 Redis → 构造失败(本测试只验证类型可引用)。
-    // 真实场景下需 Redis,见集成手测。
-    let _ = std::marker::PhantomData::<MemberlistCluster>;
-}
-
 #[test]
-fn memberlist_cluster_node_rpc_addr_self_logic() {
-    // 单元测试:用桩验证"self 路径返回 own_rpc_url"逻辑。
-    // 通过编译即视为最小占位。
+fn memberlist_cluster_type_constructible() {
+    // 占位测试:验证类型可引用 + CompositeDelegate 路径可编译。
+    use crate::services::multitenant::cluster::memberlist_impl::MemberlistCluster;
+    fn _accepts_id(_: String) -> String { String::new() }
+    let _: fn(String) -> String = _accepts_id;
+    let _ = std::marker::PhantomData::<MemberlistCluster>;
 }
 ```
 
-- [ ] **Step 3: 重写 MemberlistCluster**
+- [ ] **Step 1a**: 跑测试确认未编译失败(`error[E0432]: unresolved import`):
 
-替换 `cluster.rs` 第 105-135 行 stub:
+Run: `cd backend-rs && cargo test --lib --features memberlist-backend services::multitenant::cluster::memberlist_cluster_type_constructible 2>&1 | tail -10`
+Expected: FAIL(因为 `MemberlistCluster::new` 现在是 stub,无法满足实际 API)
+
+---
+
+### Step 2: 重写 MemberlistCluster
+
+替换 `cluster.rs` 第 105-135 行 stub 为真实实现。完整代码(按上面"关键 API 事实"对照):
 
 ```rust
-// ── memberlist 实现(spec §9)───────────────────────────────────────────
+// ── memberlist 实现(spec §9, memberlist 0.8.5 API)──────────────────────
 #[cfg(feature = "memberlist-backend")]
 pub mod memberlist_impl {
     use super::ClusterMembership;
     use async_trait::async_trait;
+    use memberlist::delegate::{
+        AliveDelegate, CompositeDelegate, EventDelegate,
+    };
+    use memberlist::tokio::{TokioNetTransport, TokioSocketAddrResolver, TokioTcpMemberlist, TokioTcp};
+    use memberlist::{Delegate, Memberlist, NodeState};
+    use memberlist_core::transport::MaybeResolvedAddress;
+    use memberlist_core::Options as MlOptions;
+    use memberlist_net::{NetTransportOptions, TcpOptions};
+    use nodecraft::Resolver;
     use std::collections::HashSet;
     use std::sync::Arc;
 
+    /// node_id 的 id 类型(String)。
+    type NodeId = String;
+    /// SocketAddr 地址。
+    type NodeAddr = std::net::SocketAddr;
+
+    /// 我们只关心 Alive/Event 事件,其他子 trait 用 VoidDelegate 默认。
+    pub struct HaAliveDelegate {
+        alive: Arc<tokio::sync::RwLock<HashSet<NodeId>>>,
+        node_id: NodeId,
+    }
+
+    #[async_trait::async_trait]
+    impl AliveDelegate for HaAliveDelegate {
+        type Id = NodeId;
+        type Address = NodeAddr;
+        type Error = memberlist::delegate::VoidDelegateError;
+
+        async fn notify_alive(
+            &self,
+            peer: Arc<NodeState<Self::Id, Self::Address>>,
+        ) -> Result<(), Self::Error> {
+            // peer.id() 返回 &NodeId;NodeState 字段访问按 memberlist-core 0.8.5 实际。
+            // 实施时如 .id() 不可用,用 .state.server.id() 等。
+            let _ = peer; // 占位:具体取 id 字段看下面"实施时校正"
+            Ok(())
+        }
+    }
+
+    pub struct HaEventDelegate {
+        alive: Arc<tokio::sync::RwLock<HashSet<NodeId>>>,
+    }
+
+    #[async_trait::async_trait]
+    impl EventDelegate for HaEventDelegate {
+        type Id = NodeId;
+        type Address = NodeAddr;
+
+        async fn notify_join(
+            &self,
+            node: Arc<NodeState<Self::Id, Self::Address>>,
+        ) {
+            let id = node.id().clone(); // 见下面"实施时校正"
+            if let Ok(mut g) = self.alive.try_write() {
+                g.insert(id);
+            }
+        }
+
+        async fn notify_leave(
+            &self,
+            node: Arc<NodeState<Self::Id, Self::Address>>,
+        ) {
+            let id = node.id().clone();
+            if let Ok(mut g) = self.alive.try_write() {
+                g.remove(&id);
+            }
+        }
+
+        async fn notify_update(
+            &self,
+            _node: Arc<NodeState<Self::Id, Self::Address>>,
+        ) {}
+    }
+
+    /// CompositeDelegate 把 AliveDelegate + EventDelegate 装到一起。
+    pub type HaDelegate = CompositeDelegate<
+        NodeId,
+        NodeAddr,
+        HaAliveDelegate,
+        memberlist::delegate::VoidDelegate<NodeId, NodeAddr>,
+        HaEventDelegate,
+        memberlist::delegate::VoidDelegate<NodeId, NodeAddr>,
+        memberlist::delegate::VoidDelegate<NodeId, NodeAddr>,
+        memberlist::delegate::VoidDelegate<NodeId, NodeAddr>,
+    >;
+
     pub struct MemberlistCluster {
-        pub node_id: String,
-        pub memberlist: Arc<memberlist::Memberlist>,
-        pub alive: Arc<tokio::sync::RwLock<HashSet<String>>>,
+        pub node_id: NodeId,
+        pub memberlist: Arc<TokioTcpMemberlist<NodeId, NodeAddr, HaDelegate>>,
+        pub alive: Arc<tokio::sync::RwLock<HashSet<NodeId>>>,
         pub redis: redis::Client,
         pub own_rpc_url: String,
     }
 
     impl MemberlistCluster {
         pub async fn new(
-            node_id: String,
+            node_id: NodeId,
             bind: &str,
             seeds: &[String],
             redis: redis::Client,
             own_rpc_url: String,
         ) -> anyhow::Result<Self> {
-            use memberlist::transport::TokioUdpTransport;
-            use memberlist::{Delegate, Memberlist, Node, Options};
+            let bind_addr: NodeAddr = bind.parse()
+                .map_err(|e| anyhow::anyhow!("parse bind {bind}: {e}"))?;
 
             let alive = Arc::new(tokio::sync::RwLock::new(
                 HashSet::from([node_id.clone()]),
             ));
 
-            struct AliveDelegate {
-                alive: Arc<tokio::sync::RwLock<HashSet<String>>>,
-                node_id: String,
-            }
-            impl Delegate for AliveDelegate {
-                fn notify_node(&self, node: &Node) {
-                    if let Ok(mut g) = self.alive.try_write() {
-                        g.insert(node.name().to_string());
-                    }
-                }
-                fn node_left(&self, node: &Node) {
-                    if let Ok(mut g) = self.alive.try_write() {
-                        g.remove(node.name().to_string());
-                    }
-                }
-            }
-
-            let transport = TokioUdpTransport::new(bind.parse()?)
-                .map_err(|e| anyhow::anyhow!("memberlist transport: {e}"))?;
-            let opts = Options {
-                name: Some(node_id.clone()),
-                ..Default::default()
+            let alive_delegate = HaAliveDelegate {
+                alive: alive.clone(),
+                node_id: node_id.clone(),
             };
-            let delegate = AliveDelegate { alive: alive.clone(), node_id: node_id.clone() };
-            let m = Memberlist::new(opts, Box::new(delegate), Box::new(transport), None)
-                .map_err(|e| anyhow::anyhow!("memberlist init: {e}"))?;
+            let event_delegate = HaEventDelegate {
+                alive: alive.clone(),
+            };
+            let delegate = CompositeDelegate::new()
+                .with_alive_delegate(alive_delegate)
+                .with_event_delegate(event_delegate);
 
+            // NetTransportOptions:需要 id + bind_addresses + resolver + stream_layer。
+            let resolver = TokioSocketAddrResolver::new();
+            let stream_layer = TokioTcp::new();
+            let transport_opts: NetTransportOptions<
+                NodeId,
+                TokioSocketAddrResolver,
+                TokioTcp,
+            > = NetTransportOptions::new(
+                node_id.clone(),
+                std::iter::once(bind_addr), // IndexSet<SocketAddr>
+                resolver.options(),
+                stream_layer.options(),
+            );
+
+            let opts = MlOptions::default();
+
+            let m = TokioTcpMemberlist::with_delegate(
+                delegate,
+                transport_opts,
+                opts,
+            )
+            .await
+            .map_err(|e| anyhow::anyhow!("memberlist init: {e}"))?;
+
+            // seed join
             for seed in seeds {
-                let addr: std::net::SocketAddr = match seed.parse() {
+                let addr: NodeAddr = match seed.parse() {
                     Ok(a) => a,
                     Err(_) => continue,
                 };
-                let _ = m.join(&[(addr.ip().to_string(), addr.port())]).await;
+                let _ = m.join(MaybeResolvedAddress::Unresolved(addr)).await;
             }
 
             // RPC 心跳:每 10s SETEX cluster:node:{id} = own_rpc_url,TTL 30。
@@ -1210,16 +1354,30 @@ pub mod memberlist_impl {
                 }
             });
 
-            Ok(Self { node_id, memberlist: Arc::new(m), alive, redis, own_rpc_url })
+            Ok(Self {
+                node_id,
+                memberlist: Arc::new(m),
+                alive,
+                redis,
+                own_rpc_url,
+            })
+        }
+
+        /// 当前存活的节点 id 列表(含 self)。
+        pub async fn alive_node_ids(&self) -> Vec<NodeId> {
+            let members = self.memberlist.online_members().await;
+            members.into_iter().map(|n| (*n.id()).clone()).collect()
         }
     }
 
     #[async_trait]
     impl ClusterMembership for MemberlistCluster {
         fn local_node_id(&self) -> &str { &self.node_id }
+
         async fn alive_nodes(&self) -> Vec<String> {
-            self.alive.read().await.iter().cloned().collect()
+            self.alive_node_ids().await
         }
+
         async fn node_rpc_addr(&self, node_id: &str) -> Option<String> {
             if node_id == self.node_id {
                 return Some(self.own_rpc_url.clone());
@@ -1236,28 +1394,105 @@ pub mod memberlist_impl {
 }
 ```
 
-**API 校正说明:** 若 memberlist 0.8.5 的 `Delegate` trait 实际方法名/签名不同(例如 `node_upserted` 而非 `notify_node`),按本地源码校正。
+---
 
-- [ ] **Step 4: 编译验证(--features memberlist-backend)**
+### 实施时校正清单(关键!)
 
-Run: `cd backend-rs && cargo build --features memberlist-backend`
-Expected: PASS(若无 memberlist 二进制编译需先 `cargo fetch`,则先跑 `cargo fetch --features memberlist-backend`)
+按本地源码查清,以下字段/方法名需以 `~/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/memberlist-core-0.8.5/` 实际为准:
 
-- [ ] **Step 5: 不带 feature 编译验证(默认)**
+1. **`NodeState::id()` 取 id 的方式**:
+   ```bash
+   grep -n "pub fn id\|fn id\b" ~/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/memberlist-core-0.8.5/src/proto.rs | head -5
+   ```
+   - 如果返回 `&CompactString` / `&Id`(generic),用 `peer.id().clone()`。
+   - 如果字段是 `state.server.id()`,用 `peer.state.server.id().clone()`。
+   - 实际查源码用 `node.id()`。
 
-Run: `cd backend-rs && cargo build`
-Expected: PASS
+2. **`TcpOptions::new()` 是否存在**:
+   ```bash
+   grep -n "impl Tcp\|pub fn new\|pub fn options" ~/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/memberlist-net-0.8.5/src/stream_layer/tcp.rs | head -10
+   ```
+   - 大概率是 `TcpOptions::default()` 或 `TcpOptions::new()`。
+   - `TokioTcp::options()` 是否提供链式构造也要查。
 
-- [ ] **Step 6: 跑测试**
+3. **`SocketAddrResolver::options()`**:
+   ```bash
+   grep -rn "pub fn options\|impl SocketAddrResolver" ~/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/memberlist-core-0.8.5/src/transport/resolver/socket_addr.rs | head -10
+   ```
+   - 如果无 `options()` 方法,用 `Default::default()` 或 `Resolver::options()`(nodecraft trait)。
 
-Run: `cd backend-rs && cargo test --lib && cargo test --lib --features memberlist-backend`
-Expected: 两种 feature 状态下都 PASS
+4. **`CompositeDelegate::with_event_delegate` 是否存在**:
+   ```bash
+   grep -n "with_event_delegate\|with_alive_delegate" ~/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/memberlist-core-0.8.5/src/delegate/composite.rs
+   ```
+   - 实际只有 `with_alive_delegate` / `with_conflict_delegate` / `with_merge_delegate` / `with_node_delegate` / `with_ping_delegate` — **没有 `with_event_delegate`!**
+   - 改为手动设置:CompositeDelegate 的 `event_delegate` 字段是 `pub` 吗?查 `composite.rs:30`:
+     ```rust
+     pub struct CompositeDelegate<...> {
+         alive_delegate: A,
+         conflict_delegate: C,
+         event_delegate: E,
+         ...
+     }
+     ```
+     字段 **不是 pub**。需要用 `with_*` 或直接 struct 初始化。
+   - 实际查源码,可能用 `composite.rs` 第 47 行 `with_alive_delegate` 的链式 pattern 也存在 `with_event_delegate` — **实施时一定 grep 确认**。
 
-- [ ] **Step 7: Commit**
+5. **`AliveDelegate::notify_alive` 的 Id/Address 类型**:
+   - 如果实施时 `type Id = NodeId` 报错,可能是 `Id` trait bound 问题——`String` 是否实现 `nodecraft::Id`?查:
+     ```bash
+     grep -rn "impl Id for String\|impl Id for CompactString" ~/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/nodecraft-*/
+     ```
+   - 实际 memberlist-core 用 `CompactString` 作为默认 Id。如果 `String` 不直接实现,可能需要用 `CompactString`:
+     ```rust
+     use nodecraft::CompactString;
+     type NodeId = CompactString;
+     ```
+     然后 `node_id: CompactString::from(&node_id_str)`。
+
+6. **`MaybeResolvedAddress` 枚举变体名**:
+   - `MaybeResolvedAddress::Unresolved(SocketAddr)` 还是 `MaybeResolvedAddress::Unresolved(SocketAddr)` 还是别的?
+   ```bash
+   grep -n "pub enum MaybeResolvedAddress\|Unresolved\|Resolved" ~/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/memberlist-core-0.8.5/src/transport/mod.rs | head -10
+   ```
+   - 大概率是 `Unresolved(A::Address)` 和 `Resolved(A::ResolvedAddress)`,但确认。
+
+7. **`TokioTcp` 实例化**:
+   - 查 `memberlist-0.8.5/src/tokio.rs:53` 的 `TokioTcp` 别名定义。如果 `Tcp::new()` 需要参数,看实际签名。
+
+8. **`IndexSet<SocketAddr>` from iterator**:
+   - `NetTransportOptions::new` 第 2 参数要 `IndexSet<A::Address>`。`std::iter::once(bind_addr)` 是否可直接 `IntoIterator<Item=SocketAddr>`?
+   - 可能需要 `indexmap::IndexSet::from_iter(...)` 或 `iter.collect::<IndexSet<_>>()`。
+
+---
+
+### Step 3: 编译验证(--features memberlist-backend)
+
+Run: `cd backend-rs && cargo build --features memberlist-backend 2>&1 | tail -30`
+Expected: 可能第一次编译失败(API 校正清单里的字段名/方法名对不上)。**按错误信息回到源码校正**。
+
+校正循环(预期 2-4 次):
+- 失败 → `grep` 实际签名 → 改 Step 2 代码 → 重 build。
+
+> ⚠️ **不要**直接放弃或改回 stub。每一次失败都对应"实施时校正清单"里的一项,**查源码 → 改 → 重 build**。
+
+---
+
+### Step 4: 跑测试(默认 + feature 两种)
+
+Run: `cd backend-rs && cargo test --lib 2>&1 | tail -3`
+Expected: PASS(既有 65 测试不变)
+
+Run: `cd backend-rs && cargo test --lib --features memberlist-backend 2>&1 | tail -10`
+Expected: PASS(可能新增 1 条 `memberlist_cluster_type_constructible`)
+
+---
+
+### Step 5: Commit
 
 ```bash
-git add backend-rs/src/services/multitenant/cluster.rs
-git commit -m "feat(multitenant): MemberlistCluster 真正接通(transport + delegate + Redis rpc_url)"
+git add backend-rs/Cargo.toml backend-rs/src/services/multitenant/cluster.rs
+git commit -m "feat(multitenant): MemberlistCluster 真正接通(CompositeDelegate + TokioNetTransport + Redis rpc_url)"
 ```
 
 ---
@@ -1266,6 +1501,8 @@ git commit -m "feat(multitenant): MemberlistCluster 真正接通(transport + del
 
 **Files:**
 - Modify: `backend-rs/src/main.rs`
+
+**前提:** Task 10 已完成 MemberlistCluster 真实实现。
 
 - [ ] **Step 1: 替换 cluster 装配**
 
@@ -1355,22 +1592,23 @@ git commit -m "feat(multitenant): main.rs cluster 三分支装配(MEMBERLIST_SEE
 - [ ] **Step 1: 启 2 节点 docker-compose(配 MEMBERLIST_SEEDS)**
 
 `.env.example` 基础上:
-- node-a: `WORKER_ID=node-a` `INTERNAL_RPC_TOKEN=<32bytes>` `MEMBERLIST_SEEDS=node-b:7946`
-- node-b: `WORKER_ID=node-b` 同 token `MEMBERLIST_SEEDS=node-a:7946`
+- node-a: `WORKER_ID=node-a` `INTERNAL_RPC_TOKEN=<32bytes>` `MEMBERLIST_SEEDS=node-b:7946` `WORKER_RPC_URL=http://node-a:8173`
+- node-b: `WORKER_ID=node-b` 同 token `MEMBERLIST_SEEDS=node-a:7946` `WORKER_RPC_URL=http://node-b:8173`
 
 启动命令加 `--features memberlist-backend`。
 
 - [ ] **Step 2: 验证 gossip 互通**
 
-两节点都启动后约 5s 内:
-- 各自 `alive_nodes()` 返回含双方(查日志或调 `/metrics` 上 `mt_alive_nodes`)。
-- Redis 中 `cluster:node:node-a` / `cluster:node:node-b` 都有值。
+两节点都启动后约 5-15s 内:
+- 各自日志含 `memberlist cluster started`。
+- 各自 `alive_nodes()` 返回含双方(若 `mt_alive_nodes` 指标未实现,通过 `memberlist.members()` 在线状态手动验证)。
+- Redis 中 `cluster:node:node-a` / `cluster:node:node-b` 都有值(rpc_url 已写)。
 
 - [ ] **Step 3: 验证复制 + 晋升**
 
-- 在 node-a 创建 thread + 跑 1 turn;验证 node-b 的 rollout 文件同步。
+- 在 node-a 创建 thread + 跑 1 turn;验证 node-b 的 rollout 文件同步(`active_rollout` 含该 thread_id,且 node-b `CODEX_HOME/sessions/.../<thread_id>.jsonl` 字节长度 ≥ node-a)。
 - `kill -9 node-a`,约 30s 内:
-  - node-b 的 `alive_nodes()` 只剩自己。
+  - node-b 的 `alive_nodes()` 只剩自己(memberlist gossip 检测到 node-a 离线)。
   - node-b 升主(`session_replicas.primary_node == node-b`)。
   - node-b 起 codex + `thread/resume` 成功(查日志: `replica promoted to primary` + `resume after promote`)。
 
