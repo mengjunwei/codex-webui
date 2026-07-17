@@ -68,6 +68,8 @@ pub struct Config {
     pub worker_id: String,
     /// 内网 RPC 鉴权 token(/internal/* 路由必填;≥32 字节)。
     pub internal_token: String,
+    /// Hook webhook 鉴权 token(/hooks/codex 必填;≥32 字节)。与 INTERNAL_RPC_TOKEN 同模式。
+    pub internal_hook_token: String,
     /// Memberlist 种子节点列表(逗号分隔 host:port);**空 = 单机/Redis 单跑模式**;
     /// 非空时启用 memberlist gossip 探活(要求 `--features memberlist-backend`)。
     pub memberlist_seeds: Vec<String>,
@@ -214,6 +216,18 @@ impl Config {
             ));
         }
 
+        let internal_hook_token = env::var("INTERNAL_HOOK_TOKEN")
+            .ok()
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+            .ok_or_else(|| anyhow!("INTERNAL_HOOK_TOKEN is required (≥32 bytes)"))?;
+        if internal_hook_token.len() < 32 {
+            return Err(anyhow!(
+                "INTERNAL_HOOK_TOKEN must be ≥32 bytes (current: {}); generate with `openssl rand -hex 32`",
+                internal_hook_token.len()
+            ));
+        }
+
         let memberlist_seeds: Vec<String> = env::var("MEMBERLIST_SEEDS")
             .ok()
             .map(|s| s.trim().to_string())
@@ -296,6 +310,7 @@ impl Config {
             worker_rpc_url,
             worker_id,
             internal_token,
+            internal_hook_token,
             memberlist_seeds,
             memberlist_bind,
             max_processes_per_team,
@@ -335,6 +350,7 @@ mod tests {
         "WORKER_RPC_URL",
         "WORKER_ID",
         "INTERNAL_RPC_TOKEN",
+        "INTERNAL_HOOK_TOKEN",
         "MEMBERLIST_SEEDS",
         "MEMBERLIST_BIND",
         "MAX_PROCESSES_PER_TEAM",
@@ -360,6 +376,7 @@ mod tests {
         unsafe { env::set_var("WEBUI_API_KEY", "0123456789abcdef"); }
         unsafe { env::set_var("DATABASE_URL", "postgres://dummy"); }
         unsafe { env::set_var("INTERNAL_RPC_TOKEN", "0123456789abcdef0123456789abcdef"); }
+        unsafe { env::set_var("INTERNAL_HOOK_TOKEN", "0123456789abcdef0123456789abcdef"); }
         unsafe { env::set_var("WORKER_ID", "node-a-staaaaaaaaable"); }
         f()
     }
@@ -368,6 +385,7 @@ mod tests {
         unsafe { env::set_var("WEBUI_API_KEY", "0123456789abcdef"); }
         unsafe { env::set_var("DATABASE_URL", "postgres://dummy"); }
         unsafe { env::set_var("INTERNAL_RPC_TOKEN", "0123456789abcdef0123456789abcdef"); }
+        unsafe { env::set_var("INTERNAL_HOOK_TOKEN", "0123456789abcdef0123456789abcdef"); }
         unsafe { env::set_var("WORKER_ID", "node-a-staaaaaaaaable"); }
     }
 

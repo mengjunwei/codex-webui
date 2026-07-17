@@ -7,3 +7,4 @@ pub mod multitenant;
 pub mod settings;
 pub mod terminal;
 pub mod threads;
+pub mod workspace;

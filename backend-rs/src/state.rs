@@ -6,6 +6,7 @@ use crate::services::codex_status::CodexStatusService;
 use crate::services::multitenant::cluster::ClusterMembership;
 use crate::services::multitenant::codex_pool::TeamCodexManager;
 use crate::services::multitenant::rpc::WorkerRpcClient;
+use crate::services::workspace::audit_writer::AuditWriter;
 use metrics_exporter_prometheus::PrometheusHandle;
 use crate::services::settings::ValueSource;
 use crate::services::terminal::TerminalService;
@@ -52,6 +53,12 @@ pub struct AppState {
     pub worker_rpc: Arc<WorkerRpcClient>,
     /// 内网 RPC 鉴权 token(INTERNAL_RPC_TOKEN;启动必填 ≥32 字节)。
     pub internal_token: String,
+    /// Hook webhook 鉴权 token(INTERNAL_HOOK_TOKEN;启动必填 ≥32 字节)。
+    pub hook_token: String,
+    /// Hook 审计批量写入器(per-user workspace 实施步骤 5)。
+    pub audit_writer: AuditWriter,
+    /// HTTP 监听端口(codex 启动时拼出 hooks URL)。
+    pub http_bind_port: u16,
 
     // ── HA 修复(spec 2026-07-17 §2.1 / §2.2)────────────────────────
     /// 主侧:thread_id → 当前该 thread 活跃 rollout 文件绝对路径。

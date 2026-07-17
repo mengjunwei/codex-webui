@@ -139,6 +139,10 @@ pub async fn register(
     let secret = state.auth.jwt_secret();
     let user = auth::register_user(db, &body.email, &body.password).await?;
     let tokens = auth::issue_tokens(&user.id, db, secret).await?;
+    // 注册即创建个人 workspace(per-user workspace 实施步骤 3)。
+    if let Err(e) = crate::services::workspace::ensure_user_personal(&state, &user.id).await {
+        tracing::warn!(error = %e, user_id = %user.id, "ensure_user_personal failed (non-fatal)");
+    }
     Ok(Json(AuthResp {
         user: user.into(),
         access_token: tokens.access_token,
@@ -195,7 +199,12 @@ pub async fn create_team(
     crate::error::Json(body): crate::error::Json<CreateTeamBody>,
 ) -> Result<Json<teams::Team>, AppError> {
     let db = require_db(&state);
-    Ok(Json(teams::create_team(db, &uid.0, &body.name).await?))
+    let team = teams::create_team(db, &uid.0, &body.name).await?;
+    // 创建 team 即建共享 workspace(per-user workspace 实施步骤 4)。
+    if let Err(e) = crate::services::workspace::ensure_team_shared(&state, &team.id).await {
+        tracing::warn!(error = %e, team_id = %team.id, "ensure_team_shared failed (non-fatal)");
+    }
+    Ok(Json(team))
 }
 
 pub async fn list_teams(
@@ -236,7 +245,14 @@ pub async fn join_team(
     crate::error::Json(body): crate::error::Json<JoinBody>,
 ) -> Result<Json<teams::Team>, AppError> {
     let db = require_db(&state);
-    Ok(Json(teams::join_team(db, &uid.0, &body.code).await?))
+    let team = teams::join_team(db, &uid.0, &body.code).await?;
+    // 加入 team 即建成员视图目录(role 由 teams 模块写 team_members)。
+    if let Err(e) =
+        crate::services::workspace::ensure_team_member_view(&state, &team.id, &uid.0).await
+    {
+        tracing::warn!(error = %e, "ensure_team_member_view failed (non-fatal)");
+    }
+    Ok(Json(team))
 }
 
 pub async fn remove_member(

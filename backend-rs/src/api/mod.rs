@@ -5,6 +5,7 @@ pub mod chat;
 pub mod event_subscribers;
 pub mod files;
 pub mod health;
+pub mod hooks;
 pub mod logs;
 pub mod multitenant;
 pub mod onlyoffice;

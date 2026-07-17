@@ -5,6 +5,7 @@
 
 use codex_webui::{
     api::build_router,
+    api::hooks,
     api::multitenant::internal_rpc::build_internal_router,
     auth::AuthService,
     codex::CodexProcessManager,
@@ -42,6 +43,9 @@ async fn main() -> anyhow::Result<()> {
     let metrics_handle = metrics_exporter_prometheus::PrometheusBuilder::new()
         .install_recorder()
         .map_err(|e| anyhow::anyhow!("prometheus recorder: {e}"))?;
+
+    // 把 HTTP 端口传给 codex spawn(per-user workspace 实施步骤 11)。
+    unsafe { std::env::set_var("CODEX_WEBUI_PORT", cfg.port.to_string()); }
 
     tracing::info!(port = cfg.port, url = %cfg.database_url, "starting codex-webui (multi-replica HA)");
 
@@ -189,6 +193,10 @@ async fn main() -> anyhow::Result<()> {
     let active_rollout = Arc::new(tokio::sync::Mutex::new(HashMap::new()));
     let local_offsets = Arc::new(tokio::sync::Mutex::new(HashMap::new()));
 
+    // 启动 hook audit 写入器(per-user workspace 实施步骤 5+7)。
+    let audit_writer =
+        codex_webui::services::workspace::audit_writer::spawn(db.clone());
+
     let state = AppState {
         db: db.clone(),
         mt_master_key: mt_master_key.clone(),
@@ -207,6 +215,9 @@ async fn main() -> anyhow::Result<()> {
         cluster: cluster.clone(),
         worker_rpc: worker_rpc.clone(),
         internal_token: internal_token.clone(),
+        hook_token: cfg.internal_hook_token.clone(),
+        audit_writer: audit_writer.clone(),
+        http_bind_port: cfg.port,
         active_rollout,
         local_offsets,
     };
@@ -255,7 +266,17 @@ async fn main() -> anyhow::Result<()> {
     }
 
     let codex_for_shutdown = state.codex.clone();
-    let app = build_router(state).await.layer(ws_layer);
+    let app = build_router(state.clone()).await.layer(ws_layer);
+
+    // 独立挂载 hook webhook(per-user workspace 实施步骤 9):不走 /api,不走 JWT 中间件。
+    let hook_router = axum::Router::new()
+        .route(
+            "/hooks/codex",
+            axum::routing::post(hooks::handle),
+        )
+        .with_state(state.clone());
+    // 把 app merge 进 hook router
+    let app = app.merge(hook_router);
 
     let listener = tokio::net::TcpListener::bind((cfg.host.as_str(), cfg.port)).await?;
     tracing::info!("listening on {}:{}", cfg.host, cfg.port);

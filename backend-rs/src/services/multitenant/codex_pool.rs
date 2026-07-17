@@ -306,8 +306,26 @@ impl TeamCodexManager {
             .await
             .map_err(|e| AppError::internal(format!("create codex_home: {e}")))?;
 
+        // 写入 hooks 配置(per-user workspace 实施步骤 11):codex 启动后读 $CODEX_HOME/config.toml
+        // 找到 [hooks.audit] 段,每次工具调用前后回调 /hooks/codex。
+        let port = std::env::var("CODEX_WEBUI_PORT")
+            .ok()
+            .and_then(|s| s.parse::<u16>().ok())
+            .unwrap_or(8172);
+        if let Err(e) =
+            crate::services::workspace::hooks_config::write_hooks_config(&codex_home, port).await
+        {
+            tracing::warn!(error = %e, "write_hooks_config failed (non-fatal, codex will start without hook wiring)");
+        }
+
         let mut cmd = build_codex_command(&self.codex_bin);
-        cmd.args(["app-server", "--listen", "stdio://"]);
+        // --dangerously-bypass-hook-trust:自动化场景不弹首次信任确认(per-user workspace 实施步骤 11)。
+        cmd.args([
+            "app-server",
+            "--listen",
+            "stdio://",
+            "--dangerously-bypass-hook-trust",
+        ]);
         cmd.stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
