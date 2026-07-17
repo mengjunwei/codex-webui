@@ -34,12 +34,41 @@ impl RedisCluster {
     }
 
     /// 心跳:`SADD cluster:nodes {id}` + `SETEX cluster:node:{id} rpc_addr ttl`。
+    /// 同时清理已过期的 stale 成员(SMEMBERS + EXISTS 过滤 + SREM),防止集合无限膨胀。
     pub async fn heartbeat(&self, ttl_secs: u64, rpc_addr: &str) -> Result<(), AppError> {
         let mut conn = self
             .client
             .get_multiplexed_async_connection()
             .await
             .map_err(|e| AppError::internal(format!("redis connect: {e}")))?;
+
+        // 先清理 stale 成员:SMEMBERS 取全部,EXISTS 检查单 key,SREM 删已死的。
+        if let Ok(members) = redis::cmd("SMEMBERS")
+            .arg("cluster:nodes")
+            .query_async::<Vec<String>>(&mut conn)
+            .await
+        {
+            for m in members {
+                if m == self.node_id {
+                    continue; // 不删自己
+                }
+                let exists: i64 = redis::cmd("EXISTS")
+                    .arg(format!("cluster:node:{m}"))
+                    .query_async(&mut conn)
+                    .await
+                    .unwrap_or(0);
+                if exists == 0 {
+                    let _: () = redis::cmd("SREM")
+                        .arg("cluster:nodes")
+                        .arg(&m)
+                        .query_async(&mut conn)
+                        .await
+                        .unwrap_or(());
+                    tracing::debug!(node = %m, "cleaned stale cluster member");
+                }
+            }
+        }
+
         let _: i64 = redis::cmd("SADD")
             .arg("cluster:nodes")
             .arg(&self.node_id)

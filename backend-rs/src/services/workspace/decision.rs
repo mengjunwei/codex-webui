@@ -26,9 +26,27 @@ pub fn target_path(tool_input: &Value) -> Option<PathBuf> {
     None
 }
 
-/// 规范化路径分隔符为 `/`,便于跨平台字符串比较。
+/// 规范化路径:统一斜杠 + 规范化 Windows 盘符前缀。
+///
+/// - `\\` → `/`
+/// - `C:/...` → `/c/...`(小写盘符,去冒号,加前缀斜杠)
+/// - `/c/...` 保持不变(Git Bash 路径已经是此格式)
+///
+/// 这样 `C:\Users\...` 和 `/c/Users/...` 规范化后相同,`starts_with` 比较正确。
 fn normalize(p: &Path) -> String {
-    p.to_string_lossy().replace('\\', "/")
+    let s = p.to_string_lossy().replace('\\', "/");
+    normalize_str(&s)
+}
+
+fn normalize_str(s: &str) -> String {
+    // 先统一斜杠
+    let s = s.replace('\\', "/");
+    // 处理 Windows 盘符前缀:C:/... → /c/...
+    if s.len() >= 2 && s.as_bytes()[0].is_ascii_alphabetic() && s.as_bytes()[1] == b':' {
+        let drive = (s.as_bytes()[0] as char).to_ascii_lowercase();
+        return format!("/{}{}", drive, &s[2..]);
+    }
+    s
 }
 
 /// 决策入口。
@@ -108,5 +126,28 @@ mod tests {
         let target = home.join("users/u1/personal/foo.txt");
         let d = decide_pre_tool_use("member", "write_file", &target, &home);
         assert_eq!(d, Decision::Allow);
+    }
+
+    /// Windows 盘符路径 + Git Bash 路径混合比较:确保 normalize 正确。
+    #[test]
+    fn windows_drive_letter_paths_match() {
+        // codex_home 是 Windows 原生路径(C:\Users\...)
+        let home = PathBuf::from("C:\\Users\\admin\\.codex-webui\\home");
+        // hook payload 里 file_path 是 Git Bash 路径格式(/c/Users/...)
+        let target = PathBuf::from("/c/Users/admin/.codex-webui/home/teams/t1/shared/foo.txt");
+        let d = decide_pre_tool_use("owner", "write_file", &target, &home);
+        assert_eq!(d, Decision::Allow, "owner writing shared should allow even with mixed path formats");
+
+        let d = decide_pre_tool_use("member", "write_file", &target, &home);
+        assert_eq!(d, Decision::Deny, "member writing shared should deny");
+    }
+
+    #[test]
+    fn normalize_str_handles_drive_letter() {
+        assert_eq!(normalize_str("C:\\Users\\admin"), "/c/Users/admin");
+        assert_eq!(normalize_str("D:/code/rust"), "/d/code/rust");
+        assert_eq!(normalize_str("/c/Users/admin"), "/c/Users/admin");
+        assert_eq!(normalize_str("/etc/passwd"), "/etc/passwd");
+        assert_eq!(normalize_str("relative/path"), "relative/path");
     }
 }

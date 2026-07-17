@@ -29,7 +29,7 @@ log_level = "info"
 # 也作为 master_key 未显式启用时的兜底。
 webui_api_key = "REPLACE_WITH_RANDOM_SECRET_AT_LEAST_16_CHARS"
 
-[server.cluster]
+[cluster]
 # 注:每个节点都是 ingress + worker 一体(同时跑 HTTP 路由 + 内网 RPC + codex 进程池 +
 # memberlist/redis 探活),无角色分流。多机部署时所有节点配同一份 config.toml。
 # 内网 RPC 监听地址(对外暴露给其它节点转发调用)
