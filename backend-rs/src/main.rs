@@ -274,6 +274,8 @@ async fn run_replica_maintenance(state: &AppState) {
                 state.cluster.as_ref(),
                 state.mt_redis.as_ref(),
                 &state.worker_rpc,
+                &state.active_rollout,
+                &state.local_offsets,
             )
             .await;
         } else if row.replica_node.as_deref() == Some(state.node_id.as_str()) {

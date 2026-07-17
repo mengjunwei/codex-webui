@@ -9,7 +9,6 @@
 //! 保证同一 team 同一时刻只有一个主。
 
 use crate::db::entities::session_replica::{ActiveModel, Entity, Model};
-use crate::db::entities::thread::{Column as ThreadColumn, Entity as ThreadEntity};
 use crate::error::AppError;
 use crate::services::multitenant::cluster::ClusterMembership;
 use crate::services::multitenant::now_ms;
@@ -186,7 +185,9 @@ pub async fn set_primary(
 
 // ── rollout 增量复制(主侧)─────────────────────────────────────────────────
 
-/// 主侧:复制该 team 所有 thread 的 rollout 增量到副本节点。
+/// 主侧:复制该 team 所有 thread 的 rollout 增量到副本节点(spec §2.1.4)。
+/// 复制单元 = active_rollout 里的 thread(thread_id → 路径);
+/// offset 仅在 send 成功后才推进(spec §2.2)。
 pub async fn replicate_team_rollouts(
     db: &DatabaseConnection,
     team_id: &str,
@@ -194,57 +195,50 @@ pub async fn replicate_team_rollouts(
     cluster: &dyn ClusterMembership,
     redis: Option<&redis::Client>,
     rpc_client: &WorkerRpcClient,
+    active_rollout: &ThreadRolloutMap,
+    local_offsets: &LocalOffsetMap,
 ) -> Result<(), AppError> {
     let Some(row) = get(db, team_id).await? else {
         return Ok(());
     };
     let Some(replica_node) = row.replica_node.clone() else {
-        return Ok(()); // 无副本,跳过。
+        return Ok(());
     };
     if replica_node == cluster.local_node_id() {
-        return Ok(()); // 副本是自己(单节点),跳过。
-    }
-    let Some(rpc_addr) = cluster.node_rpc_addr(&replica_node).await else {
-        return Ok(()); // 副本 RPC 地址未知,跳过。
-    };
-
-    // 该 team 的所有 thread_id(= conv_id)。
-    let thread_ids: std::collections::HashSet<String> = ThreadEntity::find()
-        .filter(ThreadColumn::TeamId.eq(team_id.to_string()))
-        .all(db)
-        .await
-        .map_err(|e| AppError::internal(format!("query team threads for replication: {e}")))?
-        .into_iter()
-        .map(|t| t.id)
-        .collect();
-    if thread_ids.is_empty() {
         return Ok(());
     }
+    let Some(rpc_addr) = cluster.node_rpc_addr(&replica_node).await else {
+        return Ok(());
+    };
 
-    // 扫描全局 CODEX_HOME/sessions/ 下所有 rollout 文件。
-    let sessions_dir = codex_home.join("sessions");
-    let files = list_rollout_files(&sessions_dir).await;
-    for (abs_path, rel_path) in files {
-        // 匹配:文件名包含该 team 的某个 thread_id(完整 UUID,避免文件名解析截断)。
-        let fname = abs_path.file_name().and_then(|n| n.to_str()).unwrap_or("");
-        let Some(conv) = thread_ids.iter().find(|tid| fname.contains(tid.as_str())).cloned() else {
-            continue;
-        };
+    // 复制单元:遍历 active_rollout(thread_id → 文件路径),不再 walk sessions/。
+    // 重启后 active_rollout 为空 → 本轮跳过(下次 mt_create_thread / mt_start_turn 会写入)。
+    let entries: Vec<(String, PathBuf)> = {
+        let m = active_rollout.lock().await;
+        m.iter()
+            .filter_map(|(tid, p)| p.exists().then(|| (tid.clone(), p.clone())))
+            .collect()
+    };
+
+    for (conv, abs_path) in entries {
         let size = match tokio::fs::metadata(&abs_path).await {
             Ok(m) => m.len(),
             Err(_) => continue,
         };
-        let offset = get_offset(redis, team_id, &conv).await;
+        let offset = get_offset_dual(redis, local_offsets, team_id, &conv).await;
         if size <= offset {
-            continue; // 无增量(含 codex rollback 导致文件变短)。
+            continue;
         }
-        // 单文件 IO 失败不中断整轮复制(continue + warn)。
         let bytes = match read_range(&abs_path, offset, size).await {
             Ok(b) => b,
             Err(e) => {
                 tracing::warn!(team_id, conv = %conv, error = %e, "read rollout range failed, skip this round");
                 continue;
             }
+        };
+        let rel_path = match abs_path.strip_prefix(codex_home) {
+            Ok(r) => r.to_string_lossy().replace('\\', "/"),
+            Err(_) => continue,
         };
         let chunk = RolloutChunk {
             team_id: team_id.to_string(),
@@ -254,13 +248,73 @@ pub async fn replicate_team_rollouts(
             bytes,
         };
         if let Err(e) = rpc_client.replicate_rollout(&rpc_addr, &chunk).await {
-            tracing::warn!(team_id, conv = %conv, error = %e, "replicate rollout chunk failed (non-fatal)");
+            tracing::warn!(team_id, conv = %conv, error = %e, "replicate rollout chunk failed (will retry next round)");
+            // 不推进 offset → 下次重传同一段(spec §2.2)。
             continue;
         }
-        set_offset(redis, team_id, &conv, size).await;
+        set_offset_dual(redis, local_offsets, team_id, &conv, size).await;
         metrics::counter!("replication_bytes_total").increment(chunk.bytes.len() as u64);
     }
     Ok(())
+}
+
+/// offset 双存储读(Redis 优先,失败回退进程内)。spec §2.2 fallback。
+async fn get_offset_dual(
+    redis: Option<&redis::Client>,
+    local: &LocalOffsetMap,
+    team_id: &str,
+    conv: &str,
+) -> u64 {
+    if let Some(c) = redis {
+        if let Ok(mut conn) = c.get_multiplexed_async_connection().await {
+            let v: Option<String> = redis::cmd("GET")
+                .arg(format!("repl:offset:{team_id}:{conv}"))
+                .query_async(&mut conn)
+                .await
+                .ok()
+                .flatten();
+            if let Some(s) = v {
+                return s.parse().unwrap_or(0);
+            }
+        }
+    }
+    let m = local.lock().await;
+    m.get(&(team_id.to_string(), conv.to_string())).copied().unwrap_or(0)
+}
+
+/// offset 双存储写(同步写 Redis + 进程内)。
+async fn set_offset_dual(
+    redis: Option<&redis::Client>,
+    local: &LocalOffsetMap,
+    team_id: &str,
+    conv: &str,
+    v: u64,
+) {
+    if let Some(c) = redis {
+        if let Ok(mut conn) = c.get_multiplexed_async_connection().await {
+            let _: () = redis::cmd("SET")
+                .arg(format!("repl:offset:{team_id}:{conv}"))
+                .arg(v)
+                .query_async(&mut conn)
+                .await
+                .unwrap_or(());
+        }
+    }
+    let mut m = local.lock().await;
+    m.insert((team_id.to_string(), conv.to_string()), v);
+}
+
+/// 晋升后清空 offset(Redis SCAN + DEL + 进程内 retain)。
+pub async fn delete_all_team_offsets_dual(
+    redis: Option<&redis::Client>,
+    local: &LocalOffsetMap,
+    team_id: &str,
+) {
+    if let Some(c) = redis {
+        delete_all_team_offsets(c, team_id).await;
+    }
+    let mut m = local.lock().await;
+    m.retain(|(t, _), _| t != team_id);
 }
 
 // ── 副本 receive ───────────────────────────────────────────────────────────
@@ -381,68 +435,7 @@ pub async fn reclaim_orphan_teams(
     Ok(())
 }
 
-// ── offset 跟踪(Redis)─────────────────────────────────────────────────────
-
-async fn get_offset(redis: Option<&redis::Client>, team_id: &str, conv: &str) -> u64 {
-    let Some(c) = redis else {
-        return 0;
-    };
-    let mut conn = match c.get_multiplexed_async_connection().await {
-        Ok(c) => c,
-        Err(_) => return 0,
-    };
-    let v: Option<String> = redis::cmd("GET")
-        .arg(format!("repl:offset:{team_id}:{conv}"))
-        .query_async(&mut conn)
-        .await
-        .unwrap_or(None);
-    v.and_then(|s| s.parse().ok()).unwrap_or(0)
-}
-
-async fn set_offset(redis: Option<&redis::Client>, team_id: &str, conv: &str, v: u64) {
-    let Some(c) = redis else {
-        return;
-    };
-    let mut conn = match c.get_multiplexed_async_connection().await {
-        Ok(c) => c,
-        Err(_) => return,
-    };
-    let _: () = redis::cmd("SET")
-        .arg(format!("repl:offset:{team_id}:{conv}"))
-        .arg(v)
-        .query_async(&mut conn)
-        .await
-        .unwrap_or(());
-}
-
 // ── 文件辅助 ─────────────────────────────────────────────────────────────
-
-/// 递归列出 sessions 目录下所有 `.jsonl`(返回 (绝对路径, 相对 codex_home 的路径))。
-async fn list_rollout_files(sessions_dir: &Path) -> Vec<(PathBuf, String)> {
-    let mut out = Vec::new();
-    let base = sessions_dir.parent().unwrap_or(sessions_dir);
-    walk_jsonl(base, sessions_dir, &mut out).await;
-    out
-}
-
-async fn walk_jsonl(base: &Path, cur: &Path, out: &mut Vec<(PathBuf, String)>) {
-    let Ok(mut entries) = tokio::fs::read_dir(cur).await else {
-        return;
-    };
-    while let Ok(Some(entry)) = entries.next_entry().await {
-        let path = entry.path();
-        let Ok(ft) = entry.file_type().await else {
-            continue;
-        };
-        if ft.is_dir() {
-            Box::pin(walk_jsonl(base, &path, out)).await;
-        } else if path.extension().and_then(|e| e.to_str()) == Some("jsonl") {
-            if let Ok(rel) = path.strip_prefix(base) {
-                out.push((path.clone(), rel.to_string_lossy().replace('\\', "/")));
-            }
-        }
-    }
-}
 
 /// 读取文件 [start, end) 区间(spawn_blocking)。
 async fn read_range(path: &Path, start: u64, end: u64) -> Result<Vec<u8>, AppError> {

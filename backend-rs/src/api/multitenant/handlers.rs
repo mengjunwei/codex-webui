@@ -407,6 +407,8 @@ pub async fn mt_create_thread(
             state.cluster.as_ref(),
             state.mt_redis.as_ref(),
             &state.worker_rpc,
+            &state.active_rollout,
+            &state.local_offsets,
         )
         .await;
     }
@@ -475,12 +477,15 @@ pub async fn mt_start_turn(
             state.cluster.as_ref(),
             state.mt_redis.as_ref(),
             &state.worker_rpc,
+            &state.active_rollout,
+            &state.local_offsets,
         )
         .await;
     }
     Ok(Json(resp))
 }
 
+/// 列表已被 Task 4 修复后保留在文件顶部(line 419);此处不留副本。
 // ── 审计日志(M6,owner 查询)────────────────────────────────────────────────
 pub async fn list_audit(
     State(state): State<AppState>,
