@@ -45,19 +45,26 @@ async fn require_internal_token(
     state: &AppState,
     headers: &axum::http::HeaderMap,
 ) -> Result<(), AppError> {
-    if let Some(tok) = &state.internal_token {
-        let got = headers
-            .get("x-internal-token")
-            .and_then(|v| v.to_str().ok())
-            .unwrap_or("");
-        if got != tok {
-            return Err(AppError::business(
-                ErrorCode::HttpForbidden,
-                StatusCode::FORBIDDEN,
-                "invalid internal token".into(),
-                None,
-            ));
-        }
+    let tok = &state.internal_token;
+    if tok.is_empty() {
+        return Err(AppError::business(
+            ErrorCode::HttpForbidden,
+            StatusCode::FORBIDDEN,
+            "internal token not configured".into(),
+            None,
+        ));
+    }
+    let got = headers
+        .get("x-internal-token")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("");
+    if got != tok {
+        return Err(AppError::business(
+            ErrorCode::HttpForbidden,
+            StatusCode::FORBIDDEN,
+            "invalid internal token".into(),
+            None,
+        ));
     }
     Ok(())
 }

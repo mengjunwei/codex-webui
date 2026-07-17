@@ -50,8 +50,8 @@ pub struct AppState {
     pub cluster: Arc<dyn ClusterMembership>,
     /// 节点间内网 RPC 客户端(非主节点转发到该 team 主节点)。
     pub worker_rpc: Arc<WorkerRpcClient>,
-    /// 内网 RPC 鉴权 token(WORKER_RPC_TOKEN;None=不校验)。
-    pub internal_token: Option<String>,
+    /// 内网 RPC 鉴权 token(INTERNAL_RPC_TOKEN;启动必填 ≥32 字节)。
+    pub internal_token: String,
 }
 
 impl AppState {

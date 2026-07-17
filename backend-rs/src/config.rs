@@ -64,8 +64,15 @@ pub struct Config {
     /// 本 worker 对外可达的内网 RPC base url(如 http://10.0.0.5:8173)。
     /// 未设置则由 internal_rpc_host:port 推导;多机部署必须显式配置(避免 0.0.0.0 不可达)。
     pub worker_rpc_url: Option<String>,
-    /// 本节点稳定 ID(默认随机 UUID;多机部署建议显式设置保证跨重启一致)。
-    pub worker_id: Option<String>,
+    /// 本节点稳定 ID(**必填**,≥16 字节;多机部署每节点唯一,推荐 hostname 或 k8s pod uid)。
+    pub worker_id: String,
+    /// 内网 RPC 鉴权 token(/internal/* 路由必填;≥32 字节)。
+    pub internal_token: String,
+    /// Memberlist 种子节点列表(逗号分隔 host:port);**空 = 单机/Redis 单跑模式**;
+    /// 非空时启用 memberlist gossip 探活(要求 `--features memberlist-backend`)。
+    pub memberlist_seeds: Vec<String>,
+    /// Memberlist UDP 监听地址(默认 0.0.0.0:7946)。
+    pub memberlist_bind: String,
     // ── 进程池调度(M3/M4)───────────────────────────────────────────────
     /// 每 team 进程上限(默认 4)。
     pub max_processes_per_team: usize,
@@ -168,7 +175,7 @@ impl Config {
             .ok()
             .map(|s| s.trim().to_string())
             .filter(|s| !s.is_empty())
-            .unwrap_or_else(|| "0.0.0.0".to_string());
+            .unwrap_or_else(|| "127.0.0.1".to_string());
 
         let internal_rpc_port: u16 = env::var("INTERNAL_RPC_PORT")
             .ok()
@@ -186,7 +193,44 @@ impl Config {
         let worker_id = env::var("WORKER_ID")
             .ok()
             .map(|s| s.trim().to_string())
-            .filter(|s| !s.is_empty());
+            .filter(|s| !s.is_empty())
+            .ok_or_else(|| anyhow!("WORKER_ID is required (≥16 bytes)"))?;
+        if worker_id.len() < 16 {
+            return Err(anyhow!(
+                "WORKER_ID must be ≥16 bytes (current: {}); recommend hostname or k8s pod uid",
+                worker_id.len()
+            ));
+        }
+
+        let internal_token = env::var("INTERNAL_RPC_TOKEN")
+            .ok()
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+            .ok_or_else(|| anyhow!("INTERNAL_RPC_TOKEN is required (≥32 bytes)"))?;
+        if internal_token.len() < 32 {
+            return Err(anyhow!(
+                "INTERNAL_RPC_TOKEN must be ≥32 bytes (current: {}); generate with `openssl rand -hex 32`",
+                internal_token.len()
+            ));
+        }
+
+        let memberlist_seeds: Vec<String> = env::var("MEMBERLIST_SEEDS")
+            .ok()
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+            .map(|s| {
+                s.split(',')
+                    .map(|p| p.trim().to_string())
+                    .filter(|p| !p.is_empty())
+                    .collect()
+            })
+            .unwrap_or_default();
+
+        let memberlist_bind = env::var("MEMBERLIST_BIND")
+            .ok()
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+            .unwrap_or_else(|| "0.0.0.0:7946".to_string());
 
         // ── 进程池调度 ──
         fn parse_usize(name: &str, default: usize) -> Result<usize> {
@@ -251,6 +295,9 @@ impl Config {
             internal_rpc_port,
             worker_rpc_url,
             worker_id,
+            internal_token,
+            memberlist_seeds,
+            memberlist_bind,
             max_processes_per_team,
             max_global_processes,
             idle_evict_secs,

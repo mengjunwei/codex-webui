@@ -84,15 +84,9 @@ async fn main() -> anyhow::Result<()> {
         .await
         .map_err(|e| anyhow::anyhow!("create codex_home: {e}"))?;
 
-    // 节点 id + 内网 RPC。
-    let node_id = cfg
-        .worker_id
-        .clone()
-        .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
-    let internal_token = std::env::var("WORKER_RPC_TOKEN")
-        .ok()
-        .map(|s| s.trim().to_string())
-        .filter(|s| !s.is_empty());
+    // 节点 id + 内网 RPC(均由 Config 必填校验,此处直接 clone)。
+    let node_id = cfg.worker_id.clone();
+    let internal_token = cfg.internal_token.clone();
     let own_rpc_url = cfg
         .worker_rpc_url
         .clone()
@@ -104,7 +98,7 @@ async fn main() -> anyhow::Result<()> {
         None => Arc::new(SingleCluster::new(node_id.clone(), own_rpc_url.clone())),
     };
 
-    let worker_rpc = Arc::new(WorkerRpcClient::new(internal_token.clone()));
+    let worker_rpc = Arc::new(WorkerRpcClient::new(Some(internal_token.clone())));
 
     let pool_config = PoolConfig::new(
         cfg.max_processes_per_team,
