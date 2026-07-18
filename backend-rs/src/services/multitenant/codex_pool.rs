@@ -126,13 +126,15 @@ impl TeamCodexManager {
     }
 
     /// 取 team client 租约:确保容量(按需扩进程)→ 选最闲存活 slot → 获取 permit。
+    /// `is_personal`:personal workspace 走 user_api_keys 取 BYOK key(独立隔离,per-user)。
     pub async fn client_for(
         &self,
         team_id: &str,
         db: &sea_orm::DatabaseConnection,
         master_key: &str,
+        is_personal: bool,
     ) -> Result<ClientLease, AppError> {
-        self.ensure_capacity(team_id, db, master_key).await?;
+        self.ensure_capacity(team_id, db, master_key, is_personal).await?;
         let slot = self.pick_slot(team_id).await?;
         {
             let mut la = slot.last_active.lock().await;
@@ -159,9 +161,10 @@ impl TeamCodexManager {
         team_id: &str,
         db: &sea_orm::DatabaseConnection,
         master_key: &str,
+        is_personal: bool,
     ) -> Result<ClientLease, AppError> {
         self.evict(team_id).await;
-        self.client_for(team_id, db, master_key).await
+        self.client_for(team_id, db, master_key, is_personal).await
     }
 
     /// 确保该 team 有可用 slot,并按"最闲 slot 并发达阈值"扩进程(受 per-team / 全局上限约束)。
@@ -170,6 +173,7 @@ impl TeamCodexManager {
         team_id: &str,
         db: &sea_orm::DatabaseConnection,
         master_key: &str,
+        is_personal: bool,
     ) -> Result<(), AppError> {
         // 1. 至少一个存活 slot;无则 spawn 第一个。
         let has_alive = {
@@ -183,7 +187,7 @@ impl TeamCodexManager {
             }
         };
         if !has_alive {
-            self.spawn_slot(team_id, db, master_key).await?;
+            self.spawn_slot(team_id, db, master_key, is_personal).await?;
         }
         // 2. 扩进程循环:最闲 slot 忙到阈值 且 未达 per-team 上限 → 扩(受全局上限 / LRU 约束)。
         loop {
@@ -215,7 +219,7 @@ impl TeamCodexManager {
             if !self.reserve_global_capacity(team_id).await? {
                 break;
             }
-            self.spawn_slot(team_id, db, master_key).await?;
+            self.spawn_slot(team_id, db, master_key, is_personal).await?;
             metrics::counter!("codex_team_scale_out_total").increment(1);
         }
         Ok(())
@@ -291,14 +295,13 @@ impl TeamCodexManager {
         team_id: &str,
         db: &sea_orm::DatabaseConnection,
         master_key: &str,
+        is_personal: bool,
     ) -> Result<Arc<ProcessSlot>, AppError> {
-        // 个人 workspace 用 "user:{user_id}" 格式标识，从 user_api_key 获取 key
-        // 本地代理模式下 API key 可选
-        let plain_key = if team_id.starts_with("user:") {
-            let user_id = &team_id[5..];
+        // personal:从 user_api_keys 取 BYOK;team:从 team_api_keys 取。
+        let plain_key = if is_personal {
             api_keys::get_user_active_plain_key(
                 db,
-                user_id,
+                team_id,
                 master_key,
                 self.master_previous.as_deref(),
             )

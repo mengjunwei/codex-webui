@@ -477,10 +477,13 @@ pub async fn mt_create_thread(
     }
 
     let target = resolve_worker(&state, &team_id, None, is_personal).await?;
+    // client_for 的 team_id 必须与 PG threads.team_id 一致(personal=纯 user_id;
+    // team=teamId),否则 create 与后续 turn/invoke 起不同 codex 进程 → thread not found。
+    let pool_team_id: String = if is_personal { uid.0.clone() } else { team_id.clone() };
     let resp = if target == state.node_id {
         let lease = state
             .mt_team_codex
-            .client_for(&team_id, db, &state.mt_master_key)
+            .client_for(&pool_team_id, db, &state.mt_master_key, is_personal)
             .await?;
         // 对齐 main 分支旧实现:这两个参数确保 codex 持久化 rollout + 不开启 raw events。
         rest.entry("experimentalRawEvents".to_string()).or_insert(Value::Bool(false));
@@ -628,7 +631,7 @@ pub async fn mt_delete_thread(
     // 2. 调 codex thread/delete(若 codex 支持);失败不阻塞,继续清 PG/文件。
     if let Ok(target) = resolve_worker(&state, &team_id, Some(&thread_id), is_personal).await {
         if target == state.node_id {
-            if let Ok(lease) = state.mt_team_codex.client_for(&team_id, db, &state.mt_master_key).await {
+            if let Ok(lease) = state.mt_team_codex.client_for(&team_id, db, &state.mt_master_key, is_personal).await {
                 if let Err(e) = lease
                     .client()
                     .request("thread/delete", Some(serde_json::json!({ "threadId": thread_id })))
@@ -694,7 +697,7 @@ pub async fn mt_start_turn(
     let resp = if target == state.node_id {
         let lease = state
             .mt_team_codex
-            .client_for(&team_id, db, &state.mt_master_key)
+            .client_for(&team_id, db, &state.mt_master_key, workspace_type == "personal")
             .await?;
         lease
             .client()
@@ -876,7 +879,7 @@ pub async fn mt_resolve_approval(
     let ok = if target == state.node_id {
         let lease = state
             .mt_team_codex
-            .client_for(&team_id, db, &state.mt_master_key)
+            .client_for(&team_id, db, &state.mt_master_key, workspace_type == "personal")
             .await?;
         if body.approved {
             lease
@@ -1096,7 +1099,7 @@ pub async fn mt_invoke_thread(
     let resp = if target == state.node_id {
         let lease = state
             .mt_team_codex
-            .client_for(&team_id, db, &state.mt_master_key)
+            .client_for(&team_id, db, &state.mt_master_key, workspace_type == "personal")
             .await?;
         let mut last_err: Option<crate::codex::jsonrpc::RpcError> = None;
         let mut attempt = 0u32;

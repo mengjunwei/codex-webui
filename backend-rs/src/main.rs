@@ -413,7 +413,7 @@ async fn promote_resume_team(state: &AppState, team_id: &str) -> Result<(), code
     // 起 codex 进程(全局 CODEX_HOME 已有该 team 所有 thread 的 rollout 副本)。
     let _ = state
         .mt_team_codex
-        .client_for(team_id, &state.db, &state.mt_master_key)
+        .client_for(team_id, &state.db, &state.mt_master_key, false)
         .await?;
     let threads = ThreadEntity::find()
         .filter(ThreadColumn::TeamId.eq(team_id.to_string()))
@@ -423,7 +423,7 @@ async fn promote_resume_team(state: &AppState, team_id: &str) -> Result<(), code
     for t in threads {
         let lease = state
             .mt_team_codex
-            .client_for(team_id, &state.db, &state.mt_master_key)
+            .client_for(team_id, &state.db, &state.mt_master_key, false)
             .await?;
         let params = serde_json::json!({ "threadId": t.id, "persistExtendedHistory": true });
         // 10s 超时:单 thread resume 卡死不拖累其他 thread。

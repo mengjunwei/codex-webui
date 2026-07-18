@@ -96,7 +96,7 @@ async fn thread_start(
     metrics::counter!("internal_thread_start_total").increment(1);
     let lease = state
         .mt_team_codex
-        .client_for(&req.team_id, &state.db, &state.mt_master_key)
+        .client_for(&req.team_id, &state.db, &state.mt_master_key, false)
         .await?;
     // 对齐 mt_create_thread 的本地参数:这两个参数确保 codex 持久化 rollout。
     let mut params = req.params;
@@ -134,7 +134,7 @@ async fn turn_start(
     metrics::counter!("internal_turn_start_total").increment(1);
     let lease = state
         .mt_team_codex
-        .client_for(&req.team_id, &state.db, &state.mt_master_key)
+        .client_for(&req.team_id, &state.db, &state.mt_master_key, false)
         .await?;
     let mut params = req.params;
     if let Value::Object(ref mut m) = params {
@@ -190,7 +190,7 @@ async fn approval_respond(
     metrics::counter!("internal_approval_respond_total").increment(1);
     let lease = state
         .mt_team_codex
-        .client_for(&req.team_id, &state.db, &state.mt_master_key)
+        .client_for(&req.team_id, &state.db, &state.mt_master_key, false)
         .await?;
     let id_val = parse_req_id(&req.request_id);
     let ok = if req.approved {
@@ -255,7 +255,7 @@ async fn thread_invoke(
     }
     let lease = state
         .mt_team_codex
-        .client_for(&req.team_id, &state.db, &state.mt_master_key)
+        .client_for(&req.team_id, &state.db, &state.mt_master_key, false)
         .await?;
     let mut params = req.params.unwrap_or(Value::Object(Default::default()));
     if let Value::Object(ref mut m) = params {
