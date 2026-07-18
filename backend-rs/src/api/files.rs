@@ -637,7 +637,7 @@ pub async fn create_file(
     }
     let p = PathBuf::from(raw);
     let canonical_parent =
-        tokio::fs::canonicalize(p.parent().unwrap_or(&p))
+        tokio::fs::canonicalize(p.parent().filter(|x| !x.as_os_str().is_empty()).unwrap_or(&p))
             .await
             .map_err(|e| AppError::internal(format!("parent canonicalize: {e}")))?;
     if !within_workspace(&state, &canonical_parent).await {
@@ -810,7 +810,7 @@ pub async fn write_file(
         return Err(bad_request(ErrorCode::FilesPathRequired, "path is required"));
     }
     let p = PathBuf::from(raw);
-    let canonical_parent = tokio::fs::canonicalize(p.parent().unwrap_or(&p))
+    let canonical_parent = tokio::fs::canonicalize(p.parent().filter(|x| !x.as_os_str().is_empty()).unwrap_or(&p))
         .await
         .map_err(|e| AppError::internal(format!("parent: {e}")))?;
     if !within_workspace(&state, &canonical_parent).await {
@@ -1321,7 +1321,10 @@ async fn do_relocate(
     let dst_canonical: PathBuf = match tokio::fs::canonicalize(dst_raw).await {
         Ok(c) => c,
         Err(_) => {
-            let parent = Path::new(dst_raw).parent().unwrap_or(Path::new(dst_raw));
+            let parent = Path::new(dst_raw)
+                .parent()
+                .filter(|x| !x.as_os_str().is_empty())
+                .unwrap_or(Path::new(dst_raw));
             tokio::fs::canonicalize(parent).await
                 .map_err(|_| not_found("destination parent path not found"))?
                 .join(Path::new(dst_raw).file_name().unwrap_or_default())
@@ -1415,7 +1418,15 @@ async fn copy_dir_recursive(src: &Path, dst: &Path) -> std::io::Result<()> {
             }
             #[cfg(not(unix))]
             {
-                tokio::fs::copy(&from, &to).await?;
+                // Windows:tokio::fs::copy / std::fs::copy 默认跟随符号链接(CopyFileExW),
+                // 会把指向 workspace 外的链接目标内容实体化进副本 → 越权读取外部文件。
+                // Windows 重建符号链接需区分 file/dir 且需开发者模式/管理员权限,失败率高;
+                // 这里保守跳过符号链接(不复制、不重建),彻底消除信息泄露路径。
+                // (相对链接丢失属可接受损耗;unix 分支保留相对链接。)
+                tracing::warn!(
+                    from = %from.display(),
+                    "skipping symlink during directory copy on windows (no copy, no recreate)"
+                );
             }
         } else if ftype.is_dir() {
             Box::pin(copy_dir_recursive(&from, &to)).await?;
@@ -1477,8 +1488,27 @@ pub async fn upload_files(
         reader.get_upload_max_bytes().await
     };
 
+    // 单请求文件数量 + 累计字节上限:DefaultBodyLimit::disable() 后,handler 自身
+    // 必须设防,否则认证用户可单请求上传海量文件(每个接近 max_bytes)耗尽磁盘。
+    const MAX_UPLOAD_FILES_PER_REQUEST: usize = 256;
+    // 累计上限 = min(max_bytes × 文件数上限, 硬顶 2GB);防止极端配置下 256 × 100MB = 25GB。
+    const MAX_UPLOAD_REQUEST_TOTAL_BYTES: u64 = 2 * 1024 * 1024 * 1024;
+    let per_request_cap = std::cmp::min(
+        max_bytes.saturating_mul(MAX_UPLOAD_FILES_PER_REQUEST as u64),
+        MAX_UPLOAD_REQUEST_TOTAL_BYTES,
+    );
+    let mut total_request_bytes: u64 = 0;
+
     let mut files = Vec::new();
+    let mut file_count: usize = 0;
     while let Ok(Some(field)) = multipart.next_field().await {
+        file_count += 1;
+        if file_count > MAX_UPLOAD_FILES_PER_REQUEST {
+            return Err(bad_request(
+                ErrorCode::FilesUploadTooLarge,
+                format!("too many files in a single request (max {MAX_UPLOAD_FILES_PER_REQUEST})"),
+            ));
+        }
         let raw_filename = field.file_name().unwrap_or("upload").to_string();
         // 对齐 TS normalizeUploadRelativePath：含反斜杠 / 绝对路径 → uploadPathInvalid；
         // 空段或 . / .. → nameInvalid（严格报错，而非静默清洗）。
@@ -1535,6 +1565,17 @@ pub async fn upload_files(
                 return Err(e);
             }
         };
+        // 累计字节检查:超单请求总上限 → 413(防海量文件累计耗尽磁盘)。
+        total_request_bytes = total_request_bytes.saturating_add(total);
+        if total_request_bytes > per_request_cap {
+            let _ = tokio::fs::remove_file(&tmp_path).await;
+            return Err(AppError::business(
+                ErrorCode::FilesUploadTooLarge,
+                StatusCode::PAYLOAD_TOO_LARGE,
+                format!("total upload exceeds the {per_request_cap}-byte per-request limit"),
+                None,
+            ));
+        }
         if let Err(e) = tokio::fs::rename(&tmp_path, &file_path).await {
             let _ = tokio::fs::remove_file(&tmp_path).await;
             return Err(map_fs_error(e, ErrorCode::FilesOperationFailed));
@@ -1682,6 +1723,13 @@ pub async fn archive_entry(
         .header("X-Content-Type-Options", "nosniff")
         .header("Referrer-Policy", "no-referrer")
         .header("Cache-Control", "private, no-store")
+        // CSP 与 serve_with_range 一致:归档内 .html/.svg inline 渲染时,
+        // sandbox + default-src 'none' 阻止 JS 执行与外部资源加载,防存储型/反射型 XSS
+        // (归档条目名/内容由用户可控,多租户共享工作区下可被恶意构造)。
+        .header(
+            "Content-Security-Policy",
+            "sandbox; default-src 'none'; img-src 'self' data: blob:; media-src 'self' data: blob:; style-src 'unsafe-inline'",
+        )
         .header(header::CONTENT_DISPOSITION, build_content_disposition(&filename, true).as_str());
 
     Ok(match outcome {

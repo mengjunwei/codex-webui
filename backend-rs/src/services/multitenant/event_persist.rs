@@ -6,6 +6,7 @@
 
 use crate::db::entities::thread::Entity as ThreadEntity;
 use crate::db::entity::pending_server_request as psr;
+use crate::db::entity::turn_diff;
 use crate::db::entity::turn_error;
 use crate::error::AppError;
 use crate::services::multitenant::event_bus::EventBus;
@@ -18,7 +19,16 @@ use std::sync::Arc;
 use tokio::sync::Mutex;
 
 /// 启动 team 事件持久化 task(订阅 codex:events)。
-pub fn spawn_team_event_persistor(bus: Arc<dyn EventBus>, db: DatabaseConnection) {
+///
+/// `node_id` 用于多副本 HA 的 primary 守门:Redis Pub/Sub fan-out 让所有节点收到同一事件,
+/// 若每节点都落库会导致审批重复 N 行(只有本节点 generation 命中的 1 行能被 resolve,
+/// 其余变幽灵)+ token 配额累加 N 次。只有 team 的主节点(primary_node==本节点)处理该
+/// team 事件;无 session_replica 行(单节点/无 HA)时本节点即主,放行。
+pub fn spawn_team_event_persistor(
+    bus: Arc<dyn EventBus>,
+    db: DatabaseConnection,
+    node_id: String,
+) {
     tokio::spawn(async move {
         let mut rx = match bus.subscribe("codex:events").await {
             Ok(rx) => rx,
@@ -28,13 +38,24 @@ pub fn spawn_team_event_persistor(bus: Arc<dyn EventBus>, db: DatabaseConnection
             }
         };
         let cache: Mutex<HashMap<String, String>> = Mutex::new(HashMap::new());
-        tracing::info!("team event persistor started");
-        while let Ok(payload) = rx.recv().await {
+        tracing::info!(node_id = %node_id, "team event persistor started");
+        // 关键:Lagged 表示消费方落后、旧消息被丢弃但通道仍存活,必须 continue。
+        // 原 `while let Ok` 把 Lagged 误当退出 → 一次积压后持久化 task 永久死亡,
+        // 本节点所有审批/turn 错误/token 用量不再落 PG,quota 停止累加。
+        loop {
+            let payload = match rx.recv().await {
+                Ok(p) => p,
+                Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
+                    tracing::warn!(lagged = n, "event_persist lagged, skipping");
+                    continue;
+                }
+                Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+            };
             let msg: Value = match serde_json::from_str(&payload) {
                 Ok(v) => v,
                 Err(_) => continue,
             };
-            if let Err(e) = handle_event(&db, &msg, &cache).await {
+            if let Err(e) = handle_event(&db, &msg, &cache, &node_id).await {
                 tracing::warn!(error = %e, "team event persist failed (non-fatal)");
             }
         }
@@ -45,6 +66,7 @@ async fn handle_event(
     db: &DatabaseConnection,
     msg: &Value,
     cache: &Mutex<HashMap<String, String>>,
+    node_id: &str,
 ) -> Result<(), AppError> {
     let params = msg.get("params");
     let thread_id = params.and_then(|p| p.get("threadId")).and_then(Value::as_str);
@@ -53,6 +75,17 @@ async fn handle_event(
         Some(t) => t,
         None => return Ok(()),
     };
+    // primary 守门(fan-out 去重):仅 team 主节点处理该 team 事件。
+    // 多副本 HA 下 Redis Pub/Sub 把主节点 codex 的事件 fan-out 给所有节点;若都落库会导致
+    // 审批重复 N 行(resolve 只清本节点 generation 那 1 行,其余幽灵)+ token 配额累加 N 次。
+    // 无 session_replica 行(单节点/无 HA)时本节点即主,放行。
+    if let Some(replica_row) =
+        crate::services::multitenant::replication::get(db, &team_id).await?
+    {
+        if replica_row.primary_node != node_id {
+            return Ok(()); // 非主节点,跳过(fan-out 去重)。
+        }
+    }
     let method = msg.get("method").and_then(Value::as_str).unwrap_or("");
     // server_request(带 id)→ 审批持久化(双保险)。
     if msg.get("id").is_some() && !method.is_empty() {
@@ -70,6 +103,17 @@ async fn handle_event(
                 .and_then(Value::as_str)
                 .unwrap_or("unknown");
             upsert_turn_error(db, &team_id, tid, turn_id, m).await;
+        }
+    }
+    // turn diff → turn_diffs(team_id 隔离)。Bug5:此前 event_persist 漏处理 turn/diff/updated,
+    // 多租户模式(per-team codex 事件经 Redis bus 来)下 turn_diffs 表永不写入,刷新/重连后历史 diff 丢失。
+    // 直接 upsert(覆盖式):同 turn 多次 diff 更新取最新,等价 legacy 的缓冲+turn/completed 刷写。
+    if method == "turn/diff/updated" {
+        if let (Some(turn_id), Some(diff)) = (
+            params.and_then(|p| p.get("turnId")).and_then(Value::as_str),
+            params.and_then(|p| p.get("diff")).and_then(Value::as_str),
+        ) {
+            upsert_turn_diff(db, &team_id, tid, turn_id, diff).await;
         }
     }
     // token 用量 → token_usage_snapshots(team_id)+ 月配额累加(last.totalTokens 增量)。
@@ -108,7 +152,13 @@ async fn resolve_team(
         .map_err(|e| AppError::internal(format!("persistor query thread: {e}")))?;
     let team = row.map(|r| r.team_id);
     if let Some(ref t) = team {
-        cache.lock().await.insert(thread_id.to_string(), t.clone());
+        let mut c = cache.lock().await;
+        // 防无界增长(thread_id 单调累积,数月可达数十 MB):超阈值清空(重新查 DB,性能可接受)。
+        const CACHE_CAP: usize = 50_000;
+        if c.len() >= CACHE_CAP {
+            c.clear();
+        }
+        c.insert(thread_id.to_string(), t.clone());
     }
     Ok(team)
 }
@@ -208,6 +258,38 @@ async fn upsert_turn_error(
     }
 }
 
+/// upsert turn_diffs(team_id 隔离)。同 turn 多次更新取最新(覆盖式)。
+async fn upsert_turn_diff(
+    db: &DatabaseConnection,
+    team_id: &str,
+    thread_id: &str,
+    turn_id: &str,
+    diff: &str,
+) {
+    let now = now_ms();
+    let existing = turn_diff::Entity::find_by_id((thread_id.to_string(), turn_id.to_string()))
+        .one(db)
+        .await
+        .ok()
+        .flatten();
+    if let Some(model) = existing {
+        let mut am: turn_diff::ActiveModel = model.into();
+        am.team_id = Set(Some(team_id.to_string()));
+        am.diff = Set(diff.to_string());
+        am.updated_at = Set(now);
+        let _ = am.update(db).await;
+    } else {
+        let am = turn_diff::ActiveModel {
+            thread_id: Set(thread_id.to_string()),
+            turn_id: Set(turn_id.to_string()),
+            team_id: Set(Some(team_id.to_string())),
+            diff: Set(diff.to_string()),
+            updated_at: Set(now),
+        };
+        let _ = am.insert(db).await;
+    }
+}
+
 /// 用量字段读取:从可选 JSON 对象按 key 取 i64,缺省 0。
 fn read_i64(o: Option<&Value>, k: &str) -> i64 {
     o.and_then(|v| v.get(k)).and_then(Value::as_i64).unwrap_or(0)
@@ -285,12 +367,28 @@ pub fn id_to_string(id: &Value) -> String {
     }
 }
 
-/// team 稳定哈希 → generation(pending_server_requests 主键前半,隔离不同 team 的 request_id)。
+/// team 稳定哈希 + 进程启动 nonce → generation(pending_server_requests 主键前半,
+/// 隔离不同 team 的 request_id)。
+///
+/// 关键:必须混入进程级 nonce。否则 codex 进程重启(idle_evict/key 轮换/崩溃)后 jsonrpc
+/// next_id 重置为 1,新审批复用旧 request_id → upsert 命中旧行 → 覆盖历史审批记录。
+/// 加 nonce 后,本进程内同 team 稳定(mark_approval_resolved 能查到),跨进程不同(防复用)。
+/// failover 后新主节点 nonce 不同,查不到旧主的 pending(但旧主审批已随 codex 重启失效)。
+static GEN_NONCE: once_cell::sync::Lazy<u64> = once_cell::sync::Lazy::new(|| {
+    // 进程启动时间(ns)作为 nonce:每次重启不同,同进程稳定。
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos() as u64)
+        .unwrap_or(0)
+});
+
 pub fn team_generation(team_id: &str) -> i64 {
     use std::hash::{Hash, Hasher};
     let mut h = std::collections::hash_map::DefaultHasher::new();
     team_id.hash(&mut h);
-    (h.finish() as i64).abs()
+    let mixed = h.finish() ^ *GEN_NONCE;
+    // 清最高位确保非负(主键列);主键值唯一性由 (generation, request_id) 复合保证。
+    (mixed & 0x7FFF_FFFF_FFFF_FFFF) as i64
 }
 
 #[cfg(test)]

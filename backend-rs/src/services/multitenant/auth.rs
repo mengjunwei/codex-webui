@@ -183,16 +183,31 @@ pub async fn register_user(
     let id = new_id();
     let am = user::ActiveModel {
         id: Set(id.clone()),
-        email: Set(email),
+        email: Set(email.clone()),
         password_hash: Set(hash),
         email_verified_at: Set(None),
         display_name: Set(None),
         created_at: Set(now),
         updated_at: Set(now),
     };
-    am.insert(db)
-        .await
-        .map_err(|e| AppError::internal(format!("insert user: {e}")))?;
+    if let Err(e) = am.insert(db).await {
+        // 并发同邮箱注册:find-then-insert 竞态下第二个 insert 撞 email 唯一约束。
+        // 重查确认是 email 冲突 → 409(而非误报 500)。
+        let exists = user::Entity::find()
+            .filter(user::Column::Email.eq(email))
+            .one(db)
+            .await
+            .map_err(|e| AppError::internal(format!("re-check user: {e}")))?;
+        if exists.is_some() {
+            return Err(AppError::business(
+                ErrorCode::HttpConflict,
+                StatusCode::CONFLICT,
+                "email already registered".into(),
+                None,
+            ));
+        }
+        return Err(AppError::internal(format!("insert user: {e}")));
+    }
     // insert 已返回 Model,但因 sea_orm 跨方言行为统一(避免 RETURNING 差异),显式回查一次。
     user::Entity::find_by_id(id)
         .one(db)
@@ -261,20 +276,63 @@ pub async fn refresh_tokens(
             "refresh token expired or revoked",
         ));
     }
-    // 撤销旧 refresh(转 ActiveModel 更新 revoked 字段,避免 SQL 直写)。
-    let mut am: refresh_token::ActiveModel = rt.clone().into();
-    am.revoked = Set(true);
-    am.update(db)
+    // 撤销旧 refresh:用**条件 update**(WHERE id AND revoked=false)而非 ActiveModel::update。
+    // 后者是无条件写,并发同 token 时两个请求都通过上方校验、都 update revoked=true、各签一对
+    // 新令牌 → 一次性轮转被打破(攻击者窃取 refresh 与合法客户端竞速可获持续会话,reuse
+    // 检测失效)。条件 update 的 rows_affected=0 表示已被并发 revoke → 拒绝。
+    use sea_orm::sea_query::Expr;
+    let res = refresh_token::Entity::update_many()
+        .col_expr(refresh_token::Column::Revoked, Expr::value(true))
+        .filter(refresh_token::Column::Id.eq(rt.id.clone()))
+        .filter(refresh_token::Column::Revoked.eq(false))
+        .exec(db)
         .await
         .map_err(|e| AppError::internal(format!("revoke refresh token: {e}")))?;
+    if res.rows_affected == 0 {
+        // 并发:已被另一个请求 revoke(一次性轮转)。重用已撤销 token 视为失窃信号。
+        tracing::warn!(
+            user_id = %rt.user_id,
+            "refresh token reuse detected (concurrent rotate rejected)"
+        );
+        return Err(AppError::unauthorized(
+            ErrorCode::AuthInvalidToken,
+            "refresh token already used",
+        ));
+    }
     issue_tokens(&rt.user_id, db, secret).await
 }
 
 // ── 辅助 ─────────────────────────────────────────────────────────────────
 
-/// 粗略邮箱校验(M1 起步够用;后续可换更严格规则)。
+/// 邮箱校验(M1 起步够用;后续可换更严格规则)。
+/// 验证规则:
+/// 1. 包含且仅包含一个 @
+/// 2. 长度 5-255
+/// 3. @ 后面包含 .（域名部分）
+/// 4. @ 前面有内容（本地部分）
+/// 5. . 不在开头或结尾
 fn is_valid_email(s: &str) -> bool {
-    s.matches('@').count() == 1 && s.len() >= 5 && s.len() <= 255 && s.contains('.')
+    if s.len() < 5 || s.len() > 255 {
+        return false;
+    }
+    let parts: Vec<&str> = s.split('@').collect();
+    if parts.len() != 2 {
+        return false;
+    }
+    let local = parts[0];
+    let domain = parts[1];
+    // 本地部分不能为空
+    if local.is_empty() {
+        return false;
+    }
+    // 域名部分必须包含 .，且不在开头或结尾
+    if domain.is_empty() || !domain.contains('.') {
+        return false;
+    }
+    if domain.starts_with('.') || domain.ends_with('.') {
+        return false;
+    }
+    true
 }
 
 #[cfg(test)]
@@ -309,9 +367,20 @@ mod tests {
 
     #[test]
     fn email_validation() {
+        // 有效邮箱
         assert!(is_valid_email("a@b.co"));
-        assert!(!is_valid_email("noat"));
-        assert!(!is_valid_email("a@b"));
-        assert!(!is_valid_email(""));
+        assert!(is_valid_email("user@example.com"));
+        assert!(is_valid_email("test.email@domain.org"));
+        assert!(is_valid_email("user+tag@example.com"));
+
+        // 无效邮箱
+        assert!(!is_valid_email("noat")); // 没有 @
+        assert!(!is_valid_email("a@b")); // 没有 .
+        assert!(!is_valid_email("")); // 空
+        assert!(!is_valid_email("@b.co")); // 没有本地部分
+        assert!(!is_valid_email("a@.co")); // 域名以 . 开头
+        assert!(!is_valid_email("a@b.c.")); // 域名以 . 结尾
+        assert!(!is_valid_email("a@b")); // TLD 太短
+        assert!(!is_valid_email("a@@b.co")); // 多个 @
     }
 }

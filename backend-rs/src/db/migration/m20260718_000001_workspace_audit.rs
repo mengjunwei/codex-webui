@@ -22,7 +22,7 @@ impl MigrationTrait for Migration {
             .get_connection()
             .execute_unprepared(
                 r#"CREATE TABLE IF NOT EXISTS workspace_audit (
-                    id BIGSERIAL PRIMARY KEY,
+                    id VARCHAR(36) PRIMARY KEY,
                     team_id VARCHAR(36),
                     user_id VARCHAR(36),
                     thread_id VARCHAR(36),

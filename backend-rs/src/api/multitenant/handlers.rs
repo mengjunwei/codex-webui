@@ -387,7 +387,7 @@ pub async fn mt_create_thread(
     teams::require_member(db, &body.team_id, &uid.0).await?;
     metrics::counter!("mt_threads_created_total").increment(1);
 
-    let target = resolve_worker(&state, &body.team_id).await?;
+    let target = resolve_worker(&state, &body.team_id, None).await?;
     let resp = if target == state.node_id {
         let lease = state
             .mt_team_codex
@@ -413,6 +413,8 @@ pub async fn mt_create_thread(
         .or_else(|| resp.get("threadId").and_then(Value::as_str));
     if let Some(tid) = thread_id {
         double_write_thread_meta(db, tid, &body.team_id, &uid.0).await;
+        // 绑定粘性:确保新创建的 thread 后续 turn 路由到同一 worker。
+        let _ = state.sticky.bind(tid, &target, 3600).await;
     }
     // 主侧:把 thread 关联到其 rollout 文件,供 replicate_team_rollouts 精确读取。
     if target == state.node_id {
@@ -472,7 +474,7 @@ pub async fn mt_start_turn(
     // 配额校验(M6):超额返回 429。
     crate::services::multitenant::quota::check_turn_quota(db, &team_id).await?;
     metrics::counter!("mt_turns_total").increment(1);
-    let target = resolve_worker(&state, &team_id).await?;
+    let target = resolve_worker(&state, &team_id, Some(&thread_id)).await?;
     let mut params = body.0;
     if let Value::Object(ref mut map) = params {
         map.entry("threadId").or_insert(Value::String(thread_id.clone()));
@@ -495,7 +497,9 @@ pub async fn mt_start_turn(
             .await?
     };
     update_thread_activity(db, &thread_id).await;
-    let _ = crate::services::multitenant::quota::incr_turn_usage(db, &team_id, None).await;
+    if let Err(e) = crate::services::multitenant::quota::incr_turn_usage(db, &team_id, None).await {
+        tracing::warn!(error = %e, team_id = %team_id, "incr_turn_usage failed (non-fatal)");
+    }
     // 主侧:把 thread 关联到其 rollout 文件,供 replicate_team_rollouts 精确读取。
     if target == state.node_id {
         if let Some(p) = crate::services::multitenant::replication::find_rollout_for_thread(
@@ -537,14 +541,31 @@ pub async fn list_audit(
 
 // ── 多副本路由辅助 ──────────────────────────────────────────────────────
 
-/// 选目标节点:查/分配 session_replicas,返回该 team 的主节点。
-async fn resolve_worker(state: &AppState, team_id: &str) -> Result<String, AppError> {
+/// 选目标节点:先查粘性绑定(保证会话上下文本地性),未命中再查/分配 session_replicas。
+async fn resolve_worker(state: &AppState, team_id: &str, thread_id: Option<&str>) -> Result<String, AppError> {
+    // 1. 粘性优先:如果 thread 已绑定到某 worker 且该 worker 仍 alive,直接返回。
+    if let Some(tid) = thread_id {
+        if let Ok(Some(stuck_worker)) = state.sticky.lookup(tid).await {
+            // 验证该 worker 仍 alive(避免路由到已死节点)。
+            if crate::services::multitenant::cluster::is_alive(state.cluster.as_ref(), &stuck_worker).await {
+                return Ok(stuck_worker);
+            }
+            // worker 已死,清除失效绑定。
+            let _ = state.sticky.clear(tid).await;
+        }
+    }
+    // 2. 回退到主副本分配。
     let row = crate::services::multitenant::replication::get_or_assign(
         &state.db,
         team_id,
         state.cluster.as_ref(),
     )
     .await?;
+    // 3. 绑定粘性(如果有 thread_id)。
+    if let Some(tid) = thread_id {
+        // 绑定 TTL = 1 小时(活跃时在 turn 完成后续期)。
+        let _ = state.sticky.bind(tid, &row.primary_node, 3600).await;
+    }
     Ok(row.primary_node)
 }
 
@@ -588,7 +609,9 @@ async fn update_thread_activity(db: &DatabaseConnection, thread_id: &str) {
         let mut am: ThreadActiveModel = model.into();
         am.last_activity_at = Set(now);
         am.updated_at = Set(now);
-        let _ = am.update(db).await;
+        if let Err(e) = am.update(db).await {
+            tracing::warn!(error = %e, thread_id = %thread_id, "update thread activity failed (non-fatal)");
+        }
     }
 }
 
@@ -630,7 +653,7 @@ pub async fn mt_resolve_approval(
 ) -> Result<StatusCode, AppError> {
     let db = require_db(&state);
     let team_id = require_thread_team(db, &thread_id, &uid.0).await?;
-    let target = resolve_worker(&state, &team_id).await?;
+    let target = resolve_worker(&state, &team_id, Some(&thread_id)).await?;
     let id_val = parse_request_id(&body.request_id);
     let ok = if target == state.node_id {
         let lease = state
@@ -667,7 +690,9 @@ pub async fn mt_resolve_approval(
     };
     if ok {
         // 仅在成功回传 codex 后标记已处理;失败则保留 pending 供前端重试(避免审批死锁)。
-        let _ = mark_approval_resolved(db, &team_id, &body.request_id, &uid.0, body.approved).await;
+        if let Err(e) = mark_approval_resolved(db, &team_id, &body.request_id, &uid.0, body.approved).await {
+            tracing::warn!(error = %e, request_id = %body.request_id, "mark_approval_resolved failed (non-fatal, pending retained for retry)");
+        }
         Ok(StatusCode::NO_CONTENT)
     } else {
         Err(AppError::internal("failed to respond to codex".into()))
@@ -704,7 +729,9 @@ async fn mark_approval_resolved(
         am.resolved_by = Set(Some(user_id.to_string()));
         am.resolved_at = Set(Some(now));
         am.updated_at = Set(now);
-        let _ = am.update(db).await;
+        am.update(db)
+            .await
+            .map_err(|e| AppError::internal(format!("update approval status: {e}")))?;
     }
     Ok(())
 }
@@ -774,7 +801,9 @@ pub async fn mt_archive_thread(
         let mut am: ThreadActiveModel = model.into();
         am.status = Set("archived".to_string());
         am.updated_at = Set(crate::services::multitenant::now_ms());
-        let _ = am.update(db).await;
+        am.update(db)
+            .await
+            .map_err(|e| AppError::internal(format!("archive thread: {e}")))?;
     }
     Ok(StatusCode::NO_CONTENT)
 }
@@ -797,7 +826,9 @@ pub async fn mt_rename_thread(
         let mut am: ThreadActiveModel = model.into();
         am.title = Set(Some(body.name));
         am.updated_at = Set(crate::services::multitenant::now_ms());
-        let _ = am.update(db).await;
+        am.update(db)
+            .await
+            .map_err(|e| AppError::internal(format!("rename thread: {e}")))?;
     }
     Ok(StatusCode::NO_CONTENT)
 }
@@ -817,7 +848,7 @@ pub async fn mt_invoke_thread(
 ) -> Result<Json<Value>, AppError> {
     let db = require_db(&state);
     let team_id = require_thread_team(db, &thread_id, &uid.0).await?;
-    let target = resolve_worker(&state, &team_id).await?;
+    let target = resolve_worker(&state, &team_id, Some(&thread_id)).await?;
     let mut params = body.params.unwrap_or(Value::Object(Default::default()));
     if let Value::Object(ref mut m) = params {
         m.entry("threadId").or_insert(Value::String(thread_id.clone()));

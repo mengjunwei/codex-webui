@@ -17,6 +17,7 @@ use codex_webui::{
     services::multitenant::event_bus::EventBus,
     services::multitenant::replication,
     services::multitenant::rpc::WorkerRpcClient,
+    services::multitenant::sticky::{NoopSticky, RedisSticky, StickyStore},
     services::settings::{self, reconcile_settings},
     services::terminal::{TerminalConfig, TerminalService},
     services::threads::ThreadResumeRegistry,
@@ -71,14 +72,18 @@ async fn main() -> anyhow::Result<()> {
         }
     };
 
-    let mt_event_bus: Option<Arc<dyn EventBus>> = mt_redis
-        .as_ref()
-        .map(|c| {
-            Arc::new(codex_webui::services::multitenant::event_bus::RedisEventBus::new(
-                c.clone(),
-                256,
-            )) as Arc<dyn EventBus>
-        });
+    // 事件总线:有 Redis 用 RedisEventBus(多机跨节点);无 Redis 用 InMemoryEventBus(单机)。
+    // Bug8 修复:此前无 Redis 时 mt_event_bus=None → codex_pool 不发布事件、event_persist 不
+    // 启动 → 单节点部署(文档明确支持)静默丢失全部审批/用量/错误/diff 持久化,quota 不累加。
+    // 改为总用 Some:单节点用 InMemory bus(per-team codex 事件 → event_persist 落 PG)。
+    let mt_event_bus: Option<Arc<dyn EventBus>> = Some(match mt_redis.as_ref() {
+        Some(c) => Arc::new(
+            codex_webui::services::multitenant::event_bus::RedisEventBus::new(c.clone(), 256),
+        ) as Arc<dyn EventBus>,
+        None => Arc::new(
+            codex_webui::services::multitenant::event_bus::InMemoryEventBus::new(256),
+        ) as Arc<dyn EventBus>,
+    });
 
     // 全局 CODEX_HOME(所有 team 共用;team 仅前端 UI 隔离)。
     let codex_home: PathBuf = cfg.codex_home().map(PathBuf::from).unwrap_or_else(|| {
@@ -129,6 +134,12 @@ async fn main() -> anyhow::Result<()> {
     };
 
     let worker_rpc = Arc::new(WorkerRpcClient::new(Some(internal_token.clone())));
+
+    // 会话粘性存储:有 Redis 用 RedisSticky,否则 NoopSticky。
+    let sticky: Arc<dyn StickyStore> = match &mt_redis {
+        Some(c) => Arc::new(RedisSticky::new(c.clone())),
+        None => Arc::new(NoopSticky),
+    };
 
     let pool_config = PoolConfig::new(
         cfg.process_pool.max_processes_per_team,
@@ -186,17 +197,23 @@ async fn main() -> anyhow::Result<()> {
         codex_webui::api::realtime::spawn_event_bus_emit(io.clone(), bus);
     }
     // team 事件持久化(审批/turn 错误/token 用量落 PG)。
+    // 传 node_id:event_persist 用 primary 守门(fan-out 去重),仅 team 主节点处理该 team 事件,
+    // 防多副本 HA 下审批重复 N 行 + token 配额累加 N 次。
     if let Some(bus) = mt_event_bus.clone() {
-        codex_webui::services::multitenant::event_persist::spawn_team_event_persistor(bus, db.clone());
+        codex_webui::services::multitenant::event_persist::spawn_team_event_persistor(
+            bus,
+            db.clone(),
+            node_id.clone(),
+        );
     }
 
-    let status_service = Arc::new(codex_webui::services::codex_status::CodexStatusService::new(codex.clone()));
+    let status_service = codex_webui::services::codex_status::CodexStatusService::new(codex.clone());
 
     let active_rollout = Arc::new(tokio::sync::Mutex::new(HashMap::new()));
     let local_offsets = Arc::new(tokio::sync::Mutex::new(HashMap::new()));
 
     // 启动 hook audit 写入器(per-user workspace 实施步骤 5+7)。
-    let audit_writer =
+    let (audit_writer, audit_writer_handle) =
         codex_webui::services::workspace::audit_writer::spawn(db.clone());
 
     let state = AppState {
@@ -216,6 +233,7 @@ async fn main() -> anyhow::Result<()> {
         node_id: node_id.clone(),
         cluster: cluster.clone(),
         worker_rpc: worker_rpc.clone(),
+        sticky: sticky.clone(),
         internal_token: internal_token.clone(),
         hook_token: cfg.security.internal_hook_token.clone(),
         audit_writer: audit_writer.clone(),
@@ -239,8 +257,11 @@ async fn main() -> anyhow::Result<()> {
     }
 
     // 主副本维护 task:主续约 + 复制 rollout;副本探测主失活 → 晋升 + resume。
+    // 保存 JoinHandle:关停时 abort,否则 loop task 永久持有 state.clone()(含 audit_writer 的
+    // mpsc Sender),audit_writer 的 rx 永不返回 None → audit_writer_handle.await 死锁,
+    // 进程 Ctrl-C 后挂死只能 SIGKILL,审计 flush 永不发生。
     let st = state.clone();
-    tokio::spawn(async move {
+    let replica_maintenance_handle = tokio::spawn(async move {
         loop {
             tokio::time::sleep(Duration::from_secs(15)).await;
             run_replica_maintenance(&st).await;
@@ -248,7 +269,9 @@ async fn main() -> anyhow::Result<()> {
     });
 
     // 内网 RPC server(所有节点都开;承接转发请求 + 副本 receive rollout)。
-    {
+    // 保存 JoinHandle:shutdown 时 main 等其 graceful 退出,避免进程退出中断正在写的
+    // rollout(receive_rollout 的 seek+write 非原子,中断可损坏副本文件)。
+    let internal_rpc_handle = {
         let internal_state = state.clone();
         let internal_app = build_internal_router(internal_state);
         let addr = format!("{}:{}", cfg.cluster.internal_rpc_host, cfg.internal_rpc_port());
@@ -264,8 +287,8 @@ async fn main() -> anyhow::Result<()> {
             let _ = axum::serve(listener, internal_app)
                 .with_graceful_shutdown(shutdown_signal())
                 .await;
-        });
-    }
+        })
+    };
 
     let codex_for_shutdown = state.codex.clone();
     let app = build_router(state.clone()).await.layer(ws_layer);
@@ -287,6 +310,17 @@ async fn main() -> anyhow::Result<()> {
     server.await?;
 
     tracing::info!("drain complete, shutting down codex");
+    // 等 internal RPC server graceful 退出(避免中断正在写的 rollout),再销毁 codex。
+    let _ = internal_rpc_handle.await;
+    // abort 副本维护 loop task:释放其持有的 state.clone()(audit_writer sender),
+    // 否则 audit_writer 的 rx 永不返回 None → flush 永久阻塞(死锁)。
+    replica_maintenance_handle.abort();
+    // drop state 释放 audit_writer 的 mpsc sender(本节点最后一份,除非有 promote_resume_team
+    // 短命 task 仍在跑 —— 短命,退出后释放);后台 task flush 剩余 buf 后退出。
+    drop(state);
+    // audit_writer flush:带 5s 超时兜底,防 promote_resume_team(resume 各 thread,10s/team)
+    // 在 failover 期间仍持 sender 导致短暂阻塞;超时则放弃 flush(best-effort 审计)。
+    let _ = tokio::time::timeout(Duration::from_secs(5), audit_writer_handle).await;
     codex_for_shutdown.destroy().await;
     Ok(())
 }
@@ -337,9 +371,17 @@ async fn run_replica_maintenance(state: &AppState) {
             .await
             {
                 Ok(true) => {
-                    if let Err(e) = promote_resume_team(state, &team_id).await {
-                        tracing::warn!(error = %e, team_id = %team_id, "promote resume failed");
-                    }
+                    // M1 修复:promote_resume_team spawn 独立 task,不阻塞维护循环。
+                    // 该函数对 team 所有 thread 串行 thread/resume(每个 30s 超时),N 个 thread
+                    // 可累积超过 LEASE_TTL(120s),阻塞期间排在后面的 team 拿不到 renew_lease →
+                    // 其副本误判主失活 → 雪崩式切主。spawn 后维护循环继续给其他 team 续约。
+                    let st = state.clone();
+                    let team_id_owned = team_id.clone();
+                    tokio::spawn(async move {
+                        if let Err(e) = promote_resume_team(&st, &team_id_owned).await {
+                            tracing::warn!(error = %e, team_id = %team_id_owned, "promote resume failed");
+                        }
+                    });
                 }
                 Ok(false) => {}
                 Err(e) => tracing::warn!(error = %e, team_id = %team_id, "promote check failed"),
@@ -349,6 +391,9 @@ async fn run_replica_maintenance(state: &AppState) {
 }
 
 /// 副本晋升后:起该 team 的 codex 进程,并对所有活跃 thread 调 thread/resume 续接。
+///
+/// 每个 resume 加 10s 超时上限(M1):thread 多时避免单 thread 慢拖累整体,
+/// 且单 thread 卡死不阻塞其他 thread 续接。
 async fn promote_resume_team(state: &AppState, team_id: &str) -> Result<(), codex_webui::error::AppError> {
     use codex_webui::db::entities::thread::{Column as ThreadColumn, Entity as ThreadEntity};
     use sea_orm::{ColumnTrait, EntityTrait, QueryFilter};
@@ -368,8 +413,12 @@ async fn promote_resume_team(state: &AppState, team_id: &str) -> Result<(), code
             .client_for(team_id, &state.db, &state.mt_master_key)
             .await?;
         let params = serde_json::json!({ "threadId": t.id, "persistExtendedHistory": true });
-        if let Err(e) = lease.client().request("thread/resume", Some(params)).await {
-            tracing::warn!(error = %e, thread_id = %t.id, "resume after promote failed (non-fatal)");
+        // 10s 超时:单 thread resume 卡死不拖累其他 thread。
+        let resume = lease.client().request("thread/resume", Some(params));
+        match tokio::time::timeout(std::time::Duration::from_secs(10), resume).await {
+            Ok(Ok(_)) => {}
+            Ok(Err(e)) => tracing::warn!(error = %e, thread_id = %t.id, "resume after promote failed (non-fatal)"),
+            Err(_) => tracing::warn!(thread_id = %t.id, "resume after promote timed out (10s, non-fatal)"),
         }
     }
     metrics::counter!("replica_promotion_resumed_total").increment(1);

@@ -42,3 +42,57 @@ fn extract_bearer(req: &Request<Body>) -> Option<String> {
         Some(t.to_string())
     }
 }
+
+/// 文件内联预览/OnlyOffice 下载专用鉴权(给 /api/files/serve 与 /api/files/archive/entry)。
+///
+/// 这两个端点必须支持 `?access_token=` 查询参数:<img>/<video>/<pdf> 标签与 OnlyOffice
+/// Document Server 都无法带 `Authorization` 头。下载 token 是 onlyoffice 签发的
+/// sub="webui" 短期(5min) JWT;同时仍接受多租户 bearer(sub=user_id)。
+///
+/// 回归背景:此前 /api/* 走旧 require_auth(支持 query token),统一多租户认证切到
+/// require_user_auth(只读 Authorization 头)后,query token 401,OnlyOffice/预览整体不可用。
+pub async fn require_file_access(
+    State(state): State<AppState>,
+    req: Request<Body>,
+    next: Next,
+) -> Result<Response, AppError> {
+    use axum::http::Method;
+    // 1. Authorization: Bearer <多租户 access JWT>。
+    if let Some(token) = extract_bearer(&req) {
+        if let Ok(user_id) = verify_access(&token, state.auth.jwt_secret()) {
+            let mut req = req;
+            req.extensions_mut().insert(UserId(user_id));
+            return Ok(next.run(req).await);
+        }
+    }
+    // 2. ?access_token=<token>(仅 GET)。接受两种:
+    //    (a) 前端内联预览(<img>/<video>/<pdf>)传入的多租户 access JWT(sub=user_id);
+    //    (b) OnlyOffice Document Server 下载用的 download token(sub="webui",onlyoffice 签发)。
+    if req.method() == Method::GET {
+        if let Some(token) = extract_query_access_token(&req) {
+            if verify_access(&token, state.auth.jwt_secret()).is_ok()
+                || state.auth.verify_jwt(&token).unwrap_or(false)
+            {
+                return Ok(next.run(req).await);
+            }
+        }
+    }
+    Err(AppError::unauthorized(
+        ErrorCode::AuthInvalidToken,
+        "invalid authentication token",
+    ))
+}
+
+/// 从查询参数提取 access_token(仅形似 JWT:3 段点分隔)。
+fn extract_query_access_token(req: &Request<Body>) -> Option<String> {
+    let query = req.uri().query()?;
+    for pair in query.split('&') {
+        if let Some(val) = pair.strip_prefix("access_token=") {
+            let val = val.trim();
+            if !val.is_empty() && val.split('.').count() == 3 {
+                return Some(val.to_string());
+            }
+        }
+    }
+    None
+}

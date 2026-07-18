@@ -6,6 +6,7 @@ use crate::services::codex_status::CodexStatusService;
 use crate::services::multitenant::cluster::ClusterMembership;
 use crate::services::multitenant::codex_pool::TeamCodexManager;
 use crate::services::multitenant::rpc::WorkerRpcClient;
+use crate::services::multitenant::sticky::StickyStore;
 use crate::services::workspace::audit_writer::AuditWriter;
 use metrics_exporter_prometheus::PrometheusHandle;
 use crate::services::settings::ValueSource;
@@ -51,6 +52,8 @@ pub struct AppState {
     pub cluster: Arc<dyn ClusterMembership>,
     /// 节点间内网 RPC 客户端(非主节点转发到该 team 主节点)。
     pub worker_rpc: Arc<WorkerRpcClient>,
+    /// 会话粘性存储(thread → worker 绑定,保证同一会话始终落到同一 worker)。
+    pub sticky: Arc<dyn StickyStore>,
     /// 内网 RPC 鉴权 token(INTERNAL_RPC_TOKEN;启动必填 ≥32 字节)。
     pub internal_token: String,
     /// Hook webhook 鉴权 token(INTERNAL_HOOK_TOKEN;启动必填 ≥32 字节)。
@@ -66,7 +69,7 @@ pub struct AppState {
     /// 复制循环按此表精确读取文件,避免 UUID 子串误匹配。
     pub active_rollout: Arc<tokio::sync::Mutex<HashMap<String, PathBuf>>>,
     /// 无 Redis 时 offset fallback 存储(进程内);重启归零接受。
-    pub local_offsets: Arc<tokio::sync::Mutex<HashMap<(String, String), u64>>>,
+    pub local_offsets: Arc<tokio::sync::Mutex<HashMap<(String, String, String), u64>>>,
 }
 
 impl AppState {

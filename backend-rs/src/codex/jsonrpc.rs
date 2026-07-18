@@ -17,7 +17,7 @@ use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+use tokio::io::{AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::process::{Child, ChildStdin, ChildStdout};
 use tokio::sync::{broadcast, mpsc, oneshot, Mutex};
 use tokio::task::JoinHandle;
@@ -82,6 +82,8 @@ pub struct CodexJsonRpcClient {
 pub enum CloseReason {
     StdoutEof,
     Destroy,
+    /// stdin 写入失败(子进程不读/管道断):client 不可用,需标记 closed 促清理。
+    WriteFailed,
 }
 
 impl CodexJsonRpcClient {
@@ -138,8 +140,10 @@ impl CodexJsonRpcClient {
 
         // 写入任务：从 write_tx 取出数据写入 stdin（每条出站行都记录到 jsonl）。
         let writer_jsonl = jsonl_tx.clone();
+        let writer_closed = closed.clone();
+        let writer_close = close_tx.clone();
         let writer_task = tokio::spawn(async move {
-            write_loop(stdin, write_rx, writer_jsonl).await;
+            write_loop(stdin, write_rx, writer_jsonl, writer_closed, writer_close).await;
         });
 
         // JSONL 追加任务（spawn_blocking：同步文件 IO 不占 tokio worker；
@@ -162,7 +166,8 @@ impl CodexJsonRpcClient {
     }
 
     pub fn is_closed(&self) -> bool {
-        self.closed.load(Ordering::SeqCst)
+        // Acquire:确保看到最新的 closed 状态和之前的修改。
+        self.closed.load(Ordering::Acquire)
     }
 
     /// 发送 JSON-RPC 请求并等待关联的响应。
@@ -184,7 +189,8 @@ impl CodexJsonRpcClient {
         if self.is_closed() {
             return Err(RpcError::Closed);
         }
-        let id = self.next_id.fetch_add(1, Ordering::SeqCst);
+        // Relaxed:id 只用于关联请求和响应,不需要严格的顺序。
+        let id = self.next_id.fetch_add(1, Ordering::Relaxed);
         let mut msg = serde_json::Map::new();
         msg.insert("method".into(), Value::String(method.into()));
         msg.insert("id".into(), Value::Number(id.into()));
@@ -232,14 +238,17 @@ impl CodexJsonRpcClient {
     /// 响应服务端主动发起的请求（例如审批决定）。
     /// `id` 原样转发以保持数字/字符串类型（codex 通过 id 的值和类型
     /// 共同关联响应）。
+    ///
+    /// closed 时返回 Err(Closed) 而非静默 Ok:审批响应是"需确认到达"的语义
+    /// (不是 fire-and-forget notify),静默成功会让调用方误判已处理 →
+    /// DB 标记 resolved 但 codex 从未收到 → 审批卡死且无法自愈。
     pub fn respond_to_server_request(
         &self,
         id: Value,
         result: Value,
     ) -> Result<(), RpcError> {
-        // closed 时静默丢弃（对齐 TS；调用方已预先校验连通性）。
         if self.is_closed() {
-            return Ok(());
+            return Err(RpcError::Closed);
         }
         let mut msg = serde_json::Map::new();
         msg.insert("id".into(), id);
@@ -250,6 +259,7 @@ impl CodexJsonRpcClient {
 
     /// 用错误码响应服务端请求（审批拒绝等场景）。
     /// 对齐 TS `respondToServerRequestWithError(id, code, message)`。
+    /// 与 respond_to_server_request 一致:closed 时返回 Err(避免静默成功导致状态不一致)。
     pub fn respond_to_server_request_with_error(
         &self,
         id: Value,
@@ -257,7 +267,7 @@ impl CodexJsonRpcClient {
         message: &str,
     ) -> Result<(), RpcError> {
         if self.is_closed() {
-            return Ok(());
+            return Err(RpcError::Closed);
         }
         let mut msg = serde_json::Map::new();
         msg.insert("id".into(), id);
@@ -291,7 +301,8 @@ impl CodexJsonRpcClient {
 
     /// 标记为关闭，拒绝所有待处理请求，并杀死子进程。
     pub async fn destroy(&self) {
-        self.closed.store(true, Ordering::SeqCst);
+        // Release:确保其他线程看到 closed=true 和之前的修改。
+        self.closed.store(true, Ordering::Release);
         self.pending.lock().await.clear(); // drop 发送端 → 请求收到 Closed
         if let Some(mut child) = self.child.lock().await.take() {
             let _ = child.kill().await;
@@ -311,23 +322,45 @@ async fn read_loop(
     closed: Arc<AtomicBool>,
     jsonl_tx: mpsc::Sender<String>,
 ) {
-    let reader = BufReader::new(stdout);
-    let mut lines = reader.lines();
+    // BugC 修复:BufReader::lines().next_line() 无最大行长度,单行超大响应(恶意 marketplace
+    // /codex 异常)会整行读入 String → OOM。改为手动 chunk 读 + 累积上限,超限丢弃该行。
+    const MAX_LINE_BYTES: usize = 64 * 1024 * 1024; // 64MB:正常 JSON-RPC 响应远低于此。
+    let mut reader = BufReader::new(stdout);
+    let mut buf: Vec<u8> = Vec::with_capacity(8192);
+    let mut chunk = [0u8; 8192];
     loop {
-        match lines.next_line().await {
-            Ok(Some(line)) => {
-                jsonl_log(&jsonl_tx, "in", &line);
-                dispatch_line(&line, &pending, &notify_tx, &server_request_tx).await;
-            }
-            Ok(None) => break, // EOF
+        let n = match reader.read(&mut chunk).await {
+            Ok(0) => break, // EOF
+            Ok(n) => n,
             Err(e) => {
                 tracing::warn!("codex stdout read error: {}", e);
                 break;
             }
+        };
+        buf.extend_from_slice(&chunk[..n]);
+        // 累积超限(一行未遇 \n 却已超 64MB)→ 丢弃,防 OOM。
+        if buf.len() > MAX_LINE_BYTES {
+            tracing::warn!(
+                size = buf.len(),
+                "codex stdout line exceeds {} bytes, discarding to avoid OOM",
+                MAX_LINE_BYTES
+            );
+            buf.clear();
+            continue;
+        }
+        // 处理所有完整行(以 \n 分隔)。
+        while let Some(pos) = buf.iter().position(|&b| b == b'\n') {
+            let line_bytes: Vec<u8> = buf.drain(..=pos).collect();
+            let line = String::from_utf8_lossy(&line_bytes)
+                .trim_end_matches(['\r', '\n'])
+                .to_string();
+            jsonl_log(&jsonl_tx, "in", &line);
+            dispatch_line(&line, &pending, &notify_tx, &server_request_tx).await;
         }
     }
     // stdout 已关闭：拒绝所有待处理请求 + 发送关闭信号。
-    closed.store(true, Ordering::SeqCst);
+    // Release:确保其他线程看到 closed=true 和之前的修改。
+    closed.store(true, Ordering::Release);
     pending.lock().await.clear();
     let _ = close_tx.send(CloseReason::StdoutEof);
 }
@@ -336,6 +369,8 @@ async fn write_loop(
     mut stdin: ChildStdin,
     mut write_rx: mpsc::Receiver<String>,
     jsonl_tx: mpsc::Sender<String>,
+    closed: Arc<AtomicBool>,
+    close_tx: broadcast::Sender<CloseReason>,
 ) {
     while let Some(line) = write_rx.recv().await {
         jsonl_log(&jsonl_tx, "out", &line);
@@ -349,6 +384,11 @@ async fn write_loop(
             break;
         }
     }
+    // write 失败(stdin 关闭/子进程不读):标记 closed + 发 close 信号。
+    // 否则 is_closed() 仍 false,pick_slot 会继续选这个已死的 client(codex_pool),
+    // 所有 request 因 write_rx dropped 返回 Closed,但 slot 不被清理 → team 请求持续失败。
+    closed.store(true, Ordering::Release);
+    let _ = close_tx.send(CloseReason::WriteFailed);
 }
 
 /// JSONL 追加循环（同步，运行在 spawn_blocking 线程上）。
@@ -372,12 +412,51 @@ fn jsonl_loop_blocking(mut jsonl_rx: mpsc::Receiver<String>) {
 fn jsonl_log(jsonl_tx: &mpsc::Sender<String>, dir: &str, raw_line: &str) {
     // 重新解析以嵌入到 {ts, dir, msg} 下；失败时退回原始字符串。
     let msg: Value = serde_json::from_str(raw_line).unwrap_or(Value::String(raw_line.into()));
+    // BugB 修复:出站消息可能含凭据(account/login 的 apiKey/accessToken、设备码 userCode 等),
+    // 明文落盘 logs/codex-jsonrpc.jsonl 会泄露给任何能读该文件的人(运维/备份/日志采集)。
+    // 脱敏后再写盘。
+    let msg = redact_secrets_for_log(&msg);
     let entry = serde_json::json!({
         "ts": chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
         "dir": dir,
         "msg": msg,
     });
     let _ = jsonl_tx.try_send(entry.to_string()); // 满（慢盘）则丢弃
+}
+
+/// 递归脱敏 JSON-RPC 日志中的敏感字段(key 名匹配 token/password/api[_-]?key/secret/
+/// authorization/accessToken/apiKey/userCode/verificationUrl 时,value 替换为 [redacted])。
+/// 防凭据明文落盘 jsonl 日志。
+fn redact_secrets_for_log(value: &Value) -> Value {
+    match value {
+        Value::Object(m) => {
+            let mut out = serde_json::Map::new();
+            for (k, v) in m {
+                if is_sensitive_key(k) && !v.is_null() {
+                    out.insert(k.clone(), Value::String("[redacted]".into()));
+                } else {
+                    out.insert(k.clone(), redact_secrets_for_log(v));
+                }
+            }
+            Value::Object(out)
+        }
+        Value::Array(a) => Value::Array(a.iter().map(redact_secrets_for_log).collect()),
+        other => other.clone(),
+    }
+}
+
+/// 判断 key 名是否敏感(小写匹配)。
+fn is_sensitive_key(key: &str) -> bool {
+    let k = key.to_ascii_lowercase();
+    k.contains("token")
+        || k.contains("password")
+        || k.contains("apikey")
+        || k.contains("api_key")
+        || k.contains("secret")
+        || k.contains("authorization")
+        || k == "accesstoken"
+        || k == "usercode"
+        || k == "verificationurl"
 }
 
 /// 解析单条入站行并路由。为单元测试而抽取出来。

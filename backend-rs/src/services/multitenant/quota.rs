@@ -20,11 +20,15 @@ pub fn hour_bucket_ms(now_ms: i64) -> i64 {
 }
 
 /// 当前月桶字符串 `YYYY-MM`。
+/// 如果时间戳无效,记录警告并使用当前时间。
 pub fn month_bucket(now_ms: i64) -> String {
-    chrono::DateTime::<Utc>::from_timestamp_millis(now_ms)
-        .unwrap_or_else(Utc::now)
-        .format("%Y-%m")
-        .to_string()
+    match chrono::DateTime::<Utc>::from_timestamp_millis(now_ms) {
+        Some(dt) => dt.format("%Y-%m").to_string(),
+        None => {
+            tracing::warn!(now_ms, "invalid timestamp for month_bucket, using current time");
+            Utc::now().format("%Y-%m").to_string()
+        }
+    }
 }
 
 /// 确保 team 有配额记录(创建 team 时调用,写入默认配额)。已存在则 no-op。
@@ -87,16 +91,15 @@ pub async fn check_turn_quota(db: &DatabaseConnection, team_id: &str) -> Result<
 }
 
 /// 累加一次 turn 用量(小时桶变化时重置计数);tokens 为可选的月度 token 增量(留空则只计次数)。
+/// 如果 quota row 不存在则自动创建(兜底,避免因 create_team 时失败导致永久报错)。
 pub async fn incr_turn_usage(
     db: &DatabaseConnection,
     team_id: &str,
     tokens_delta: Option<i64>,
 ) -> Result<(), AppError> {
-    let row = Entity::find_by_id(team_id.to_string())
-        .one(db)
-        .await
-        .map_err(|e| AppError::internal(format!("query quota: {e}")))?
-        .ok_or_else(|| AppError::internal("quota row missing".into()))?;
+    // 确保 quota row 存在(兜底:如果 create_team 时 ensure_quota_row 失败,此处补救)。
+    // 直接使用返回值,避免重复查询。
+    let row = ensure_quota_row(db, team_id, 0).await?;
     let now = now_ms();
     let cur_hour = hour_bucket_ms(now);
     let cur_month = month_bucket(now);
@@ -125,9 +128,15 @@ pub async fn incr_turn_usage(
     let mut am: ActiveModel = row.into();
     am.used_turns_hour = Set(new_turns);
     am.hour_bucket = Set(new_hour);
-    am.used_tokens_month = Set(new_tokens);
-    am.month_bucket = Set(new_month);
     am.updated_at = Set(now);
+    // Bug2 修复:仅当有 token 增量(tokens_delta=Some)时才 Set used_tokens_month/month_bucket;
+    // 否则留 Unchanged(SeaORM 不把 Unchanged 列写入 UPDATE),避免 find-then-update 的陈旧
+    // row.used_tokens_month 覆写并发的 incr_tokens 原子加(token 计费系统性漏计)。
+    // mt_start_turn 调 incr_turn_usage(None),token 计费走 event_persist 的 incr_tokens。
+    if tokens_delta.is_some() {
+        am.used_tokens_month = Set(new_tokens);
+        am.month_bucket = Set(new_month);
+    }
     am.update(db)
         .await
         .map_err(|e| AppError::internal(format!("update quota: {e}")))?;
@@ -135,31 +144,40 @@ pub async fn incr_turn_usage(
 }
 
 /// 累加月度 token 用量(由 event_persist 在 token usage 更新时调用;跨月自动重置)。
+///
+/// 用条件增量 update(而非 find-then-update)防并发 lost update:计费场景下并发 turn 的
+/// token 增量必须准确累加。两步:
+/// 1. 跨月重置(WHERE month_bucket != cur → used=0, month=cur);
+/// 2. 同月原子加(WHERE month_bucket = cur → used = used + delta)。
 pub async fn incr_tokens(
     db: &DatabaseConnection,
     team_id: &str,
     delta: i64,
 ) -> Result<(), AppError> {
     ensure_quota_row(db, team_id, 0).await?;
-    let row = Entity::find_by_id(team_id.to_string())
-        .one(db)
-        .await
-        .map_err(|e| AppError::internal(format!("query quota: {e}")))?
-        .ok_or_else(|| AppError::internal("quota row missing".into()))?;
     let now = now_ms();
     let cur_month = month_bucket(now);
-    let (new_tokens, new_month) = if row.month_bucket != cur_month {
-        (delta, cur_month)
-    } else {
-        (row.used_tokens_month + delta, row.month_bucket.clone())
-    };
-    let mut am: ActiveModel = row.into();
-    am.used_tokens_month = Set(new_tokens);
-    am.month_bucket = Set(new_month);
-    am.updated_at = Set(now);
-    am.update(db)
+    use crate::db::entities::team_quota::Column as QCol;
+    use sea_orm::sea_query::Expr;
+    use sea_orm::{ColumnTrait, EntityTrait, QueryFilter};
+    // 1. 跨月:把 used 重置为 0、month 推进到当前月(仅当旧 month_bucket != cur)。
+    let _ = Entity::update_many()
+        .col_expr(QCol::UsedTokensMonth, Expr::value(0))
+        .col_expr(QCol::MonthBucket, Expr::value(cur_month.clone()))
+        .col_expr(QCol::UpdatedAt, Expr::value(now))
+        .filter(QCol::TeamId.eq(team_id.to_string()))
+        .filter(QCol::MonthBucket.ne(cur_month.clone()))
+        .exec(db)
+        .await;
+    // 2. 同月:原子加 delta(WHERE month_bucket = cur)。并发下各 +delta 由 DB 串行累加。
+    Entity::update_many()
+        .col_expr(QCol::UsedTokensMonth, Expr::col(QCol::UsedTokensMonth).add(delta))
+        .col_expr(QCol::UpdatedAt, Expr::value(now))
+        .filter(QCol::TeamId.eq(team_id.to_string()))
+        .filter(QCol::MonthBucket.eq(cur_month))
+        .exec(db)
         .await
-        .map_err(|e| AppError::internal(format!("update quota: {e}")))?;
+        .map_err(|e| AppError::internal(format!("update quota tokens: {e}")))?;
     Ok(())
 }
 

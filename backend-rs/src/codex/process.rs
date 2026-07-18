@@ -90,8 +90,9 @@ impl CodexProcessManager {
     }
 
     /// 当前 generation（首次成功初始化之前为 0）。
+    /// 使用 Relaxed:generation 只在日志和事件中使用,不用于同步。
     pub fn generation(&self) -> u64 {
-        self.generation.load(Ordering::SeqCst)
+        self.generation.load(Ordering::Relaxed)
     }
 
     /// 最近一次 initialize 握手结果（原始 JSON），未初始化时为 None。
@@ -124,7 +125,8 @@ impl CodexProcessManager {
     /// - spawn 之后、写 `current` 之前若 destroy 被调用，destroy 会 take 到 None；
     /// - 此刻在锁内重检 destroyed=true → 立即销毁刚刚启动的客户端，避免孤儿进程。
     pub async fn start(self: Arc<Self>) {
-        if self.destroyed.load(Ordering::SeqCst) {
+        // Acquire:确保看到最新的 destroyed 状态。
+        if self.destroyed.load(Ordering::Acquire) {
             return;
         }
 
@@ -133,7 +135,7 @@ impl CodexProcessManager {
             Ok(c) => c,
             Err(e) => {
                 tracing::error!("failed to spawn codex app-server: {}", e);
-                if !self.destroyed.load(Ordering::SeqCst) {
+                if !self.destroyed.load(Ordering::Acquire) {
                     self.clone().restart().await;
                 }
                 return;
@@ -143,7 +145,7 @@ impl CodexProcessManager {
         // 第二阶段：在初始化之前挂载转发器 + 关闭监视器（M1 修复：
         // 关闭监视器竞态 —— 如果子进程在初始化期间退出，监视器必须
         // 已经订阅才能捕获到该事件）。
-        let new_generation = self.generation.load(Ordering::SeqCst) + 1;
+        let new_generation = self.generation.load(Ordering::Relaxed) + 1;
         self.attach_forwarders(&client);
         self.spawn_close_watcher(&client, new_generation);
 
@@ -151,8 +153,9 @@ impl CodexProcessManager {
         match self.initialize_client(&client).await {
             Ok((init, init_value)) => {
                 // 重启成功，重置指数退避计数。
-                self.consecutive_failures.store(0, Ordering::SeqCst);
-                self.generation.fetch_add(1, Ordering::SeqCst);
+                self.consecutive_failures.store(0, Ordering::Relaxed);
+                // AcqRel:增加 generation,确保其他线程看到更新后的值。
+                self.generation.fetch_add(1, Ordering::AcqRel);
                 let restarted = new_generation > 1;
                 // 启动时补齐缺失的默认 codex 配置（环境变量可控，仅缺失键才写，不覆盖用户配置）。
                 crate::services::codex_status_config::apply_defaults_if_absent(&client).await;
@@ -161,7 +164,7 @@ impl CodexProcessManager {
                 // 此处锁内看到 destroyed=true 就地销毁新 client，避免孤儿子进程。
                 {
                     let mut current = self.current.lock().await;
-                    if self.destroyed.load(Ordering::SeqCst) {
+                    if self.destroyed.load(Ordering::Acquire) {
                         drop(current);
                         client.destroy().await;
                         return;
@@ -185,7 +188,7 @@ impl CodexProcessManager {
                 tracing::error!("failed to initialize codex app-server: {}", e);
                 // 清理半初始化的客户端。
                 client.destroy().await;
-                if !self.destroyed.load(Ordering::SeqCst) {
+                if !self.destroyed.load(Ordering::Acquire) {
                     self.clone().restart().await;
                 }
             }
@@ -324,7 +327,8 @@ impl CodexProcessManager {
                 generation,
                 message: "codex app-server exited".into(),
             });
-            if !self.destroyed.load(Ordering::SeqCst) {
+            // Acquire:确保看到最新的 destroyed 状态。
+            if !self.destroyed.load(Ordering::Acquire) {
                 self.restart().await;
             }
         }
@@ -345,24 +349,27 @@ impl CodexProcessManager {
     ///   形成 start ↔ restart 的无穷递归（restart → start → fail → restart）。
     ///   用 `Box::pin` 装箱后强制分配到堆上，栈帧不再是无限递归。
     async fn restart(self: Arc<Self>) {
-        if self.restarting.swap(true, Ordering::SeqCst) || self.destroyed.load(Ordering::SeqCst) {
+        // AcqRel:swap 返回旧值,同时确保其他线程看到新的 restarting=true。
+        if self.restarting.swap(true, Ordering::AcqRel) || self.destroyed.load(Ordering::Acquire) {
             return;
         }
         // 指数退避：3s → 6s → 12s → 24s → 48s → 60s（上限），避免持续失败时日志爆炸 + 空转。
-        let attempt = self.consecutive_failures.fetch_add(1, Ordering::SeqCst);
+        // Relaxed:consecutive_failures 只用于计算退避时间,不用于同步。
+        let attempt = self.consecutive_failures.fetch_add(1, Ordering::Relaxed);
         let delay_ms = std::cmp::min(
             RESTART_DELAY_MS.saturating_mul(2u64.saturating_pow(attempt.min(10) as u32)),
             60_000,
         );
-        let generation = self.generation.load(Ordering::SeqCst);
+        let generation = self.generation.load(Ordering::Relaxed);
         tracing::warn!(generation, delay_ms, attempt, "restarting codex app-server");
         let _ = self.lifecycle_tx.send(LifecycleEvent::Restarting {
             generation,
             delay_ms,
         });
         sleep(Duration::from_millis(delay_ms)).await;
-        self.restarting.store(false, Ordering::SeqCst);
-        if !self.destroyed.load(Ordering::SeqCst) {
+        // Release:确保其他线程看到 restarting=false 和之前的修改。
+        self.restarting.store(false, Ordering::Release);
+        if !self.destroyed.load(Ordering::Acquire) {
             // 装箱以打破 start ↔ restart 的异步递归。
             Box::pin(self.start()).await;
         }
@@ -370,7 +377,8 @@ impl CodexProcessManager {
 
     /// 停止管理器：销毁客户端并阻止重启。
     pub async fn destroy(&self) {
-        self.destroyed.store(true, Ordering::SeqCst);
+        // Release:确保其他线程看到 destroyed=true 和之前的修改。
+        self.destroyed.store(true, Ordering::Release);
         // H8 修复：先 take 再释放锁，避免持有 current 锁跨 client.destroy().await
         // （destroy 含 kill 子进程等耗时操作，会长时间阻塞 request/handle_close 等热点路径）。
         let taken = self.current.lock().await.take();

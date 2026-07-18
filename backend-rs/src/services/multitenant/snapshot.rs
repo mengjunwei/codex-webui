@@ -383,12 +383,31 @@ async fn copy_dir_all(src: &Path, dst: &Path) -> std::io::Result<()> {
         if ft.is_dir() {
             Box::pin(copy_dir_all(&from, &to)).await?;
         } else if ft.is_symlink() {
-            if let Ok(meta) = fs::metadata(&from).await {
-                if meta.is_dir() {
-                    Box::pin(copy_dir_all(&from, &to)).await?;
-                } else {
-                    let _ = fs::copy(&from, &to).await?;
+            // 不跟随 symlink:fs::copy / fs::metadata 默认跟随,会把指向 codex_home 外的
+            // 链接目标实体化进快照 → 越权读取外部文件 + 快照膨胀(与 files copy_dir_recursive
+            // Bug#21 同类)。Unix 重建相对链接(跳过绝对链接),Windows 跳过。
+            #[cfg(unix)]
+            {
+                match fs::read_link(&from).await {
+                    Ok(target) if target.is_absolute() => {
+                        tracing::warn!(
+                            from = %from.display(),
+                            target = %target.display(),
+                            "skipping absolute symlink in snapshot copy"
+                        );
+                    }
+                    Ok(target) => {
+                        let _ = fs::symlink(&target, &to).await;
+                    }
+                    Err(_) => {}
                 }
+            }
+            #[cfg(not(unix))]
+            {
+                tracing::warn!(
+                    from = %from.display(),
+                    "skipping symlink in snapshot copy (windows)"
+                );
             }
         } else {
             let _ = fs::copy(&from, &to).await?;

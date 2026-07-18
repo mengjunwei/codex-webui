@@ -536,14 +536,22 @@ async fn expire_generation(db: &DatabaseConnection, generation: i64) -> Result<(
     Ok(())
 }
 
-/// 启动时把全部 status='pending' 的请求批量过期。
+/// 启动时把 status='pending' 且较旧(stale)的请求批量过期。
+///
+/// Bug6 修复:不能全表 expire。多副本 HA(共享 PG)下,任一节点启动会清掉其他节点仍存活的
+/// per-team codex 的活审批 → mt_list_approvals 返回空 → 审批双保险失效。改为只清 created_at
+/// 早于 stale 阈值(1h)的:活审批(近期产生)保留,只有真正的残留(上次运行/已失效 turn)才清。
 async fn expire_all_pending(db: &DatabaseConnection) -> Result<()> {
     let now = chrono::Utc::now().timestamp_millis();
+    const STALE_MS: i64 = 3600 * 1000; // 1h:超过视为残留,活审批(近期)保留。
+    let cutoff = now - STALE_MS;
     let rows = PendingEntity::find()
         .filter(PendingColumn::Status.eq("pending"))
+        .filter(PendingColumn::CreatedAt.lt(cutoff))
         .all(db)
         .await
         .map_err(|e| anyhow::anyhow!("find all pending: {e}"))?;
+    let expired_count = rows.len();
     for model in rows {
         let mut am: PendingActive = model.into();
         am.status = Set("expired".to_string());
@@ -553,6 +561,6 @@ async fn expire_all_pending(db: &DatabaseConnection) -> Result<()> {
             .await
             .map_err(|e| anyhow::anyhow!("update all pending expired: {e}"))?;
     }
-    tracing::debug!("expired stale pending requests: startup");
+    tracing::debug!(expired_count, "expired stale pending requests: startup");
     Ok(())
 }

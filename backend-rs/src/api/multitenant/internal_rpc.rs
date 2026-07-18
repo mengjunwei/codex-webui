@@ -2,7 +2,8 @@
 //!
 //! 每个 backend 节点同时跑内网 RPC server 与 HTTP API(单二进制双角色)。
 //! 独立 axum app,监听 `INTERNAL_RPC_HOST:INTERNAL_RPC_PORT`,路由 `/internal/*`。
-//! 请求头 `x-internal-token` 校验(security.internal_rpc_token;未配置则不校验 —— 仅限内网部署)。
+//! 请求头 `x-internal-token` 校验(security.internal_rpc_token;启动期 config 强制 ≥32 字节,
+//! 空值无法启动,故 require_internal_token 内空 token 分支实际不可达)。
 //!
 //! 处理来自其它节点的 codex 调用转发(turn/start/approve/fork 等),
 //! threads 元数据双写由主节点在 PG 完成(共享库)。
@@ -17,6 +18,7 @@ use axum::Json;
 use axum::Router;
 use serde::Deserialize;
 use serde_json::Value;
+use subtle::ConstantTimeEq;
 
 #[derive(Deserialize)]
 struct ThreadStartReq {
@@ -47,7 +49,7 @@ async fn require_internal_token(
     state: &AppState,
     headers: &axum::http::HeaderMap,
 ) -> Result<(), AppError> {
-    let tok = &state.internal_token;
+    let tok = state.internal_token.as_bytes();
     if tok.is_empty() {
         return Err(AppError::business(
             ErrorCode::HttpForbidden,
@@ -59,8 +61,10 @@ async fn require_internal_token(
     let got = headers
         .get("x-internal-token")
         .and_then(|v| v.to_str().ok())
-        .unwrap_or("");
-    if got != tok {
+        .unwrap_or("")
+        .as_bytes();
+    // 恒定时间比较:防止时序攻击(虽然仅限内网,但遵循安全最佳实践)。
+    if got.len() != tok.len() || !bool::from(got.ct_eq(tok)) {
         return Err(AppError::business(
             ErrorCode::HttpForbidden,
             StatusCode::FORBIDDEN,

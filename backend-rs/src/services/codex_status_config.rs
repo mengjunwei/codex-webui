@@ -597,12 +597,22 @@ pub async fn update_raw_config(
     }
     let path = user_config_path(&state).await?;
     tracing::info!("writing raw config.toml ({} bytes)", content.len());
-    if let Some(parent) = std::path::Path::new(&path).parent() {
+    let path = std::path::Path::new(&path);
+    if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)
             .map_err(|e| AppError::internal(format!("mkdir: {e}")))?;
     }
-    std::fs::write(&path, content)
-        .map_err(|e| AppError::internal(format!("write config: {e}")))?;
+    // 原子写入:先写临时文件再 rename。直接 std::fs::write 覆盖写时,若进程被杀/
+    // 断电/磁盘满,config.toml 会被截断成半文件 → codex 下次启动 TOML 解析失败,
+    // 可能拒绝启动或丢失用户配置。rename 在同文件系统上是原子的(POSIX/NTFS 均保证)。
+    let tmp_path = path.with_extension("toml.tmp-new");
+    std::fs::write(&tmp_path, content)
+        .map_err(|e| AppError::internal(format!("write config tmp: {e}")))?;
+    std::fs::rename(&tmp_path, path)
+        .map_err(|e| {
+            let _ = std::fs::remove_file(&tmp_path);
+            AppError::internal(format!("rename config: {e}"))
+        })?;
     // 以空的编辑批次进行热重载。
     state
         .codex
@@ -613,7 +623,7 @@ pub async fn update_raw_config(
         .await
         .map_err(map_rpc)?;
     state.status.invalidate();
-    Ok(Json(json!({ "filePath": path })))
+    Ok(Json(json!({ "filePath": path.to_string_lossy() })))
 }
 
 /// 从 config/read 的 layers 中解析用户 config.toml 路径
@@ -632,7 +642,7 @@ async fn user_config_path(state: &AppState) -> Result<String, AppError> {
                     let f = file.trim();
                     if !f.is_empty() {
                         // H3 安全校验：限制路径位于 CODEX_HOME 下且为 .toml，防止任意文件读写。
-                        let validated = validate_user_config_path(f)?;
+                        let validated = validate_user_config_path(f, &state.codex_home)?;
                         return Ok(validated.to_string_lossy().into_owned());
                     }
                 }
@@ -647,10 +657,14 @@ async fn user_config_path(state: &AppState) -> Result<String, AppError> {
     ))
 }
 
-/// H3 安全校验：限制用户 config 路径必须为 .toml 文件，且（若配置了 CODEX_HOME）
-/// 位于 CODEX_HOME 目录下，防止 config/read 返回异常路径导致任意文件读写。
-fn validate_user_config_path(raw: &str) -> Result<std::path::PathBuf, AppError> {
-    use std::path::Path;
+/// H3 安全校验：限制用户 config 路径必须为 .toml 文件，且位于 codex_home 目录下，
+/// 防止 config/read 返回异常路径导致任意文件读写。
+/// 用 main.rs 解析的 codex_home(权威值)而非 std::env::var("CODEX_HOME")
+/// —— 后者在配置走 TOML codex.home 时可能未设,导致校验降级。
+fn validate_user_config_path(
+    raw: &str,
+    codex_home: &std::path::Path,
+) -> Result<std::path::PathBuf, AppError> {
     let p = std::path::Path::new(raw);
     let is_toml = p
         .extension()
@@ -666,20 +680,14 @@ fn validate_user_config_path(raw: &str) -> Result<std::path::PathBuf, AppError> 
         ));
     }
     let canonical = canonicalize_path_or_parent(p);
-    if let Some(home) = std::env::var("CODEX_HOME")
-        .ok()
-        .map(|s| s.trim().to_string())
-        .filter(|s| !s.is_empty())
-    {
-        let home_c = canonicalize_path_or_parent(Path::new(&home));
-        if !canonical.starts_with(&home_c) {
-            return Err(AppError::business(
-                ErrorCode::CodexWriteFailed,
-                StatusCode::BAD_REQUEST,
-                "user config path must reside under CODEX_HOME".into(),
-                None,
-            ));
-        }
+    let home_c = canonicalize_path_or_parent(codex_home);
+    if !canonical.starts_with(&home_c) {
+        return Err(AppError::business(
+            ErrorCode::CodexWriteFailed,
+            StatusCode::BAD_REQUEST,
+            "user config path must reside under CODEX_HOME".into(),
+            None,
+        ));
     }
     Ok(canonical)
 }

@@ -42,7 +42,16 @@ impl RedisCluster {
             .await
             .map_err(|e| AppError::internal(format!("redis connect: {e}")))?;
 
-        // 先清理 stale 成员:SMEMBERS 取全部,EXISTS 检查单 key,SREM 删已死的。
+        // 先清理 stale 成员:SMEMBERS 取全部,用 Lua 原子完成 EXISTS+SREM。
+        // 原 EXISTS→SREM 分两步,A 的 EXISTS(=0)与 SREM 之间 B 可能重新 SADD+SETEX,
+        // A 的 SREM 会删掉刚复活的 B(10s 后才回来)。Lua 原子消除该竞态(C1 修复)。
+        const CLEAN_LUA: &str = r#"
+            if redis.call('EXISTS', KEYS[2]) == 0 then
+                return redis.call('SREM', KEYS[1], ARGV[1])
+            else
+                return 0
+            end
+        "#;
         if let Ok(members) = redis::cmd("SMEMBERS")
             .arg("cluster:nodes")
             .query_async::<Vec<String>>(&mut conn)
@@ -52,18 +61,16 @@ impl RedisCluster {
                 if m == self.node_id {
                     continue; // 不删自己
                 }
-                let exists: i64 = redis::cmd("EXISTS")
+                let removed: i64 = redis::cmd("EVAL")
+                    .arg(CLEAN_LUA)
+                    .arg(2)
+                    .arg("cluster:nodes")
                     .arg(format!("cluster:node:{m}"))
+                    .arg(&m)
                     .query_async(&mut conn)
                     .await
                     .unwrap_or(0);
-                if exists == 0 {
-                    let _: () = redis::cmd("SREM")
-                        .arg("cluster:nodes")
-                        .arg(&m)
-                        .query_async(&mut conn)
-                        .await
-                        .unwrap_or(());
+                if removed > 0 {
                     tracing::debug!(node = %m, "cleaned stale cluster member");
                 }
             }

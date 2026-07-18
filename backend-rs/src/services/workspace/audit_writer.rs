@@ -32,10 +32,11 @@ impl AuditWriter {
     }
 }
 
-/// 启动后台 task,返回 AuditWriter(handle)。
-pub fn spawn(db: DatabaseConnection) -> AuditWriter {
+/// 启动后台 task,返回 (AuditWriter, JoinHandle)。JoinHandle 供 shutdown 时 await:
+/// 所有 sender drop 后(mpsc rx 返回 None)task 会 flush 剩余 buf 再退出,await 确保不丢审计。
+pub fn spawn(db: DatabaseConnection) -> (AuditWriter, tokio::task::JoinHandle<()>) {
     let (tx, mut rx) = mpsc::channel::<AuditEvent>(1024);
-    tokio::spawn(async move {
+    let handle = tokio::spawn(async move {
         let mut buf: Vec<AuditEvent> = Vec::with_capacity(64);
         let mut tick = tokio::time::interval(Duration::from_secs(1));
         loop {
@@ -66,7 +67,7 @@ pub fn spawn(db: DatabaseConnection) -> AuditWriter {
         }
         tracing::info!("audit writer exited");
     });
-    AuditWriter { tx }
+    (AuditWriter { tx }, handle)
 }
 
 async fn flush(db: &DatabaseConnection, buf: &mut Vec<AuditEvent>) {
@@ -76,9 +77,11 @@ async fn flush(db: &DatabaseConnection, buf: &mut Vec<AuditEvent>) {
     let drained: Vec<AuditEvent> = buf.drain(..).collect();
     let now = crate::services::multitenant::now_ms();
     let backend = db.get_database_backend();
+    // 用 ? 占位符(SeaORM 按 backend 转 PG 的 $N / MySQL 的 ?),而非裸 $1(后者 MySQL 语法错)。
+    // id 由应用生成(UUIDv7),与 migration 的 VARCHAR(36) PK 对齐,避免 BIGSERIAL(PG 专有)。
     let sql = "INSERT INTO workspace_audit \
-               (team_id, user_id, thread_id, event_type, tool_name, payload_json, decision, created_at) \
-               VALUES ($1, $2, $3, $4, $5, $6, $7, $8)";
+               (id, team_id, user_id, thread_id, event_type, tool_name, payload_json, decision, created_at) \
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)";
     for ev in drained {
         let payload_str = match serde_json::to_string(&ev.payload) {
             Ok(s) => s,
@@ -87,10 +90,12 @@ async fn flush(db: &DatabaseConnection, buf: &mut Vec<AuditEvent>) {
                 continue;
             }
         };
+        let id = crate::services::multitenant::new_id();
         let stmt = sea_orm::Statement::from_sql_and_values(
             backend,
             sql,
             vec![
+                id.into(),
                 ev.team_id.into(),
                 ev.user_id.into(),
                 ev.thread_id.into(),

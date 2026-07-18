@@ -57,12 +57,18 @@ pub struct HookSpecificOutput {
 }
 
 /// 路由入口。
+///
+/// body 用 `Bytes` 而非 `axum::Json<HookPayload>` 手动解析:axum 的 Json 提取器在
+/// handler 调用前反序列化,失败会直接返回 4xx rejection,绕过本函数的 fail-open 包装。
+/// codex payload schema 不稳态(版本升级/字段漂移)时,4xx 会让整个 webhook 失效;
+/// 若 codex 对非 200 采取 fail-closed,会错误阻断所有工具调用。这里手动解析,
+/// 解析失败也走 continue=true(token 已验过,是合法 codex 的格式问题,不应阻断)。
 pub async fn handle(
     State(state): State<AppState>,
     headers: HeaderMap,
-    body: axum::Json<HookPayload>,
+    body: axum::body::Bytes,
 ) -> impl IntoResponse {
-    // 1) 验签(X-Hook-Token == INTERNAL_HOOK_TOKEN,常量时间比较)
+    // 1) 验签(X-Hook-Token == INTERNAL_HOOK_TOKEN,常量时间比较)—— 必须在任何处理前。
     let token_ok = headers
         .get("x-hook-token")
         .and_then(|v| v.to_str().ok())
@@ -72,8 +78,21 @@ pub async fn handle(
         return (StatusCode::UNAUTHORIZED, "invalid hook token").into_response();
     }
 
-    // 2) fail-open:包一层,任何内部异常返回 continue=true
-    let resp = handle_inner(&state, body.0).await.unwrap_or_else(|e| {
+    // 2) 手动解析 payload:失败 → fail-open(continue=true),不阻断 codex。
+    let payload: HookPayload = match serde_json::from_slice(&body) {
+        Ok(p) => p,
+        Err(e) => {
+            tracing::warn!(error = %e, "hook payload parse failed (fail-open)");
+            return axum::Json(HookResponse {
+                continue_: true,
+                hook_specific_output: None,
+            })
+            .into_response();
+        }
+    };
+
+    // 3) fail-open:包一层,任何内部异常返回 continue=true
+    let resp = handle_inner(&state, payload).await.unwrap_or_else(|e| {
         tracing::warn!(error = %e, "hook inner failed (fail-open)");
         HookResponse {
             continue_: true,
@@ -92,13 +111,23 @@ async fn handle_inner(state: &AppState, payload: HookPayload) -> Result<HookResp
     if event_type == "PreToolUse" {
         let role = ws::get_role(&state.db, &team, &user).await?;
         let tool_name = payload.tool_name.clone().unwrap_or_default();
-        let target = payload
+        let raw_target = payload
             .tool_input
             .as_ref()
             .and_then(ws::decision::target_path)
             .unwrap_or_else(|| {
                 std::path::PathBuf::from(payload.cwd.clone().unwrap_or_default())
             });
+        // 相对路径解析:codex 可能下发相对 file_path(如 "teams/t1/shared/x"),
+        // 若不 join cwd 成绝对路径,decision 的 is_team_shared_path 依赖前导 / 会漏判,
+        // 导致 member 用相对路径绕过共享盘只读限制。
+        let target = if raw_target.is_absolute() {
+            raw_target
+        } else if let Some(cwd) = payload.cwd.as_deref().filter(|s| !s.is_empty()) {
+            std::path::PathBuf::from(cwd).join(&raw_target)
+        } else {
+            raw_target
+        };
 
         let decision = decide_pre_tool_use(&role, &tool_name, &target, &state.codex_home);
         let perm = match decision {
@@ -126,13 +155,13 @@ async fn handle_inner(state: &AppState, payload: HookPayload) -> Result<HookResp
         });
     }
 
-    // SessionStart:active_rollout 注册(沿用现有机制)
-    if event_type == "SessionStart" {
-        if let (Some(sid), Some(cwd)) = (payload.session_id.as_ref(), payload.cwd.as_ref()) {
-            let mut map = state.active_rollout.lock().await;
-            map.insert(sid.clone(), std::path::PathBuf::from(cwd));
-        }
-    }
+    // SessionStart:不再注册 active_rollout。cwd 是 codex 的**工作目录**(目录),
+    // 不是 rollout 文件路径(sessions/.../rollout-<conv>.jsonl)。旧代码把 cwd insert 进
+    // active_rollout 会让 replicate_team_rollouts 把目录当文件读(metadata 是目录 →
+    // read_range 失败 → 复制静默跳过)。active_rollout 的正确填充由 mt_create_thread /
+    // mt_start_turn 的 find_rollout_for_thread 完成(按 thread_id 匹配真实 rollout 文件)。
+    // 此处仅记录审计,不碰 active_rollout。
+
     // SessionEnd:active_rollout 清理
     if event_type == "SessionEnd" {
         if let Some(sid) = payload.session_id.as_ref() {

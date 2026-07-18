@@ -64,7 +64,7 @@ impl ActiveThreadRegistry {
 
     pub fn unsubscribe(&self, socket_id: &str, thread_id: &str) {
         {
-            let mut st = self.socket_threads.lock().unwrap();
+            let mut st = self.socket_threads.lock().unwrap_or_else(|e| e.into_inner());
             if let Some(set) = st.get_mut(socket_id) {
                 set.remove(thread_id);
                 if set.is_empty() {
@@ -72,7 +72,7 @@ impl ActiveThreadRegistry {
                 }
             }
         }
-        let mut ts = self.thread_sockets.lock().unwrap();
+        let mut ts = self.thread_sockets.lock().unwrap_or_else(|e| e.into_inner());
         if let Some(set) = ts.get_mut(thread_id) {
             set.remove(socket_id);
             if set.is_empty() {
@@ -97,7 +97,7 @@ impl ActiveThreadRegistry {
 
     /// 当前仍至少有一个订阅者的线程 id。
     pub fn snapshot(&self) -> Vec<String> {
-        self.thread_sockets.lock().unwrap().keys().cloned().collect()
+        self.thread_sockets.lock().unwrap_or_else(|e| e.into_inner()).keys().cloned().collect()
     }
 }
 
@@ -406,7 +406,18 @@ pub fn spawn_event_bus_emit(
                 return;
             }
         };
-        while let Ok(payload) = rx.recv().await {
+        // 关键:Lagged 表示消费方落后、旧消息被丢弃但通道仍存活,必须 continue;
+        // 原 `while let Ok` 会把 Lagged 误当退出,导致本节点上所有 socket
+        // 永久收不到 codex 跨节点通知(突发流量下一次可恢复的背压被升级成永久断流)。
+        loop {
+            let payload = match rx.recv().await {
+                Ok(p) => p,
+                Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
+                    tracing::warn!(lagged = n, "event_bus emit lagged, skipping");
+                    continue;
+                }
+                Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+            };
             let msg: serde_json::Value = match serde_json::from_str(&payload) {
                 Ok(v) => v,
                 Err(_) => continue,

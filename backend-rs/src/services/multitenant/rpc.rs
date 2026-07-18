@@ -38,6 +38,13 @@ impl WorkerRpcClient {
         let status = resp.status();
         let text = resp.text().await.unwrap_or_default();
         if status.is_success() {
+            // 204 No Content(approval_respond/replicate_receive/evict 成功)body 为空,
+            // 不能强行 from_str(否则 EOF 报错 → 跨节点成功被误判失败)。
+            // 空 body 或无法解析为 JSON 时返回 Null(post 调用方 evict/replicate/approval
+            // 只关心 Ok/Err,不消费返回值)。
+            if text.trim().is_empty() {
+                return Ok(Value::Null);
+            }
             serde_json::from_str::<Value>(&text).map_err(|e| {
                 AppError::internal(format!("worker rpc {path} decode: {e}; body={text}"))
             })

@@ -187,6 +187,7 @@ fn ensure_upload_root() -> Result<PathBuf, AppError> {
 /// 确保真实路径在上传根内、且为普通文件。返回规范化后的路径。
 /// 失败映射到 chat.* 错误码（image_path_absolute / upload_not_found /
 /// image_outside_root / image_not_file）。
+#[allow(dead_code)]
 pub(crate) async fn resolve_stored_upload_path(path: &str) -> Result<PathBuf, AppError> {
     let trimmed = path.trim();
     if trimmed.is_empty() {

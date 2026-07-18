@@ -115,6 +115,7 @@ impl TeamCodexManager {
     }
 
     /// 当前活跃进程数(监控/指标用)。
+    /// 只计算未关闭的 slot。
     pub async fn active_count(&self) -> usize {
         self.team_slots
             .lock()
@@ -172,10 +173,14 @@ impl TeamCodexManager {
     ) -> Result<(), AppError> {
         // 1. 至少一个存活 slot;无则 spawn 第一个。
         let has_alive = {
-            let map = self.team_slots.lock().await;
-            map.get(team_id)
-                .map(|v| v.iter().any(|s| !s.client.is_closed()))
-                .unwrap_or(false)
+            let mut map = self.team_slots.lock().await;
+            if let Some(v) = map.get_mut(team_id) {
+                // 清理已关闭的 slot，避免内存泄漏和误判。
+                v.retain(|s| !s.client.is_closed());
+                !v.is_empty()
+            } else {
+                false
+            }
         };
         if !has_alive {
             self.spawn_slot(team_id, db, master_key).await?;
@@ -183,15 +188,15 @@ impl TeamCodexManager {
         // 2. 扩进程循环:最闲 slot 忙到阈值 且 未达 per-team 上限 → 扩(受全局上限 / LRU 约束)。
         loop {
             let need_scale = {
-                let map = self.team_slots.lock().await;
-                let Some(v) = map.get(team_id) else { break };
-                let alive: Vec<&Arc<ProcessSlot>> =
-                    v.iter().filter(|s| !s.client.is_closed()).collect();
-                if alive.is_empty() {
+                let mut map = self.team_slots.lock().await;
+                let Some(v) = map.get_mut(team_id) else { break };
+                // 再次清理已关闭的 slot。
+                v.retain(|s| !s.client.is_closed());
+                if v.is_empty() {
                     break;
                 }
                 let cap = self.config.max_concurrent_per_process;
-                let min_inflight = alive
+                let min_inflight = v
                     .iter()
                     .map(|s| cap - s.semaphore.available_permits())
                     .min()
@@ -267,13 +272,15 @@ impl TeamCodexManager {
     }
 
     /// 选该 team 当前可用 permit 最多(最闲)的存活 slot。
+    /// 同时清理已关闭的 slot，避免内存泄漏和性能下降。
     async fn pick_slot(&self, team_id: &str) -> Result<Arc<ProcessSlot>, AppError> {
-        let map = self.team_slots.lock().await;
-        let Some(v) = map.get(team_id) else {
+        let mut map = self.team_slots.lock().await;
+        let Some(v) = map.get_mut(team_id) else {
             return Err(AppError::internal(format!("no slots for team {team_id}")));
         };
+        // 清理已关闭的 slot，避免内存泄漏。
+        v.retain(|s| !s.client.is_closed());
         v.iter()
-            .filter(|s| !s.client.is_closed())
             .max_by_key(|s| s.semaphore.available_permits())
             .cloned()
             .ok_or_else(|| AppError::internal(format!("no alive slot for team {team_id}")))
@@ -363,23 +370,48 @@ impl TeamCodexManager {
         tracing::info!(team_id, "codex app-server initialized for team");
 
         // notification + server_request → 事件总线(实时回流 + event_persist 持久化)。
+        // 关键:两个转发 task 必须监听 client close,否则它们持有 client 的 Arc 形成循环
+        // 依赖(client 持有 notify_tx,task 持有 client Arc → channel 永不关闭 → recv 永久阻塞),
+        // 导致 evict 后 task 永久泄漏 + client 结构体泄漏。
         if let Some(bus) = self.event_bus.clone() {
             let client_for_bus = client.clone();
             let bus_for_notif = bus.clone();
             tokio::spawn(async move {
                 let mut rx = client_for_bus.subscribe_notifications();
-                while let Ok(msg) = rx.recv().await {
-                    if let Ok(payload) = serde_json::to_string(&msg) {
-                        let _ = bus_for_notif.publish("codex:events", &payload).await;
+                let mut close_rx = client_for_bus.subscribe_close();
+                loop {
+                    tokio::select! {
+                        // client 关闭(destroy / stdout EOF)→ 退出,释放 client Arc。
+                        _ = close_rx.recv() => break,
+                        msg = rx.recv() => match msg {
+                            Ok(msg) => {
+                                if let Ok(payload) = serde_json::to_string(&msg) {
+                                    let _ = bus_for_notif.publish("codex:events", &payload).await;
+                                }
+                            }
+                            // Lagged = 消费方落后丢弃旧消息,channel 仍存活,继续。
+                            Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
+                            Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+                        }
                     }
                 }
             });
             let client_for_sr = client.clone();
             tokio::spawn(async move {
                 let mut rx = client_for_sr.subscribe_server_requests();
-                while let Ok(msg) = rx.recv().await {
-                    if let Ok(payload) = serde_json::to_string(&msg) {
-                        let _ = bus.publish("codex:events", &payload).await;
+                let mut close_rx = client_for_sr.subscribe_close();
+                loop {
+                    tokio::select! {
+                        _ = close_rx.recv() => break,
+                        msg = rx.recv() => match msg {
+                            Ok(msg) => {
+                                if let Ok(payload) = serde_json::to_string(&msg) {
+                                    let _ = bus.publish("codex:events", &payload).await;
+                                }
+                            }
+                            Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
+                            Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+                        }
                     }
                 }
             });
@@ -396,19 +428,19 @@ impl TeamCodexManager {
     }
 
     /// 回收该 team 最老的一个存活 slot(全局 LRU / 空闲回收用)。
+    /// 同时清理已关闭的 slot。
     async fn evict_oldest_slot(&self, team_id: &str) {
         let removed = {
             let mut map = self.team_slots.lock().await;
             let Some(v) = map.get_mut(team_id) else {
                 return;
             };
+            // 先清理已关闭的 slot。
+            v.retain(|s| !s.client.is_closed());
             // 选最老的存活 slot。
             let mut idx_opt = None;
             let mut oldest = i64::MAX;
             for (i, s) in v.iter().enumerate() {
-                if s.client.is_closed() {
-                    continue;
-                }
                 let la = s.last_active.try_lock().map(|g| *g).unwrap_or(oldest);
                 if la < oldest {
                     oldest = la;
@@ -416,7 +448,7 @@ impl TeamCodexManager {
                 }
             }
             idx_opt.and_then(|i| {
-                if v.iter().filter(|s| !s.client.is_closed()).count() <= 1 {
+                if v.len() <= 1 {
                     None // 至少保留一个,避免清空(下次 client_for 会重建)。
                 } else {
                     Some(v.remove(i))

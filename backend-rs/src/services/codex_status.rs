@@ -9,6 +9,7 @@
 
 use crate::codex::jsonrpc::CodexJsonRpcClient;
 use crate::codex::CodexProcessManager;
+use crate::codex::process::LifecycleEvent;
 use serde_json::{json, Value};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -58,12 +59,32 @@ pub struct CodexStatusService {
 }
 
 impl CodexStatusService {
-    pub fn new(process: Arc<CodexProcessManager>) -> Self {
-        Self {
-            process,
+    pub fn new(process: Arc<CodexProcessManager>) -> Arc<Self> {
+        let svc = Arc::new(Self {
+            process: process.clone(),
             cache: std::sync::Mutex::new(None),
             inflight: tokio::sync::Mutex::new(()),
-        }
+        });
+        // 订阅 lifecycle:codex 重启/不可用时立即失效缓存,避免在 30s TTL 窗口内
+        // 返回陈旧的 ready 状态(实际 codex 重启中),前端据此误判可发起 turn。
+        let svc_for_lifecycle = svc.clone();
+        tokio::spawn(async move {
+            let mut rx = process.subscribe_lifecycle();
+            use tokio::sync::broadcast::error::RecvError;
+            loop {
+                match rx.recv().await {
+                    Ok(event) => match event {
+                        LifecycleEvent::Restarting { .. } | LifecycleEvent::Unavailable { .. } => {
+                            svc_for_lifecycle.invalidate();
+                        }
+                        LifecycleEvent::Ready { .. } => {}
+                    },
+                    Err(RecvError::Lagged(_)) => continue,
+                    Err(RecvError::Closed) => break,
+                }
+            }
+        });
+        svc
     }
 
     /// 返回聚合状态（带 TTL 缓存 + single-flight）。

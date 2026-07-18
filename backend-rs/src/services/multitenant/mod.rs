@@ -12,6 +12,7 @@ pub mod quota;
 pub mod rate_limit;
 pub mod replication;
 pub mod rpc;
+pub mod sticky;
 pub mod teams;
 
 /// 当前 UTC 毫秒时间戳。

@@ -1,6 +1,5 @@
 //! API 层：HTTP 路由处理器、WebSocket 网关、请求/响应 DTO。
 
-pub mod auth;
 pub mod chat;
 pub mod event_subscribers;
 pub mod files;
@@ -9,13 +8,9 @@ pub mod hooks;
 pub mod logs;
 pub mod multitenant;
 pub mod onlyoffice;
-pub mod proxies;
 pub mod realtime;
 pub mod settings;
-pub mod sqlite;
-pub mod threads;
 
-use crate::auth::middleware::require_auth;
 use crate::state::AppState;
 use axum::{
     body::Body,
@@ -42,26 +37,11 @@ use utoipa_swagger_ui::SwaggerUi;
     components(schemas(
         crate::error::ErrorResponse,
         crate::error::GenericJson,
-        // auth
-        crate::auth::LoginRequest,
-        crate::auth::LoginResponse,
         // logs
         crate::api::logs::LogEntry,
         crate::api::logs::LogsResponse,
         crate::api::logs::LogsExportResponse,
         crate::api::logs::SystemInfo,
-        // sqlite
-        crate::api::sqlite::BreakdownDto,
-        crate::api::sqlite::TurnUsageDto,
-        crate::api::sqlite::TurnTokenUsageDto,
-        crate::api::sqlite::ThreadTokenUsageResponse,
-        crate::api::sqlite::TurnDiffDto,
-        crate::api::sqlite::ThreadTurnDiffsResponse,
-        crate::api::sqlite::TurnErrorDto,
-        crate::api::sqlite::ThreadTurnErrorsResponse,
-        crate::api::sqlite::PendingServerRequestDto,
-        crate::api::sqlite::ListPendingResponse,
-        crate::api::sqlite::RespondRequestBody,
         // settings
         crate::api::settings::SettingDto,
         crate::api::settings::SettingListResponse,
@@ -69,49 +49,20 @@ use utoipa_swagger_ui::SwaggerUi;
         crate::api::settings::SettingBatchUpdateBody,
         crate::api::settings::UpdatePayload,
         // files
-        crate::api::files::AddRootBody,
         crate::api::files::CreateFileBody,
         crate::api::files::CreateDirBody,
         crate::api::files::WriteFileBody,
         crate::api::files::RenameBody,
         crate::api::files::CopyMoveBody,
-        // threads
-        crate::api::threads::CreateThreadBody,
-        crate::api::threads::StartTurnBody,
-        crate::api::threads::RollbackBody,
-        crate::api::threads::SetNameBody,
-        // proxies
-        crate::api::proxies::LoginBody,
-        crate::api::proxies::LoginCancelBody,
-        crate::api::proxies::McpOauthBody,
-        crate::api::proxies::SkillConfigBody,
-        crate::api::proxies::PluginInstallBody,
-        crate::api::proxies::PluginUninstallBody,
-        // codex_status_config
-        crate::services::codex_status_config::ApprovalPolicyBody,
-        crate::services::codex_status_config::SandboxModeBody,
-        crate::services::codex_status_config::UpdateConfigBody,
-        crate::services::codex_status_config::ConfigEdit,
-        crate::services::codex_status_config::UpdateRawConfigBody,
         // onlyoffice
         crate::api::onlyoffice::CallbackBody,
     )),
     paths(
         // system
         crate::api::health::ping,
-        // auth
-        crate::api::auth::login,
-        crate::api::auth::logout,
         // logs
         crate::api::logs::list_logs,
         crate::api::logs::export_diagnostics,
-        // sqlite
-        crate::api::sqlite::read_token_usage,
-        crate::api::sqlite::read_latest_token_usage,
-        crate::api::sqlite::read_turn_diffs,
-        crate::api::sqlite::read_turn_errors,
-        crate::api::sqlite::list_pending,
-        crate::api::sqlite::respond_to_request,
         // settings
         crate::api::settings::list,
         crate::api::settings::get_one,
@@ -120,7 +71,6 @@ use utoipa_swagger_ui::SwaggerUi;
         crate::api::settings::delete_one,
         // files
         crate::api::files::get_roots,
-        crate::api::files::add_root,
         crate::api::files::read_tree,
         crate::api::files::read_file,
         crate::api::files::get_metadata,
@@ -136,46 +86,9 @@ use utoipa_swagger_ui::SwaggerUi;
         crate::api::files::upload_files,
         crate::api::files::archive_list,
         crate::api::files::archive_entry,
-        // threads
-        crate::api::threads::create_thread,
-        crate::api::threads::list_threads,
-        crate::api::threads::list_loaded_threads,
-        crate::api::threads::read_thread,
-        crate::api::threads::resume_thread,
-        crate::api::threads::start_turn,
-        crate::api::threads::steer_turn,
-        crate::api::threads::interrupt_turn,
-        crate::api::threads::archive_thread,
-        crate::api::threads::unarchive_thread,
-        crate::api::threads::compact_thread,
-        crate::api::threads::fork_thread,
-        crate::api::threads::rollback_thread,
-        crate::api::threads::set_thread_name,
-        // proxies
-        crate::api::proxies::account_read,
-        crate::api::proxies::account_login,
-        crate::api::proxies::account_login_cancel,
-        crate::api::proxies::account_logout,
-        crate::api::proxies::account_rate_limits,
-        crate::api::proxies::apps_list,
-        crate::api::proxies::models_list,
-        crate::api::proxies::mcp_servers_list,
-        crate::api::proxies::mcp_servers_reload,
-        crate::api::proxies::mcp_servers_oauth_login,
-        crate::api::proxies::skills_list,
-        crate::api::proxies::skills_config_write,
-        crate::api::proxies::plugins_list,
-        crate::api::proxies::plugins_detail,
-        crate::api::proxies::plugins_install,
-        crate::api::proxies::plugins_uninstall,
-        // codex_status_config
+        // codex_status_config(只读 status/read_config)
         crate::services::codex_status_config::status,
-        crate::services::codex_status_config::update_approval_policy,
-        crate::services::codex_status_config::update_sandbox_mode,
         crate::services::codex_status_config::read_config,
-        crate::services::codex_status_config::update_config,
-        crate::services::codex_status_config::read_raw_config,
-        crate::services::codex_status_config::update_raw_config,
         // onlyoffice + chat
         crate::api::onlyoffice::get_config,
         crate::api::onlyoffice::handle_callback,
@@ -215,26 +128,23 @@ async fn metrics_endpoint(axum::extract::State(state): axum::extract::State<AppS
 /// 构建应用路由。
 ///
 /// 布局(与 NestJS globalPrefix 'api' 对齐):
-/// - `POST /api/auth/login`   — 公开(JWT 登录)
+/// - `POST /api/mt/auth/*`  — 公开(多租户注册/登录/刷新)
 /// - `POST /api/onlyoffice/callback` — 公开(OO 保存回调)
 /// - `GET  /api/docs-json`    — 公开(OpenAPI 规格)
-/// - `/api/*` 下的其余路由 — 受 require_auth 保护
+/// - `/api/*` 下的其余路由 — 受 require_user_auth 保护(多租户 JWT)
 pub async fn build_router(state: AppState) -> Router {
     use crate::api::chat as chat_mod;
     use crate::services::codex_status_config as csc;
     use crate::api::files as fl;
     use crate::api::onlyoffice as oo;
-    use crate::api::proxies as px;
     use crate::api::settings as s;
-    use crate::api::sqlite as sq;
-    use crate::api::threads as th;
 
     // 上传体积上限（取自 settings 的 `files.uploadMaxBytes`，默认 100 MB）。
     // axum 的 `Multipart` 提取器在缺少 `DefaultBodyLimit` 时回落到 2 MB 默认值，
     // 会让 /chat/upload 与 /files/upload 任何 >2 MB 的上传都被拒绝；这里显式覆盖。
     let upload_limit = state.settings_reader().get_upload_max_bytes().await as usize;
 
-    // 受保护的 API 子路由。
+    // 受保护的 API 子路由（统一使用多租户认证）。
     let api = Router::new()
         // ── Phase 0 探针(同时作为 GET /api/status,与 AppController 对齐)──
         .route("/_ping", get(health::ping))
@@ -244,68 +154,34 @@ pub async fn build_router(state: AppState) -> Router {
         // ── settings 增删改查(CRUD)──
         .route("/settings", get(s::list).patch(s::update_batch))
         .route("/settings/{key}", get(s::get_one).patch(s::update_one).delete(s::delete_one))
-        // ── auth 登出(受保护,与 TS 对齐)──
-        .route("/auth/logout", post(auth::logout))
         // ── 线程维度读取 ──
-        .route("/threads/{threadId}/token-usage/latest", get(sq::read_latest_token_usage))
-        .route("/threads/{threadId}/token-usage", get(sq::read_token_usage))
-        .route("/threads/{threadId}/turn-diffs", get(sq::read_turn_diffs))
-        .route("/threads/{threadId}/turn-errors", get(sq::read_turn_errors))
-        // ── 待审批(读取 + 响应)──
-        .route("/pending-approvals", get(sq::list_pending))
-        .route(
-            "/pending-approvals/{requestId}/respond",
-            post(sq::respond_to_request),
-        )
+        // 注:threads 维度的 token-usage / turn-diffs / turn-errors / pending-approvals
+        // 老路由已下线 —— 它们的 handler(sqlite.rs)不校验 thread→team 归属、不过滤 team_id,
+        // 在统一多租户认证下构成跨租户越权(IDOR)。多租户安全版本位于 /api/mt/threads/*
+        // (mt_token_usage / mt_turn_diffs / mt_turn_errors / mt_list_approvals / mt_resolve_approval),
+        // 经 require_thread_team + team_id 过滤。前端请改用 /api/mt/* 路径。
         // ── 日志 ──
         .route("/logs", get(crate::api::logs::list_logs))
         .route("/logs/export", get(crate::api::logs::export_diagnostics))
-        // ── account(codex 代理)──
-        .route("/account", get(px::account_read))
-        .route("/account/login", post(px::account_login))
-        .route("/account/login/cancel", post(px::account_login_cancel))
-        .route("/account/logout", post(px::account_logout))
-        .route("/account/rate-limits", get(px::account_rate_limits))
-        // ── apps / models(codex 代理)──
-        .route("/apps", get(px::apps_list))
-        .route("/models", get(px::models_list))
-        // ── mcp-servers(codex 代理)──
-        .route("/mcp-servers", get(px::mcp_servers_list))
-        .route("/mcp-servers/reload", post(px::mcp_servers_reload))
-        .route("/mcp-servers/oauth/login", post(px::mcp_servers_oauth_login))
-        // ── skills(codex 代理)──
-        .route("/skills", get(px::skills_list))
-        .route("/skills/config", post(px::skills_config_write))
-        // ── plugins(codex 代理)──
-        .route("/plugins", get(px::plugins_list))
-        .route("/plugins/detail", get(px::plugins_detail))
-        .route("/plugins/install", post(px::plugins_install))
-        .route("/plugins/uninstall", post(px::plugins_uninstall))
-        // ── threads + turns(codex 代理)──
-        .route("/threads", post(th::create_thread).get(th::list_threads))
-        .route("/threads/loaded", get(th::list_loaded_threads))
-        .route("/threads/{threadId}", get(th::read_thread))
-        .route("/threads/{threadId}/resume", post(th::resume_thread))
-        .route("/threads/{threadId}/turns", post(th::start_turn))
-        .route("/threads/{threadId}/turns/{turnId}/steer", post(th::steer_turn))
-        .route("/threads/{threadId}/turns/{turnId}/interrupt", post(th::interrupt_turn))
-        .route("/threads/{threadId}/archive", post(th::archive_thread))
-        .route("/threads/{threadId}/unarchive", post(th::unarchive_thread))
-        .route("/threads/{threadId}/compact", post(th::compact_thread))
-        .route("/threads/{threadId}/fork", post(th::fork_thread))
-        .route("/threads/{threadId}/rollback", post(th::rollback_thread))
-        .route("/threads/{threadId}/name", axum::routing::patch(th::set_thread_name))
+        // 注:单租户 /api/account* /apps /models /mcp-servers* /skills* /plugins* 老路由已下线 ——
+        // handler(api/proxies.rs)用全局 codex、不校验归属,统一多租户认证下任意普通 member 可
+        // 改全局账号(account/login、logout)、改全局 MCP/skills/plugins 配置、读全局账号 email/plan
+        // → 跨租户越权 IDOR(与已下线的 /api/threads*、sqlite.rs 同类)。多租户 team 应走 BYOK
+        // (/api/mt/teams/{id}/api-key)而非全局 account;account/apps/models/mcp/skills/plugins 的
+        // 多租户 per-team 版本待后续补全于 /api/mt/*。
         // ── codex 状态 + 配置 ──
+        // codex 状态/配置(只读):写操作(approval-policy/sandbox-mode/config PATCH/config/raw PUT)
+        // 已下线 —— 它们改全局 codex 配置,多租户认证下任意 member 可改全员配置(与已下线的
+        // /api/proxies 同类 IDOR);read_raw_config 返回 config.toml 原文(可能含密钥)也下线。
+        // 保留只读 status(就绪检查)与 read_config(redact_secrets 脱敏)。per-team 配置管理待补 /api/mt/*。
         .route("/codex/status", get(csc::status))
-        .route("/codex/approval-policy", post(csc::update_approval_policy))
-        .route("/codex/sandbox-mode", post(csc::update_sandbox_mode))
-        .route(
-            "/codex/config",
-            get(csc::read_config).patch(csc::update_config),
-        )
-        .route("/codex/config/raw", get(csc::read_raw_config).put(csc::update_raw_config))
+        .route("/codex/config", get(csc::read_config))
         // ── files(完整文件操作)──
-        .route("/files/roots", get(fl::get_roots).post(fl::add_root))
+        // 注:POST /files/roots(动态注册全局 root)已下线 —— 多租户认证下任意用户注册的
+        // root 会被所有用户共享 → 文件 IDOR。files 操作改用管理员配置的公共工作区
+        // (HOME + security.workspaceRoots)。多租户 per-user/team 文件操作走 workspace
+        // (codex_home/users/{uid} + teams/{tid},经 hooks 决策隔离)。GET 保留(列出公共 roots)。
+        .route("/files/roots", get(fl::get_roots))
         .route("/files/tree", get(fl::read_tree))
         .route("/files/read", get(fl::read_file))
         .route("/files/metadata", get(fl::get_metadata))
@@ -313,20 +189,20 @@ pub async fn build_router(state: AppState) -> Router {
         .route("/files/create-file", post(fl::create_file))
         .route("/files/create-directory", post(fl::create_directory))
         .route("/files/write", post(fl::write_file))
-        .route("/files/serve", get(fl::serve_file))
+        // 注:/files/serve 与 /files/archive/entry 移到 require_file_access(支持 ?access_token=
+        // download token,供 OnlyOffice/内联预览加载),不在此 require_user_auth 层(只读头会 401)。
         .route("/files/download", get(fl::download_file))
         .route("/files/rename", post(fl::rename_path))
         .route("/files/copy", post(fl::copy_path))
         .route("/files/move", post(fl::move_path))
         .route("/files/upload", post(fl::upload_files).layer(axum::extract::DefaultBodyLimit::disable()))
         .route("/files/archive/list", get(fl::archive_list))
-        .route("/files/archive/entry", get(fl::archive_entry))
         // ── onlyoffice 配置(受保护)──
         .route("/onlyoffice/config", get(oo::get_config))
         .layer(axum::extract::DefaultBodyLimit::max(upload_limit))
         .layer(axum::middleware::from_fn_with_state(
             state.clone(),
-            require_auth,
+            crate::multitenant::middleware::require_user_auth,
         ));
 
     // 多租户路由(M1):/api/mt/auth/* 公开;/api/mt/teams/* 受 require_user_auth 保护。
@@ -372,10 +248,25 @@ pub async fn build_router(state: AppState) -> Router {
 
     // 为 React 前端(SPA)提供静态文件服务。
     Router::new()
-        .route("/api/auth/login", post(auth::login))
         .route("/api/onlyoffice/callback", post(oo::handle_callback))
         .route("/api/docs-json", get(openapi_json))
         .route("/metrics", get(metrics_endpoint))
+        // 文件内联预览/OnlyOffice 下载:独立鉴权层 require_file_access(支持 ?access_token=
+        // download token),不能用 require_user_auth(只读 Authorization 头,query token 401)。
+        .route(
+            "/api/files/serve",
+            get(fl::serve_file).layer(axum::middleware::from_fn_with_state(
+                state.clone(),
+                crate::multitenant::middleware::require_file_access,
+            )),
+        )
+        .route(
+            "/api/files/archive/entry",
+            get(fl::archive_entry).layer(axum::middleware::from_fn_with_state(
+                state.clone(),
+                crate::multitenant::middleware::require_file_access,
+            )),
+        )
         .merge(
             SwaggerUi::new("/api/docs")
                 .url("/api/openapi.json", ApiDoc::openapi())
