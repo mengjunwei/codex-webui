@@ -19,7 +19,6 @@ import { useChatMention } from '@/hooks/use-chat-mention';
 import { SecurityPolicyBadge } from './security-policy-badge';
 import { ModelSelector } from './model-selector';
 import { TokenUsageRing } from './token-usage-ring';
-import { SkillSelector } from './skill-selector';
 import { AttachmentChips } from './attachment-chips';
 import { MentionPopover } from './mention-popover';
 
@@ -76,7 +75,6 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput(
     handlePaste,
     addFileMention,
     handleRemoveAttachment,
-    handleSkillSelect,
     toRelativePath,
   } = useChatAttachments({
     textareaRef,
@@ -241,11 +239,7 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput(
               <ModelSelector />
               <SecurityPolicyBadge />
               {/* McpStatusBadge 已下线 */}
-              <SkillSelector
-                cwd={threadCwd}
-                disabled={!threadId || readOnly}
-                onSelect={handleSkillSelect}
-              />
+              {/* SkillSelector 已下线:skills 由服务器配置管理 */}
               <Button
                 size="sm"
                 variant={panelOpen ? 'secondary' : 'ghost'}

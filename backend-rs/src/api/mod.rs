@@ -232,10 +232,8 @@ pub async fn build_router(state: AppState) -> Router {
             "/threads/{threadId}/approvals",
             get(mt::mt_list_approvals).post(mt::mt_resolve_approval),
         )
-        .route(
-            "/teams/{teamId}/members/{userId}",
-            axum::routing::delete(mt::remove_member),
-        )
+        .route("/teams/{teamId}/members/{userId}",            axum::routing::delete(mt::remove_member),        )
+        .route("/user/api-key", post(mt::set_user_api_key).get(mt::list_user_api_keys))
         .layer(axum::middleware::from_fn_with_state(
             state.clone(),
             crate::multitenant::middleware::require_user_auth,

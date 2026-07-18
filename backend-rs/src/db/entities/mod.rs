@@ -158,6 +158,31 @@ pub mod team_api_key {
     impl ActiveModelBehavior for ActiveModel {}
 }
 
+/// 用户个人 OpenAI API key(BYOK)。encrypted_key 为 AES-GCM 密文(hex)。
+pub mod user_api_key {
+    use sea_orm::entity::prelude::*;
+    #[derive(Clone, Debug, PartialEq, DeriveEntityModel, serde::Serialize)]
+    #[sea_orm(table_name = "user_api_keys")]
+    pub struct Model {
+        #[sea_orm(primary_key, column_type = "String(StringLen::N(36))")]
+        pub id: String,
+        #[sea_orm(column_type = "String(StringLen::N(36))")]
+        pub user_id: String,
+        #[sea_orm(column_type = "String(StringLen::N(32))")]
+        pub provider: String,
+        #[sea_orm(column_type = "Text")]
+        pub encrypted_key: String,
+        #[sea_orm(column_type = "String(StringLen::N(16))")]
+        pub key_hint: String,
+        pub is_active: bool,
+        pub created_at: i64,
+        pub updated_at: i64,
+    }
+    #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]
+    pub enum Relation {}
+    impl ActiveModelBehavior for ActiveModel {}
+}
+
 /// 审计日志:team owner 关键操作记录。
 pub mod audit_log {
     use sea_orm::entity::prelude::*;

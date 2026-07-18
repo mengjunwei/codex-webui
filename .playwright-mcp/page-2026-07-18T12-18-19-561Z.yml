@@ -1,0 +1,52 @@
+- generic:
+  - generic:
+    - generic:
+      - generic:
+        - banner:
+          - button
+          - generic:
+            - heading [level=1]: Codex WebUI
+          - generic: 已连接
+          - button
+        - generic:
+          - paragraph: 选择或创建会话以开始聊天。
+  - dialog:
+    - heading [level=2]: 导航
+    - generic:
+      - generic:
+        - generic:
+          - button: 成员
+          - button: 团队设置
+      - generic:
+        - button: 文件
+        - button: 终端
+        - button: 集成
+        - button: 设置
+      - generic:
+        - generic: 会话
+        - button
+      - generic:
+        - generic:
+          - generic:
+            - generic:
+              - generic:
+                - generic:
+                  - button: 已归档
+                  - button
+                - generic:
+                  - generic:
+                    - paragraph: 暂无归档会话
+              - paragraph: 暂无会话
+  - dialog [ref=f6e97]:
+    - heading "Select workspace" [level=2] [ref=f6e99]
+    - generic [ref=f6e100]:
+      - button "Personal workspace Private notes and drafts" [active] [ref=f6e101]:
+        - generic [ref=f6e105]:
+          - generic [ref=f6e106]: Personal workspace
+          - generic [ref=f6e107]: Private notes and drafts
+      - button "Team workspace Shared with team members" [ref=f6e108]:
+        - generic [ref=f6e114]:
+          - generic [ref=f6e115]: Team workspace
+          - generic [ref=f6e116]: Shared with team members
+    - button "取消" [ref=f6e118]
+    - button "Close" [ref=f6e119]

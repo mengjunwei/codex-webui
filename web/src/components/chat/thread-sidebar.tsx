@@ -27,7 +27,7 @@ import { ThreadRow } from './sidebar/thread-row';
 import { WorkspaceOverview } from './sidebar/workspace-overview';
 import { WorkspaceDetail } from './sidebar/workspace-detail';
 import { RenameDialog, ConfirmDialog } from './sidebar/sidebar-dialogs';
-import { DirectoryPickerDialog } from './sidebar/directory-picker-dialog';
+import { WorkspaceSelectorDialog } from './sidebar/workspace-selector-dialog';
 
 /** Derives the active "view" from the current route path. */
 function useActiveView(): 'chat' | 'files' | 'terminal' | 'diagnostics' | 'settings' | 'integrations' | 'other' {
@@ -81,7 +81,7 @@ export function ThreadSidebar() {
   const [renameThread, setRenameThread] = useState<ThreadDto | null>(null);
   const [renameValue, setRenameValue] = useState('');
   const [confirmAction, setConfirmAction] = useState<ConfirmAction>(null);
-  const [dirPickerOpen, setDirPickerOpen] = useState(false);
+  const [wsSelectorOpen, setWsSelectorOpen] = useState(false);
   const [membersOpen, setMembersOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
 
@@ -174,9 +174,11 @@ export function ThreadSidebar() {
     mutationFn: (vars: { body: { cwd: string } }) =>
       threadsApi.create({ teamId: currentTeamId!, cwd: vars.body.cwd }),
     onSuccess: (res: any) => {
-      setActiveThread(res.thread.id, res.cwd, threadLabel(res.thread));
+      const tid = res.thread?.thread?.id || res.id || res.thread?.id;
+      const cwd = res.cwd || res.thread?.cwd || '';
+      setActiveThread(tid, cwd, threadLabel(res.thread?.thread || res.thread || res));
       invalidateThreads();
-      void navigate({ to: '/t/$threadId', params: { threadId: res.thread.id } });
+      void navigate({ to: '/t/$threadId', params: { threadId: tid } });
     },
     onError: (err) => addSystemError(getApiErrorMessage(err)),
   });
@@ -407,7 +409,7 @@ export function ThreadSidebar() {
           className="h-6 w-6"
           aria-label={t('New workspace thread')}
           title={t('New workspace thread')}
-          onClick={() => setDirPickerOpen(true)}
+          onClick={() => setWsSelectorOpen(true)}
         >
           <Plus className="h-3.5 w-3.5" />
         </Button>
@@ -467,10 +469,14 @@ export function ThreadSidebar() {
         onConfirm={confirmCurrentAction}
         onClose={() => setConfirmAction(null)}
       />
-      <DirectoryPickerDialog
-        open={dirPickerOpen}
-        onClose={() => setDirPickerOpen(false)}
-        onSelect={(cwd) => createThread.mutate({ body: { cwd } })}
+      <WorkspaceSelectorDialog
+        open={wsSelectorOpen}
+        onClose={() => setWsSelectorOpen(false)}
+        onSelect={(ws: any) => {
+          // 个人 workspace: 不传 cwd(后端用默认 codex_home)
+          // 团队 workspace: 传 teamId 作为 cwd
+          createThread.mutate({ body: { cwd: ws.cwd || '' } });
+        }}
       />
       <TeamMembersDialog open={membersOpen} onClose={() => setMembersOpen(false)} />
       <TeamSettingsDialog open={settingsOpen} onClose={() => setSettingsOpen(false)} />

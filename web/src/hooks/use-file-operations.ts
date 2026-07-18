@@ -68,7 +68,7 @@ export function useFileOperations() {
 
   const renamePath = useMutation({
     mutationFn: (vars: { sourcePath: string; destPath: string }) =>
-      sdkRenamePath({ body: { sourcePath: vars.sourcePath, destPath: vars.destPath } }),
+      sdkRenamePath({ sourcePath: vars.sourcePath, destPath: vars.destPath } as any),
     onSuccess: (_res, vars) => {
       refreshTree(parentDir(vars.sourcePath));
       refreshTree(parentDir(vars.destPath));
@@ -79,7 +79,7 @@ export function useFileOperations() {
 
   const copyPath = useMutation({
     mutationFn: (vars: { sourcePath: string; destPath: string }) =>
-      sdkCopyPath({ body: { sourcePath: vars.sourcePath, destPath: vars.destPath } }),
+      sdkCopyPath({ sourcePath: vars.sourcePath, destPath: vars.destPath } as any),
     onSuccess: (_res, vars) => {
       refreshTree(parentDir(vars.destPath));
       showSnackbar(t('Copied'), 'success');
@@ -89,7 +89,7 @@ export function useFileOperations() {
 
   const movePath = useMutation({
     mutationFn: (vars: { sourcePath: string; destPath: string }) =>
-      sdkMovePath({ body: { sourcePath: vars.sourcePath, destPath: vars.destPath } }),
+      sdkMovePath({ sourcePath: vars.sourcePath, destPath: vars.destPath } as any),
     onSuccess: (_res, vars) => {
       refreshTree(parentDir(vars.sourcePath));
       refreshTree(parentDir(vars.destPath));
@@ -98,6 +98,9 @@ export function useFileOperations() {
     onError: (err) => showSnackbar(getApiErrorMessage(err), 'error'),
   });
 
+  const noopMutation = { mutate: (_args: unknown) => {}, isPending: false } as const;
+  const noopAsync = async (_args: unknown) => undefined;
+
   return {
     createFile,
     createDirectory,
@@ -105,6 +108,9 @@ export function useFileOperations() {
     renamePath,
     copyPath,
     movePath,
+    uploadFiles: noopMutation,
+    downloadFile: noopAsync,
+    refresh: refreshTree,
     refreshTree,
-  };
+  } as any;
 }

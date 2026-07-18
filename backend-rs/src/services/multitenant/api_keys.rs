@@ -64,13 +64,16 @@ pub fn key_hint(plain: &str) -> String {
 // ── key 校验(调 OpenAI /v1/models)───────────────────────────────────────
 
 /// 调 OpenAI 验证 key 有效性。无效或网络错误 → Err。
-pub async fn validate_openai_key(key: &str) -> Result<(), AppError> {
+/// `base_url` 可选:为 None 时默认 https://api.openai.com;
+/// 有值时使用配置的模型代理地址(如本地代理 127.0.0.1:15721)。
+pub async fn validate_openai_key(key: &str, base_url: Option<&str>) -> Result<(), AppError> {
     let client = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(10))
         .build()
         .map_err(|e| AppError::internal(format!("http client: {e}")))?;
+    let url = format!("{}/v1/models", base_url.unwrap_or("https://api.openai.com"));
     let resp = client
-        .get("https://api.openai.com/v1/models")
+        .get(&url)
         .bearer_auth(key)
         .send()
         .await
@@ -88,7 +91,7 @@ pub async fn validate_openai_key(key: &str) -> Result<(), AppError> {
         Err(AppError::business(
             ErrorCode::AuthInvalidApiKey,
             StatusCode::BAD_REQUEST,
-            format!("OpenAI rejected the key (HTTP {})", resp.status().as_u16()),
+            format!("API rejected the key (HTTP {})", resp.status().as_u16()),
             None,
         ))
     }
@@ -109,7 +112,13 @@ pub async fn set_team_api_key(
     provider: &str,
     master: &str,
 ) -> Result<team_api_key::Model, AppError> {
-    validate_openai_key(plain_key).await?;
+    // 验证 key 有效性(best-effort):调配置的模型代理 base_url(如有),否则默认 OpenAI。
+    // 网络错误/本地代理不可达时记录警告但允许设置(本地代理不需要真实 OpenAI key)。
+    let settings = crate::services::settings::SettingsReader::new(db, None);
+    let base_url = settings.get_string("general.modelProviderBaseUrl").await;
+    if let Err(e) = validate_openai_key(plain_key, base_url.as_deref()).await {
+        tracing::warn!(error = %e, "API key validation failed (allowing anyway for local/custom providers)");
+    }
     let enc = encrypt_key(plain_key, master)?;
     let hint = key_hint(plain_key);
     let now = now_ms();
@@ -206,6 +215,118 @@ pub async fn get_active_plain_key(
         }
         None => Ok(None),
     }
+}
+
+// ── User API Key (个人 BYOK) ────────────────────────────────────────────────
+
+use crate::db::entities::user_api_key;
+
+/// 设置用户个人 active key:验证 → 加密 → 旧的置 inactive → 插入新 active(事务)。
+pub async fn set_user_api_key(
+    db: &DatabaseConnection,
+    user_id: &str,
+    plain_key: &str,
+    provider: &str,
+    master: &str,
+) -> Result<user_api_key::Model, AppError> {
+    let settings = crate::services::settings::SettingsReader::new(db, None);
+    let base_url = settings.get_string("general.modelProviderBaseUrl").await;
+    if let Err(e) = validate_openai_key(plain_key, base_url.as_deref()).await {
+        tracing::warn!(error = %e, "User API key validation failed (allowing anyway for local/custom providers)");
+    }
+    let enc = encrypt_key(plain_key, master)?;
+    let hint = key_hint(plain_key);
+    let now = now_ms();
+    let id = new_id();
+    let provider = if provider.trim().is_empty() {
+        "openai"
+    } else {
+        provider.trim()
+    };
+
+    let k = db
+        .transaction(|txn| {
+            let id = id.clone();
+            let enc = enc.clone();
+            let hint = hint.clone();
+            let user_id = user_id.to_string();
+            let provider = provider.to_string();
+            Box::pin(async move {
+                // 先把该用户所有 active 行转 inactive。
+                let active_rows = user_api_key::Entity::find()
+                    .filter(user_api_key::Column::UserId.eq(user_id.clone()))
+                    .filter(user_api_key::Column::IsActive.eq(true))
+                    .all(txn)
+                    .await
+                    .map_err(|e| AppError::internal(format!("query active user keys: {e}")))?;
+                for row in active_rows {
+                    let mut am: user_api_key::ActiveModel = row.into();
+                    am.is_active = Set(false);
+                    am.updated_at = Set(now);
+                    ActiveModelTrait::update(am, txn)
+                        .await
+                        .map_err(|e| AppError::internal(format!("deactivate old user key: {e}")))?;
+                }
+                let am = user_api_key::ActiveModel {
+                    id: Set(id),
+                    user_id: Set(user_id),
+                    provider: Set(provider),
+                    encrypted_key: Set(enc),
+                    key_hint: Set(hint),
+                    is_active: Set(true),
+                    created_at: Set(now),
+                    updated_at: Set(now),
+                };
+                am.insert(txn)
+                    .await
+                    .map_err(|e| AppError::internal(format!("insert user api key: {e}")))
+            })
+        })
+        .await
+        .map_err(|e| AppError::internal(format!("tx: {e}")))?;
+    Ok(k)
+}
+
+/// 取用户当前 active key 并解密明文(供个人 workspace 注入 codex 用)。
+pub async fn get_user_active_plain_key(
+    db: &DatabaseConnection,
+    user_id: &str,
+    master: &str,
+    master_previous: Option<&str>,
+) -> Result<Option<String>, AppError> {
+    let row = user_api_key::Entity::find()
+        .filter(user_api_key::Column::UserId.eq(user_id.to_string()))
+        .filter(user_api_key::Column::IsActive.eq(true))
+        .order_by_desc(user_api_key::Column::CreatedAt)
+        .one(db)
+        .await
+        .map_err(|e| AppError::internal(format!("query active user key: {e}")))?;
+    match row {
+        Some(r) => {
+            let enc = r.encrypted_key.as_str();
+            let plain = decrypt_key(enc, master)
+                .ok()
+                .or_else(|| master_previous.and_then(|p| decrypt_key(enc, p).ok()))
+                .ok_or_else(|| {
+                    AppError::internal("decrypt user api key failed".into())
+                })?;
+            Ok(Some(plain))
+        }
+        None => Ok(None),
+    }
+}
+
+/// 列出用户的全部 key(历史 + active)。
+pub async fn list_user_api_keys(
+    db: &DatabaseConnection,
+    user_id: &str,
+) -> Result<Vec<user_api_key::Model>, AppError> {
+    user_api_key::Entity::find()
+        .filter(user_api_key::Column::UserId.eq(user_id.to_string()))
+        .order_by_desc(user_api_key::Column::CreatedAt)
+        .all(db)
+        .await
+        .map_err(|e| AppError::internal(format!("list user api keys: {e}")))
 }
 
 #[cfg(test)]

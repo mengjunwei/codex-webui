@@ -292,21 +292,28 @@ impl TeamCodexManager {
         db: &sea_orm::DatabaseConnection,
         master_key: &str,
     ) -> Result<Arc<ProcessSlot>, AppError> {
-        let plain_key = api_keys::get_active_plain_key(
-            db,
-            team_id,
-            master_key,
-            self.master_previous.as_deref(),
-        )
-        .await?
-        .ok_or_else(|| {
-            AppError::business(
-                ErrorCode::AuthInvalidApiKey,
-                StatusCode::BAD_REQUEST,
-                "team has no active API key; owner must set one first".into(),
-                None,
+        // 个人 workspace 用 "user:{user_id}" 格式标识，从 user_api_key 获取 key
+        // 本地代理模式下 API key 可选
+        let plain_key = if team_id.starts_with("user:") {
+            let user_id = &team_id[5..];
+            api_keys::get_user_active_plain_key(
+                db,
+                user_id,
+                master_key,
+                self.master_previous.as_deref(),
             )
-        })?;
+            .await?
+            .unwrap_or_default()
+        } else {
+            api_keys::get_active_plain_key(
+                db,
+                team_id,
+                master_key,
+                self.master_previous.as_deref(),
+            )
+            .await?
+            .unwrap_or_default()
+        };
 
         let codex_home = self.codex_home.clone();
         tokio::fs::create_dir_all(&codex_home)
@@ -335,7 +342,10 @@ impl TeamCodexManager {
             .kill_on_drop(true);
         cmd.env("CODEX_HOME", &codex_home);
         // 全局 CODEX_HOME 共享:每 team 进程注入各自 BYOK key(env 注入;不写全局 auth.json 以免 key 串味)。
-        cmd.env("OPENAI_API_KEY", &plain_key);
+        // 本地代理模式下 API key 可选，空 key 时不设置环境变量。
+        if !plain_key.is_empty() {
+            cmd.env("OPENAI_API_KEY", &plain_key);
+        }
 
         let mut child = cmd
             .spawn()

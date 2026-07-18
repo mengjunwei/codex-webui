@@ -293,6 +293,19 @@ async fn main() -> anyhow::Result<()> {
     let codex_for_shutdown = state.codex.clone();
     let app = build_router(state.clone()).await.layer(ws_layer);
 
+    // 添加 CORS 中间件(开发环境允许 localhost:5173)
+    let cors = tower_http::cors::CorsLayer::new()
+        .allow_origin(tower_http::cors::AllowOrigin::predicate(|origin, _req| {
+            // 允许 localhost 的任意端口(开发环境)
+            let origin_str = origin.to_str().unwrap_or("");
+            origin_str.starts_with("http://localhost:")
+                || origin_str.starts_with("http://127.0.0.1:")
+                || origin_str.starts_with("https://")
+        }))
+        .allow_methods(tower_http::cors::AllowMethods::any())
+        .allow_headers(tower_http::cors::AllowHeaders::any());
+    let app = app.layer(cors);
+
     // 独立挂载 hook webhook(per-user workspace 实施步骤 9):不走 /api,不走 JWT 中间件。
     let hook_router = axum::Router::new()
         .route(

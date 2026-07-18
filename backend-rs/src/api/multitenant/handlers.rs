@@ -335,6 +335,49 @@ pub async fn list_team_api_keys(
     Ok(Json(keys.into_iter().map(Into::into).collect()))
 }
 
+// ── 用户个人 API key(BYOK) ───────────────────────────────────────────────
+
+/// 设置/轮换用户个人 OpenAI key。
+pub async fn set_user_api_key(
+    State(state): State<AppState>,
+    Extension(uid): Extension<UserId>,
+    crate::error::Json(body): crate::error::Json<SetKeyBody>,
+) -> Result<Json<ApiKeyResp>, AppError> {
+    let db = require_db(&state);
+    let provider = body.provider.unwrap_or_else(|| "openai".into());
+    let k = api_keys::set_user_api_key(
+        db,
+        &uid.0,
+        &body.key,
+        &provider,
+        &state.mt_master_key,
+    )
+    .await?;
+    Ok(Json(ApiKeyResp {
+        id: k.id,
+        provider: k.provider,
+        key_hint: k.key_hint,
+        is_active: k.is_active,
+        created_at: k.created_at,
+    }))
+}
+
+/// 列出用户的全部个人 key(只返回 hint,不含密文)。
+pub async fn list_user_api_keys(
+    State(state): State<AppState>,
+    Extension(uid): Extension<UserId>,
+) -> Result<Json<Vec<ApiKeyResp>>, AppError> {
+    let db = require_db(&state);
+    let keys = api_keys::list_user_api_keys(db, &uid.0).await?;
+    Ok(Json(keys.into_iter().map(|k| ApiKeyResp {
+        id: k.id,
+        provider: k.provider,
+        key_hint: k.key_hint,
+        is_active: k.is_active,
+        created_at: k.created_at,
+    }).collect()))
+}
+
 // ── 多租户 threads / turns(M3,经 TeamCodexManager)────────────────────────
 
 #[derive(Deserialize)]
@@ -343,13 +386,16 @@ pub struct TeamIdQuery {
     pub team_id: String,
 }
 
+/// 创建会话请求体。
+/// 由于 #[serde(flatten)] 和 Option 组合可能有问题，
+/// 改用 Value 接收整个 body，然后手动提取 teamId。
 #[derive(Deserialize)]
 pub struct MtCreateThreadBody {
     #[serde(rename = "teamId")]
-    pub team_id: String,
-    /// 透传给 codex thread/start 的其余字段(model/cwd/...)。
+    pub team_id: Option<String>,
+    /// 透传给 codex thread/start 的其余字段。
     #[serde(flatten)]
-    pub rest: serde_json::Map<String, Value>,
+    pub extra: std::collections::HashMap<String, serde_json::Value>,
 }
 
 /// 校验 thread 属于某 team 且 user 是该 team 成员,返回 team_id。
@@ -378,61 +424,110 @@ async fn require_thread_team(
 }
 
 /// 创建会话:成员校验 → 主副本分配 → (本地直跑 / 转发主) → thread/start → PG 双写 + 主侧复制 rollout。
+///
+/// 支持两种模式:
+/// - team workspace:传 teamId,使用团队共享 workspace + 团队 API key
+/// - 个人 workspace:不传 teamId,使用用户个人 workspace + 个人 API key
 pub async fn mt_create_thread(
     State(state): State<AppState>,
     Extension(uid): Extension<UserId>,
-    crate::error::Json(body): crate::error::Json<MtCreateThreadBody>,
+    axum::Json(body): axum::Json<serde_json::Value>,
 ) -> Result<Json<Value>, AppError> {
     let db = require_db(&state);
-    teams::require_member(db, &body.team_id, &uid.0).await?;
+
+    // 手动提取 teamId，其余字段透传给 codex
+    let team_id_raw = body.get("teamId").and_then(Value::as_str).map(String::from);
+    let mut rest = match body {
+        Value::Object(map) => map,
+        _ => serde_json::Map::new(),
+    };
+    rest.remove("teamId"); // 不透传 teamId 给 codex
+
+    // 确定 team_id:个人 workspace 用 "user:{user_id}" 格式标识
+    let (team_id, is_personal) = match team_id_raw {
+        Some(tid) => {
+            teams::require_member(db, &tid, &uid.0).await?;
+            (tid, false)
+        }
+        None => {
+            // 个人 workspace:确保目录存在,用 "user:{user_id}" 格式标识
+            let _ = crate::services::workspace::ensure_user_personal(&state, &uid.0).await;
+            (format!("user:{}", uid.0), true)
+        }
+    };
+
     metrics::counter!("mt_threads_created_total").increment(1);
 
-    let target = resolve_worker(&state, &body.team_id, None).await?;
+    // 对于个人 workspace,设置 cwd 到个人目录
+    if is_personal {
+        let personal_cwd = crate::services::workspace::personal_path(&state.codex_home, &uid.0);
+        rest.insert("cwd".to_string(), Value::String(personal_cwd.to_string_lossy().to_string()));
+    }
+
+    let target = resolve_worker(&state, &team_id, None).await?;
     let resp = if target == state.node_id {
         let lease = state
             .mt_team_codex
-            .client_for(&body.team_id, db, &state.mt_master_key)
+            .client_for(&team_id, db, &state.mt_master_key)
             .await?;
         lease
             .client()
-            .request("thread/start", Some(Value::Object(body.rest)))
+            .request("thread/start", Some(Value::Object(rest)))
             .await
             .map_err(|e| AppError::internal(format!("codex thread/start: {e}")))?
     } else {
         let rpc_url = worker_rpc_url(&state, &target).await?;
         state
             .worker_rpc
-            .thread_start(&rpc_url, &body.team_id, &uid.0, Value::Object(body.rest))
+            .thread_start(&rpc_url, &team_id, &uid.0, Value::Object(rest))
             .await?
     };
 
     // PG threads 元数据双写(共享库)。
+    // codex thread/start 响应格式:thread ID 嵌套在 resp.thread.thread.id,
+    // 顶层 resp.id 是空字符串(resp.id 是 wrapped 用的占位)。
     let thread_id = resp
-        .get("id")
+        .get("thread")
+        .and_then(|t| t.get("thread"))
+        .and_then(|t| t.get("id"))
         .and_then(Value::as_str)
+        .or_else(|| resp.get("id").and_then(Value::as_str))
         .or_else(|| resp.get("threadId").and_then(Value::as_str));
     if let Some(tid) = thread_id {
-        double_write_thread_meta(db, tid, &body.team_id, &uid.0).await;
+        // 个人 workspace 记录到 user_id 下
+        let meta_team_id = if is_personal { &uid.0 } else { &team_id };
+        double_write_thread_meta(db, tid, meta_team_id, &uid.0).await;
         // 绑定粘性:确保新创建的 thread 后续 turn 路由到同一 worker。
         let _ = state.sticky.bind(tid, &target, 3600).await;
     }
+    // 包装 codex 响应为一致格式:前端期望 {thread, id, cwd} 而非扁平 codex 响应。
+    let thread_id_str = thread_id.unwrap_or("");
+    let cwd = resp.get("cwd").and_then(Value::as_str)
+        .or_else(|| resp.get("thread").and_then(|t| t.get("cwd")).and_then(Value::as_str))
+        .unwrap_or("");
+    let wrapped = serde_json::json!({
+        "thread": resp,
+        "id": thread_id_str,
+        "cwd": cwd,
+    });
     // 主侧:把 thread 关联到其 rollout 文件,供 replicate_team_rollouts 精确读取。
     if target == state.node_id {
-        if let Some(tid) = thread_id {
+        if !thread_id_str.is_empty() {
             if let Some(p) = crate::services::multitenant::replication::find_rollout_for_thread(
-                &state.codex_home, tid,
+                &state.codex_home, thread_id_str,
             )
             .await
             {
-                state.active_rollout.lock().await.insert(tid.to_string(), p);
+                state.active_rollout.lock().await.insert(thread_id_str.to_string(), p);
             }
         }
     }
     // 主侧:复制该 team 的 rollout 增量到副本(准实时 session 同步)。
-    if target == state.node_id {
+    // 个人 workspace 跳过(个人 workspace 不参与 team 复制)。
+    if target == state.node_id && !is_personal {
         let _ = crate::services::multitenant::replication::replicate_team_rollouts(
             db,
-            &body.team_id,
+            &team_id,
             &state.codex_home,
             state.cluster.as_ref(),
             state.mt_redis.as_ref(),
@@ -442,7 +537,7 @@ pub async fn mt_create_thread(
         )
         .await;
     }
-    Ok(Json(resp))
+    Ok(Json(wrapped))
 }
 
 /// 列出 team 会话元数据(从 PG,team 内共享,按活跃时间倒序)。

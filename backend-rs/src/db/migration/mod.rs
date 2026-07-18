@@ -16,6 +16,7 @@ mod m20260716_0006_quota;
 mod m20260716_0007_team_routes;
 mod m20260716_0008_session_replicas;
 mod m20260718_000001_workspace_audit;
+mod m20260718_000002_user_api_keys;
 
 pub struct Migrator;
 
@@ -31,6 +32,7 @@ impl MigratorTrait for Migrator {
             Box::new(m20260716_0007_team_routes::Migration),
             Box::new(m20260716_0008_session_replicas::Migration),
             Box::new(m20260718_000001_workspace_audit::Migration),
+            Box::new(m20260718_000002_user_api_keys::Migration),
         ]
     }
 }

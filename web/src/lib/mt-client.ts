@@ -16,7 +16,7 @@ function authHeaders(): Record<string, string> {
   return token ? { 'Authorization': `Bearer ${token}` } : {};
 }
 
-async function mtFetch<T>(
+export async function mtFetch<T>(
   path: string,
   method: string = 'GET',
   body?: unknown,
@@ -212,7 +212,7 @@ export interface CreateTeamBody { name: string; }
 export interface JoinBody { code: string; }
 export interface CreateInvitationBody { expiresAt?: number; maxUses?: number; }
 export interface SetKeyBody { key: string; provider?: string; }
-export interface CreateThreadBody { teamId: string; cwd?: string; [key: string]: unknown; }
+export interface CreateThreadBody { teamId?: string; cwd?: string; [key: string]: unknown; }
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 export interface ResolveApprovalBody { requestId?: string; approved: boolean; result?: any; }
 export interface RenameThreadBody { name: string; }
@@ -294,3 +294,4 @@ export const turnErrorApi = {
   list: (threadId: string) =>
     mtFetch<TurnErrorDto[]>(`/threads/${threadId}/turn-errors`),
 };
+export interface InvitationDto { id: string; code: string; created_at: number; expires_at: number; max_uses: number; used_count: number; }

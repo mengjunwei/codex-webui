@@ -1,0 +1,7 @@
+- generic [ref=e4]:
+  - generic [ref=e5]: Codex WebUI
+  - paragraph [ref=e9]: Enter your email and password to continue.
+  - textbox "邮箱" [ref=e10]
+  - textbox "Password" [ref=e11]
+  - button "Sign in" [disabled]
+  - button "Create account" [ref=e12]

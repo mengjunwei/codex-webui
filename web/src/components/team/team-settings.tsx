@@ -7,7 +7,7 @@ import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Badge } from '@/components/ui/badge';
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog';
-import { Copy, Key } from 'lucide-react';
+import { Key } from 'lucide-react';
 import { teamsApi, type TeamDto, type ApiKeyResp } from '@/lib/mt-client';
 import { useTeamStore } from '@/stores/team-store';
 import { showSnackbar } from '@/stores/snackbar-store';
@@ -20,10 +20,10 @@ interface Props {
 export function TeamSettingsDialog({ open, onClose }: Props) {
   const { t } = useTranslation();
   const { currentTeamId } = useTeamStore();
-  const [team, setTeam] = useState<TeamDto | null>(null);
+  const [team] = useState<TeamDto | null>(null);
   const [apiKeys, setApiKeys] = useState<ApiKeyResp[]>([]);
   const [newKey, setNewKey] = useState('');
-  const [provider, setProvider] = useState('openai');
+  const [provider] = useState('openai');
   const [loading, setLoading] = useState(false);
 
   const loadData = useCallback(async () => {
