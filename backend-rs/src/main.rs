@@ -59,6 +59,9 @@ async fn main() -> anyhow::Result<()> {
         .await
         .map_err(|e| anyhow::anyhow!("run migrations: {e}"))?;
     reconcile_settings(&db).await?;
+    // 后端重启 = 所有 codex 子进程随之退出,thread_resume_cache 全部陈旧(指向已死进程的
+    // 内存 thread 状态)。清空,使首次 resume 走真实 codex 从 rollout 重新加载 thread。
+    codex_webui::services::multitenant::resume_cache::clear_all(&db).await;
 
     let mt_master_key = cfg.effective_master_key().to_string();
 

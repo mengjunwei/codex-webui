@@ -19,14 +19,23 @@
 //!
 //! - 没有 TTL（codex 长期复用同一 rollout 文件，turn/start 后再调 resume 时
 //!   自然会刷新本表 response 字段）。
-//! - codex app-server 重启导致本节点 generation 变化时（ThreadResumeRegistry
-//!   自身的 generation 机制），**这里不需要联动**——本表存的是上一次的完整响应，
-//!   重启后第一次 resume 仍能用旧响应撑过去，等下一次真实 resume 再 upsert 刷新。
+//! - codex app-server 重启(进程崩溃/idle_evict/后端重启)后,内存中的 thread 状态丢失,
+//!   陈旧 cache 会让 resume 短路返回空响应 → codex 内存无 thread → 后续 turn/start
+//!   "thread not found"。因此**后端启动时必须 clear_all**(后端重启=所有 codex 子进程
+//!   全死,全表 cache 陈旧)。运行时 create→resume 的 race 保护不受影响(启动时无刚创建
+//!   的 thread)。
 
 use sea_orm::entity::prelude::*;
 use sea_orm::{ColumnTrait, DatabaseConnection, EntityTrait, QueryFilter, Set};
 
 use crate::db::entities::thread_resume_cache::{ActiveModel, Column, Entity, Model};
+
+/// 清空全表 cache。后端启动时调用(codex 子进程随重启全死,cache 全陈旧)。
+pub async fn clear_all(db: &DatabaseConnection) {
+    if let Err(e) = Entity::delete_many().exec(db).await {
+        tracing::warn!(error = %e, "clear thread_resume_cache failed (non-fatal)");
+    }
+}
 
 /// 读取缓存的 thread/resume 响应(命中返回 Some(Value))。
 pub async fn get_cached_resume(
