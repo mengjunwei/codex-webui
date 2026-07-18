@@ -138,12 +138,17 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput(
     addUserMessage(valueRef.current.trim(), imageAttachments.length > 0 ? imageAttachments : undefined);
     clearAfterSend();
     const { modelOverride, effortOverride } = useModelStore.getState();
+    // per-thread 策略:从 store 读取(用户通过 SecurityPolicyBadge 设置)。
+    const approvalPolicy = useTimelineStore.getState().approvalPolicy;
+    const sandboxMode = useTimelineStore.getState().sandboxMode;
     startTurn.mutate({
       path: { threadId },
       body: {
         input: input as never,
         ...(modelOverride && { model: modelOverride }),
         ...(effortOverride && { effort: effortOverride }),
+        ...(approvalPolicy && { approvalPolicy }),
+        ...(sandboxMode && { sandboxMode }),
       },
     });
   }, [buildInput, threadId, loading, readOnly, attachmentsRef, addUserMessage, clearAfterSend, startTurn]);
