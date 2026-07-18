@@ -20,6 +20,10 @@ import { useBreakpoint } from '@/hooks/use-breakpoint';
 import { useConnectionStore } from '@/stores/connection-store';
 import { useLayoutStore } from '@/stores/layout-store';
 import { useTimelineStore } from '@/stores/timeline-store';
+import { useMutation, useQueryClient } from '@tanstack/react-query';
+import { threadsApi } from '@/lib/mt-client';
+import { showSnackbar } from '@/stores/snackbar-store';
+import { getApiErrorMessage } from '@/lib/api-error';
 
 /** Mobile overflow menu — closes after each action. */
 function MobileOverflowMenu({
@@ -71,6 +75,7 @@ interface Props {
 export function ChatHeader({ dark, onToggleDark, onToggleDiagnostics }: Props) {
   const { t, i18n } = useTranslation();
   const navigate = useNavigate();
+  const queryClient = useQueryClient();
   const connected = useConnectionStore((s) => s.connected);
   const threadId = useTimelineStore((s) => s.threadId);
   const threadTitle = useTimelineStore((s) => s.threadTitle);
@@ -89,11 +94,14 @@ export function ChatHeader({ dark, onToggleDark, onToggleDiagnostics }: Props) {
     select: (s) => s.location.pathname.startsWith('/diagnostics'),
   });
 
-  // TODO: threadsSetThreadNameMutation / threadsListThreadsQueryKey 已下线,待迁移到新 mt-client API
-  const renameThread = {
-    mutate: (_args: { path: { threadId: string }; body: { name: string } }) => {},
-    isPending: false,
-  };
+  const renameThread = useMutation({
+    mutationFn: (vars: { path: { threadId: string }; body: { name: string } }) =>
+      threadsApi.rename(vars.path.threadId, { name: vars.body.name }),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ['threads'] });
+    },
+    onError: (err) => showSnackbar(getApiErrorMessage(err), 'error'),
+  });
 
   const toggleLanguage = () => {
     const next = i18n.language.startsWith('zh') ? 'en' : 'zh-CN';
