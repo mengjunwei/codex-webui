@@ -4,7 +4,7 @@
  * state, queries, mutations, and view routing.
  */
 import { useMemo, useState } from 'react';
-import { FolderOpen, PanelLeftClose, Puzzle, Plus, Settings, Terminal } from 'lucide-react';
+import { FolderOpen, PanelLeftClose, Puzzle, Plus, Settings, Terminal, Users } from 'lucide-react';
 import { useNavigate, useRouterState } from '@tanstack/react-router';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
@@ -14,6 +14,8 @@ import { Separator } from '@/components/ui/separator';
 import { threadsApi, tokenUsageApi, turnDiffApi, turnErrorApi } from '@/lib/mt-client';
 import { useTeamStore } from '@/stores/team-store';
 import { TeamSelector } from './team-selector';
+import { TeamMembersDialog } from '../team/team-members';
+import { TeamSettingsDialog } from '../team/team-settings';
 import type { ThreadDto } from '@/lib/mt-client';
 import { useTimelineStore } from '@/stores/timeline-store';
 import { useLayoutStore } from '@/stores/layout-store';
@@ -80,6 +82,8 @@ export function ThreadSidebar() {
   const [renameValue, setRenameValue] = useState('');
   const [confirmAction, setConfirmAction] = useState<ConfirmAction>(null);
   const [dirPickerOpen, setDirPickerOpen] = useState(false);
+  const [membersOpen, setMembersOpen] = useState(false);
+  const [settingsOpen, setSettingsOpen] = useState(false);
 
   // ── Queries ─────────────────────────────────────────────────────────
   const overviewThreadsQuery = useQuery({
@@ -321,9 +325,19 @@ export function ThreadSidebar() {
   // ── Render ──────────────────────────────────────────────────────────
   return (
     <div className="flex h-full flex-col bg-card/80">
-      {/* Team selector */}
-      <div className="px-2 py-2">
+      {/* Team selector + management */}
+      <div className="px-2 py-2 space-y-1">
         <TeamSelector />
+        <div className="flex gap-1 px-1">
+          <Button size="sm" variant="ghost" className="flex-1 text-xs" onClick={() => setMembersOpen(true)}>
+            <Users className="mr-1 h-3 w-3" />
+            {t('成员')}
+          </Button>
+          <Button size="sm" variant="ghost" className="flex-1 text-xs" onClick={() => setSettingsOpen(true)}>
+            <Settings className="mr-1 h-3 w-3" />
+            {t('团队设置')}
+          </Button>
+        </div>
       </div>
       <Separator />
       {/* Global actions */}
@@ -458,6 +472,8 @@ export function ThreadSidebar() {
         onClose={() => setDirPickerOpen(false)}
         onSelect={(cwd) => createThread.mutate({ body: { cwd } })}
       />
+      <TeamMembersDialog open={membersOpen} onClose={() => setMembersOpen(false)} />
+      <TeamSettingsDialog open={settingsOpen} onClose={() => setSettingsOpen(false)} />
     </div>
   );
 }
