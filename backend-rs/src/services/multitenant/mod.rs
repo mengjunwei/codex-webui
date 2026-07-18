@@ -11,6 +11,7 @@ pub mod pool_policy;
 pub mod quota;
 pub mod rate_limit;
 pub mod replication;
+pub mod resume_cache;
 pub mod rpc;
 pub mod sticky;
 pub mod teams;

@@ -286,6 +286,14 @@ $CODEX_HOME/
 
 **fail-open**：任何内部异常 → `{"continue": true}`，不阻断 codex。
 
+### config.toml 注入（toml_edit 精确编辑）
+
+启动 codex 前向 `$CODEX_HOME/config.toml` 注入 `[hooks.audit]` 段（指向本进程 `/hooks/codex`）。
+`services/workspace/hooks_config.rs` 用 **`toml_edit`** 解析整个文件后只精确设置 4 个字段
+（`type`/`url`/`auth_header`/`auth_env`），其余用户配置（`model`/`model_providers`/注释/空行/格式）
+**原样保留**；内容无需变更时跳过写盘（不刷 mtime）。调用点：`codex_pool.rs`（多租户）、
+`codex/process.rs`（单租户遗留）。详见 `docs/thread-resume-cache-troubleshooting.md` §3。
+
 ---
 
 ## 10. 多节点集群
@@ -324,6 +332,19 @@ $CODEX_HOME/
 - 副本自查：主不在 alive 且 lease 过期 → Redis SET NX 抢占 → 晋升
 - 孤儿认领：最低 alive id 节点认领无主 team
 
+### thread/resume PG 缓存（thread_resume_cache 表）
+
+`thread/start` 成功后 codex 异步落盘 rollout 文件；前端 create→resume 链路若立即调
+`thread/resume` 会撞上落盘 race，codex 返回 `-32600 no rollout found`。解法是
+**集群共享 PG 缓存**而非进程内 HashMap：
+
+- `mt_create_thread` 成功后 `put_cached_resume(thread_id, response)` 写 PG
+- `mt_invoke_thread` + 内部 RPC `thread_invoke` 调 `thread/resume` 前先 `get_cached_resume`，命中直接返回（不发 codex RPC）
+- 真 race（cache miss）时 `-32600` 退避重试 3 次（200/400/600ms）兜底
+
+跨进程共享 → 任意副本转发到 owner，owner 查 PG 命中；进程重启 / failover 后 PG 行仍在，自愈。
+详见 `docs/thread-resume-cache-troubleshooting.md` §2。
+
 ---
 
 ## 11. 进程池调度（TeamCodexManager）
@@ -355,9 +376,14 @@ team_routes / session_replicas
 
 workspace_audit（hook 审计落库）
 
+### 缓存表（1 表）
+
+thread_resume_cache（thread/resume 响应集群共享缓存，`response` 列为 JSON 类型 —— 全库唯一例外，存 codex 完整结构化响应）
+
 ### 类型约定
 
-VARCHAR(36) UUIDv7 / BIGINT i64 毫秒 / BOOLEAN / TEXT（不用 JSON/ENUM/ARRAY，跨 PG/MySQL 一致）
+VARCHAR(36) UUIDv7 / BIGINT i64 毫秒 / BOOLEAN / TEXT（不用 JSON/ENUM/ARRAY，跨 PG/MySQL 一致）。
+唯一例外：`thread_resume_cache.response` 用 JSON（PG/MySQL 均原生支持，存结构化 codex 响应）。
 
 ---
 

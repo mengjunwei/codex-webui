@@ -470,6 +470,9 @@ pub async fn mt_create_thread(
             .mt_team_codex
             .client_for(&team_id, db, &state.mt_master_key)
             .await?;
+        // 对齐 main 分支旧实现:这两个参数确保 codex 持久化 rollout + 不开启 raw events。
+        rest.entry("experimentalRawEvents".to_string()).or_insert(Value::Bool(false));
+        rest.entry("persistExtendedHistory".to_string()).or_insert(Value::Bool(true));
         lease
             .client()
             .request("thread/start", Some(Value::Object(rest)))
@@ -484,21 +487,25 @@ pub async fn mt_create_thread(
     };
 
     // PG threads 元数据双写(共享库)。
-    // codex thread/start 响应格式:thread ID 嵌套在 resp.thread.thread.id,
-    // 顶层 resp.id 是空字符串(resp.id 是 wrapped 用的占位)。
+    // codex thread/start 响应 result 结构:{thread:{id,cwd,...}, cwd, model, ...},
+    // thread.id 即本次会话 UUID,fallback 取 threadId / 顶层 id(老版本/包装层兼容)。
     let thread_id = resp
         .get("thread")
-        .and_then(|t| t.get("thread"))
         .and_then(|t| t.get("id"))
         .and_then(Value::as_str)
-        .or_else(|| resp.get("id").and_then(Value::as_str))
-        .or_else(|| resp.get("threadId").and_then(Value::as_str));
+        .or_else(|| resp.get("threadId").and_then(Value::as_str))
+        .or_else(|| resp.get("id").and_then(Value::as_str));
     if let Some(tid) = thread_id {
         // 个人 workspace 记录到 user_id 下
         let meta_team_id = if is_personal { &uid.0 } else { &team_id };
         double_write_thread_meta(db, tid, meta_team_id, &uid.0).await;
         // 绑定粘性:确保新创建的 thread 后续 turn 路由到同一 worker。
         let _ = state.sticky.bind(tid, &target, 3600).await;
+        // PG 缓存 thread/start 响应供后续 thread/resume 复用 —— 跨进程 + 重启都生效,
+// 避免前端 create→resume 链路上 race codex 落盘前调 thread/resume 返回 -32600。
+        let _ = crate::services::multitenant::resume_cache::put_cached_resume(
+            db, tid, &resp,
+        ).await;
     }
     // 包装 codex 响应为一致格式:前端期望 {thread, id, cwd} 而非扁平 codex 响应。
     let thread_id_str = thread_id.unwrap_or("");
@@ -935,6 +942,10 @@ pub struct InvokeThreadBody {
 }
 
 /// 通用 codex 会话方法转发(fork / rollback / resume 等经路由到目标 worker)。
+///
+/// 对 `thread/resume` 与 `thread/read` 在收到 codex `-32600 no rollout found`
+/// 时自动退避重试 3 次 —— codex 异步落盘,刚 `thread/start` 完立即 resume/read
+/// 会撞上此 race。两方法均幂等,重试安全。
 pub async fn mt_invoke_thread(
     State(state): State<AppState>,
     Extension(uid): Extension<UserId>,
@@ -944,21 +955,66 @@ pub async fn mt_invoke_thread(
     let db = require_db(&state);
     let team_id = require_thread_team(db, &thread_id, &uid.0).await?;
     let target = resolve_worker(&state, &team_id, Some(&thread_id)).await?;
+    // thread/resume 走 PG 缓存:mt_create_thread 已写入,任意 owner 节点命中可复用,
+    // 避免集群下 invoke 落到不同副本时各自走 codex RPC 触发 -32600 race。
+    if body.method == "thread/resume" {
+        if let Some(cached) = crate::services::multitenant::resume_cache::get_cached_resume(
+            db, &thread_id,
+        )
+        .await
+        {
+            tracing::debug!(thread_id = %thread_id, "thread/resume pg cache hit");
+            return Ok(Json(cached));
+        }
+    }
     let mut params = body.params.unwrap_or(Value::Object(Default::default()));
     if let Value::Object(ref mut m) = params {
         m.entry("threadId").or_insert(Value::String(thread_id.clone()));
+        // 对齐 main 旧实现:resume 也持久化 rollout,前端后续 thread/read 才能命中。
+        if body.method == "thread/resume" {
+            m.entry("persistExtendedHistory".to_string()).or_insert(Value::Bool(true));
+        }
     }
+    const RETRY_METHODS: &[&str] = &["thread/resume", "thread/read"];
+    let needs_retry = RETRY_METHODS.contains(&body.method.as_str());
     let resp = if target == state.node_id {
         let lease = state
             .mt_team_codex
             .client_for(&team_id, db, &state.mt_master_key)
             .await?;
-        lease
-            .client()
-            .request(&body.method, Some(params))
-            .await
-            .map_err(|e| AppError::internal(format!("codex {}: {e}", body.method)))?
+        let mut last_err: Option<crate::codex::jsonrpc::RpcError> = None;
+        let mut attempt = 0u32;
+        let value = loop {
+            let r = lease.client().request(&body.method, Some(params.clone())).await;
+            match r {
+                Ok(v) => break v,
+                Err(crate::codex::jsonrpc::RpcError::ServerError { code: -32600, .. })
+                    if needs_retry && attempt < 3 =>
+                {
+                    attempt += 1;
+                    tracing::debug!(method = %body.method, thread_id = %thread_id, attempt, "codex -32600, retrying after backoff");
+                    tokio::time::sleep(std::time::Duration::from_millis(200 * attempt as u64)).await;
+                    last_err = Some(crate::codex::jsonrpc::RpcError::ServerError { code: -32600, message: String::new() });
+                    continue;
+                }
+                Err(e) => {
+                    return Err(AppError::internal(format!("codex {}: {e}", body.method)));
+                }
+            }
+        };
+        if attempt > 0 {
+            tracing::info!(method = %body.method, thread_id = %thread_id, attempt, "codex recovered after retry");
+        }
+        let _ = last_err;
+        // resume 成功也写 PG 缓存(跨节点 + 重启都可复用)
+        if body.method == "thread/resume" {
+            let _ = crate::services::multitenant::resume_cache::put_cached_resume(
+                db, &thread_id, &value,
+            ).await;
+        }
+        value
     } else {
+        // 副本路径:转发 RPC,不在 worker 端做重试(主侧负责 retry)。
         let rpc_url = worker_rpc_url(&state, &target).await?;
         state
             .worker_rpc

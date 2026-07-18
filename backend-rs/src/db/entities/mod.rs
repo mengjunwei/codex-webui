@@ -158,6 +158,23 @@ pub mod team_api_key {
     impl ActiveModelBehavior for ActiveModel {}
 }
 
+/// per-user workspace 审计:记录用户切换/创建 workspace 的事件。
+pub mod thread_resume_cache {
+    use sea_orm::entity::prelude::*;
+    #[derive(Clone, Debug, PartialEq, DeriveEntityModel, serde::Serialize)]
+    #[sea_orm(table_name = "thread_resume_cache")]
+    pub struct Model {
+        #[sea_orm(primary_key, column_type = "String(StringLen::N(36))")]
+        pub thread_id: String,
+        #[sea_orm(column_type = "Json")]
+        pub response: serde_json::Value,
+        pub updated_at: i64,
+    }
+    #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]
+    pub enum Relation {}
+    impl ActiveModelBehavior for ActiveModel {}
+}
+
 /// 用户个人 OpenAI API key(BYOK)。encrypted_key 为 AES-GCM 密文(hex)。
 pub mod user_api_key {
     use sea_orm::entity::prelude::*;

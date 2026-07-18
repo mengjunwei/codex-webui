@@ -98,11 +98,30 @@ async fn thread_start(
         .mt_team_codex
         .client_for(&req.team_id, &state.db, &state.mt_master_key)
         .await?;
+    // 对齐 mt_create_thread 的本地参数:这两个参数确保 codex 持久化 rollout。
+    let mut params = req.params;
+    if let Value::Object(ref mut m) = params {
+        m.entry("experimentalRawEvents".to_string()).or_insert(Value::Bool(false));
+        m.entry("persistExtendedHistory".to_string()).or_insert(Value::Bool(true));
+    }
     let resp = lease
         .client()
-        .request("thread/start", Some(req.params))
+        .request("thread/start", Some(params))
         .await
         .map_err(|e| AppError::internal(format!("codex thread/start: {e}")))?;
+    // PG 缓存响应供任意 owner 后续 thread/resume 复用(集群:副本转发 RPC 到 owner)。
+    let thread_id = resp
+        .get("thread")
+        .and_then(|t| t.get("id"))
+        .and_then(Value::as_str)
+        .or_else(|| resp.get("threadId").and_then(Value::as_str))
+        .or_else(|| resp.get("id").and_then(Value::as_str));
+    if let Some(tid) = thread_id {
+        let _ = crate::services::multitenant::resume_cache::put_cached_resume(
+            &state.db, tid, &resp,
+        )
+        .await;
+    }
     Ok(Json(resp))
 }
 
@@ -214,12 +233,26 @@ struct InvokeReq {
 }
 
 /// 通用 codex 会话方法执行(fork/rollback/resume 等,其它节点转发而来)。
+///
+/// thread/resume 走 PG 缓存:集群下 invoke 可能落到任意副本转发而来,但 owner
+/// 进程始终是同一个(mt_invoke_thread 已 sticky 路由)。PG 缓存跨进程共享,
+/// owner 端命中直接返回,避免 RPC 转发后 owner 端再次 race。
 async fn thread_invoke(
     State(state): State<AppState>,
     headers: axum::http::HeaderMap,
     Json(req): Json<InvokeReq>,
 ) -> Result<Json<Value>, AppError> {
     require_internal_token(&state, &headers).await?;
+    if req.method == "thread/resume" {
+        if let Some(cached) = crate::services::multitenant::resume_cache::get_cached_resume(
+            &state.db, &req.thread_id,
+        )
+        .await
+        {
+            tracing::debug!(thread_id = %req.thread_id, "internal thread/resume pg cache hit");
+            return Ok(Json(cached));
+        }
+    }
     let lease = state
         .mt_team_codex
         .client_for(&req.team_id, &state.db, &state.mt_master_key)
@@ -227,11 +260,20 @@ async fn thread_invoke(
     let mut params = req.params.unwrap_or(Value::Object(Default::default()));
     if let Value::Object(ref mut m) = params {
         m.entry("threadId").or_insert(Value::String(req.thread_id.clone()));
+        if req.method == "thread/resume" {
+            m.entry("persistExtendedHistory".to_string()).or_insert(Value::Bool(true));
+        }
     }
     let resp = lease
         .client()
         .request(&req.method, Some(params))
         .await
         .map_err(|e| AppError::internal(format!("codex {}: {e}", req.method)))?;
+    if req.method == "thread/resume" {
+        let _ = crate::services::multitenant::resume_cache::put_cached_resume(
+            &state.db, &req.thread_id, &resp,
+        )
+        .await;
+    }
     Ok(Json(resp))
 }
