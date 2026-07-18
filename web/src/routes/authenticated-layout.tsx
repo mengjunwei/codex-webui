@@ -233,10 +233,10 @@ export function AuthenticatedLayout() {
 
             // 2. Hydrate pending approvals for this thread via multitenant API.
             void approvalsApi
-              .list(tid, 'pending')
-              .then((approvalPage) => {
+              .list(tid)
+              .then((approvals) => {
                 if (cancelled) return;
-                for (const pa of approvalPage.items) {
+                for (const pa of approvals) {
                   const approval = pendingApprovalToRequest(pa as PendingApprovalDto);
                   if (approval) addApprovalForThread(tid, approval);
                 }

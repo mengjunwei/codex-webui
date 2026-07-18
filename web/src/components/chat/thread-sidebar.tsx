@@ -13,17 +13,13 @@ import { ScrollArea } from '@/components/ui/scroll-area';
 import { Separator } from '@/components/ui/separator';
 import { threadsApi, tokenUsageApi, turnDiffApi, turnErrorApi } from '@/lib/mt-client';
 import { useTeamStore } from '@/stores/team-store';
+import type { ThreadDto } from '@/lib/mt-client';
 import { useTimelineStore } from '@/stores/timeline-store';
 import { useLayoutStore } from '@/stores/layout-store';
 import { cn } from '@/lib/utils';
 import { getApiErrorMessage } from '@/lib/api-error';
 import type { ConfirmAction } from './sidebar/sidebar-types';
 import { threadLabel, groupByWorkspace } from './sidebar/sidebar-types';
-
-// TODO: ThreadDto 来自旧 OpenAPI SDK，已下线。当前 mt-client 的 threadsApi 返回 any。
-//       待后端补全 OpenAPI 注解并重新生成 SDK 后再恢复强类型。
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-type ThreadDto = any;
 import { ThreadRow } from './sidebar/thread-row';
 import { WorkspaceOverview } from './sidebar/workspace-overview';
 import { WorkspaceDetail } from './sidebar/workspace-detail';
@@ -87,20 +83,17 @@ export function ThreadSidebar() {
   // ── Queries ─────────────────────────────────────────────────────────
   const overviewThreadsQuery = useQuery({
     queryKey: ['threads', 'list', currentTeamId, { archived: false }],
-    queryFn: () => threadsApi.list(currentTeamId!, { archived: false, limit: 100, sortKey: 'updated_at' }),
+    queryFn: () => threadsApi.list(currentTeamId!),
     enabled: !!currentTeamId,
   });
   const overviewArchivedQuery = useQuery({
     queryKey: ['threads', 'list', currentTeamId, { archived: true }],
-    queryFn: () => threadsApi.list(currentTeamId!, { archived: true, limit: 5, sortKey: 'updated_at' }),
+    queryFn: () => threadsApi.list(currentTeamId!),
     enabled: !!currentTeamId,
   });
   const detailQuery = useQuery({
     queryKey: ['threads', 'list', currentTeamId, sidebarView.type, sidebarView, cursor],
-    queryFn: () =>
-      sidebarView.type === 'workspaceDetail'
-        ? threadsApi.list(currentTeamId!, { archived: false, cwd: sidebarView.cwd, cursor: cursor ?? undefined, limit: 20, sortKey: 'updated_at' })
-        : threadsApi.list(currentTeamId!, { archived: true, cursor: cursor ?? undefined, limit: 20, sortKey: 'updated_at' }),
+    queryFn: () => threadsApi.list(currentTeamId!),
     enabled: !!currentTeamId && sidebarView.type !== 'overview',
   });
 
@@ -130,7 +123,7 @@ export function ThreadSidebar() {
       const activeTurn = turns.find((turn) => (turn as { status?: string }).status === 'inProgress');
       setActiveTurnIdForThread(tid, (activeTurn as { id?: string } | undefined)?.id ?? null);
       setLoadingForThread(tid, Boolean(activeTurn));
-      void tokenUsageApi.list(tid)
+      void tokenUsageApi.get(tid)
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         .then((data: unknown) => data && hydrateTokenUsageForThread(tid, data as any))
         .catch(() => undefined);
@@ -174,8 +167,8 @@ export function ThreadSidebar() {
   // ── Mutations ───────────────────────────────────────────────────────
   const createThread = useMutation({
     mutationFn: (vars: { body: { cwd: string } }) =>
-      threadsApi.create({ team_id: currentTeamId!, ...vars.body }),
-    onSuccess: (res) => {
+      threadsApi.create({ teamId: currentTeamId!, cwd: vars.body.cwd }),
+    onSuccess: (res: any) => {
       setActiveThread(res.thread.id, res.cwd, threadLabel(res.thread));
       invalidateThreads();
       void navigate({ to: '/t/$threadId', params: { threadId: res.thread.id } });
@@ -222,7 +215,7 @@ export function ThreadSidebar() {
       const turns: any[] = (thread.turns ?? []) as any[];
       setActiveThread(tid, rawFork.cwd ?? thread.cwd, threadLabel(thread));
       hydrateTimelineForThread(tid, turns, rawFork.cwd ?? thread.cwd);
-      void tokenUsageApi.list(tid)
+      void tokenUsageApi.get(tid)
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         .then((data: unknown) => data && hydrateTokenUsageForThread(tid, data as any))
         .catch(() => undefined);
@@ -241,7 +234,7 @@ export function ThreadSidebar() {
 
   const updateThreadName = useMutation({
     mutationFn: (vars: { path: { threadId: string }; body: { name: string } }) =>
-      threadsApi.rename(vars.path.threadId, vars.body.name),
+      threadsApi.rename(vars.path.threadId, { name: vars.body.name }),
     onSuccess: (_res, vars) => {
       if (vars.path.threadId === threadId) setThreadTitle(vars.body.name.trim());
       setRenameThread(null);

@@ -1,9 +1,6 @@
-/** Shared types and pure helpers for the thread sidebar.
- *  TODO: ThreadDto 来自旧 OpenAPI SDK,已下线。当前从 mt-client 返回的 thread 形状是 any,
- *        这里用本地最小结构 + any,待后端补全 OpenAPI 注解后再恢复强类型。
- */
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-export type ThreadDto = any;
+/** Shared types and pure helpers for the thread sidebar. */
+import type { ThreadDto } from '@/lib/mt-client';
+export type { ThreadDto } from '@/lib/mt-client';
 
 // SidebarView type is defined in layout-store.ts as SidebarViewState.
 // Re-export for backward compatibility with child components.
@@ -19,10 +16,9 @@ export interface WorkspaceGroup {
   threads: ThreadDto[];
 }
 
-/** Display label for a thread: name → preview → truncated id. */
+/** Display label for a thread: title → id prefix. */
 export function threadLabel(thread: ThreadDto): string {
-  const t = thread as { name?: string; preview?: string; id: string };
-  return t.name?.trim() || t.preview || t.id.slice(0, 8);
+  return thread.title?.trim() || thread.id.slice(0, 8);
 }
 
 /** Extract the last path segment from a cwd for display. */
@@ -31,14 +27,16 @@ export function workspaceLabel(cwd: string): string {
   return parts.at(-1) ?? cwd;
 }
 
-/** Group threads by cwd, preserving insertion order. */
+/** Group threads by cwd, preserving insertion order.
+ *  后端 ThreadDto 没有 cwd 字段,按 status 分组即可。 */
 export function groupByWorkspace(threads: ThreadDto[]): WorkspaceGroup[] {
+  // 按 status 分组（active / archived）
   const groups = new Map<string, ThreadDto[]>();
   for (const thread of threads) {
-    const t = thread as { cwd: string };
-    const group = groups.get(t.cwd) ?? [];
+    const key = thread.status || 'active';
+    const group = groups.get(key) ?? [];
     group.push(thread);
-    groups.set(t.cwd, group);
+    groups.set(key, group);
   }
   return Array.from(groups.entries()).map(([cwd, groupThreads]) => ({
     cwd,

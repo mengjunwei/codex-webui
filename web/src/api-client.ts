@@ -64,7 +64,7 @@ export function configureApiClient() {
       const retryResponse = await fetch(response.url, {
         method: 'GET', // 缓存的原始请求通常是 GET
         headers: {
-          'Authorization': `Bearer ${data.access_token}`,
+          'Authorization': `Bearer ${data.accessToken}`,
         },
       });
       return retryResponse;

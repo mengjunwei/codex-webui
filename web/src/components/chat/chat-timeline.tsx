@@ -64,7 +64,7 @@ export function ChatTimeline({ onEditMessage }: Props) {
 
   const rollbackThread = useMutation({
     mutationFn: ({ numTurns }: { numTurns: number }) =>
-      threadsApi.rollback(threadId!, numTurns),
+      threadsApi.invoke(threadId!, { method: "thread/rollback", params: { turns: numTurns } }),
   });
 
   const canRollback = threadMode === 'live' && !loading && !rollbackThread.isPending;

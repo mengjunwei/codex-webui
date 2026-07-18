@@ -9,7 +9,7 @@ import { useConnectionStore } from '../stores/connection-store';
 import { useTimelineStore } from '../stores/timeline-store';
 import { showSnackbar } from '@/stores/snackbar-store';
 import { handleNotification, type NotificationContext } from './notification-handlers';
-import { threadsApi, tokenUsageApi, turnDiffApi, turnErrorApi, type TokenUsageDto, type TurnDiffDto, type TurnErrorDto } from '@/lib/mt-client';
+import { threadsApi, tokenUsageApi, turnDiffApi, turnErrorApi, type TokenUsageSnapshot, type TurnDiffDto, type TurnErrorDto } from '@/lib/mt-client';
 import type { ThreadStatusType } from '@/types/codex-notifications';
 import { parseAvailableDecisions, parseStringArray, parseNetworkAmendments } from '@/lib/approval-parsers';
 import { userInputFromSocket } from '@/lib/user-input-parsers';
@@ -181,12 +181,12 @@ export function useCodexSocket(enabled = true) {
             store.setLoadingForThread(threadId, Boolean(activeTurn));
             // Hydrate after timeline is in place to avoid race.
             const [tokenRes, diffRes, errorRes] = await Promise.allSettled([
-              tokenUsageApi.list(threadId),
+              tokenUsageApi.get(threadId),
               turnDiffApi.list(threadId),
               turnErrorApi.list(threadId),
             ]);
             if (tokenRes.status === 'fulfilled' && tokenRes.value) {
-              store.hydrateTokenUsageForThread(threadId, (tokenRes.value as TokenUsageDto[]).map(t => ({ turnId: t.turn_id, usage: t as unknown as import('@/types/codex-notifications').ThreadTokenUsage })));
+              store.hydrateTokenUsageForThread(threadId, (tokenRes.value as TokenUsageSnapshot[]).map(t => ({ turnId: t.turn_id, usage: t as unknown as import('@/types/codex-notifications').ThreadTokenUsage })));
             }
             if (diffRes.status === 'fulfilled' && diffRes.value) {
               store.hydrateTurnDiffsForThread(threadId, (diffRes.value as TurnDiffDto[]).map(d => ({ turnId: d.turn_id, diff: d.diff })));

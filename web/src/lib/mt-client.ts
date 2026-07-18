@@ -89,6 +89,7 @@ export interface ThreadDto {
   team_id: string;
   created_by_user_id: string;
   title: string | null;
+  cwd?: string;
   status: string;
   created_at: number;
   updated_at: number;
@@ -125,6 +126,84 @@ export interface AuditEntry {
   created_at: number;
 }
 
+// ── 后端实体类型（从 backend-rs/src/db/entity.rs 推断）───────────────────
+
+/** 后端 thread::Model */
+export interface ThreadDto {
+  id: string;
+  team_id: string;
+  created_by_user_id: string;
+  title: string | null;
+  cwd?: string;
+  status: string;
+  created_at: number;
+  updated_at: number;
+}
+
+/** 后端 token_usage_snapshot::Model */
+export interface TokenUsageSnapshot {
+  thread_id: string;
+  turn_id: string;
+  team_id: string | null;
+  total_tokens: number;
+  input_tokens: number;
+  cached_input_tokens: number;
+  output_tokens: number;
+  reasoning_output_tokens: number;
+  last_total_tokens: number;
+  last_input_tokens: number;
+  last_cached_input_tokens: number;
+  last_output_tokens: number;
+  model_context_window: number | null;
+  raw_payload: string;
+  updated_at: number;
+}
+
+/** 后端 turn_diff::Model */
+export interface TurnDiffDto {
+  thread_id: string;
+  turn_id: string;
+  team_id: string | null;
+  diff: string;
+  updated_at: number;
+}
+
+/** 后端 turn_error::Model */
+export interface TurnErrorDto {
+  thread_id: string;
+  turn_id: string;
+  team_id: string | null;
+  message: string;
+  created_at: number;
+}
+
+/** 后端 pending_server_request::Model */
+export interface PendingApproval {
+  generation: number;
+  request_id: string;
+  thread_id: string;
+  team_id: string | null;
+  turn_id: string | null;
+  item_id: string | null;
+  method: string;
+  params_json: string;
+  status: string;
+  resolved_by: string | null;
+  created_at: number;
+  updated_at: number;
+  resolved_at: number | null;
+}
+
+/** 后端 audit_log::Model */
+export interface AuditEntry {
+  id: string;
+  team_id: string | null;
+  actor_user_id: string;
+  action: string;
+  detail: string | null;
+  created_at: number;
+}
+
 // ── 请求 Body 类型 ────────────────────────────────────────────
 
 export interface RegisterBody { email: string; password: string; }
@@ -133,8 +212,9 @@ export interface CreateTeamBody { name: string; }
 export interface JoinBody { code: string; }
 export interface CreateInvitationBody { expiresAt?: number; maxUses?: number; }
 export interface SetKeyBody { key: string; provider?: string; }
-export interface CreateThreadBody { teamId: string; [key: string]: unknown; }
-export interface ResolveApprovalBody { requestId: string; approved: boolean; result?: unknown; }
+export interface CreateThreadBody { teamId: string; cwd?: string; [key: string]: unknown; }
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+export interface ResolveApprovalBody { requestId?: string; approved: boolean; result?: any; }
 export interface RenameThreadBody { name: string; }
 export interface InvokeThreadBody { method: string; threadId?: string; params?: unknown; }
 
@@ -202,15 +282,15 @@ export const approvalsApi = {
 
 export const tokenUsageApi = {
   get: (threadId: string) =>
-    mtFetch<unknown[]>(`/threads/${threadId}/token-usage`),
+    mtFetch<TokenUsageSnapshot[]>(`/threads/${threadId}/token-usage`),
 };
 
 export const turnDiffApi = {
   list: (threadId: string) =>
-    mtFetch<unknown[]>(`/threads/${threadId}/turn-diffs`),
+    mtFetch<TurnDiffDto[]>(`/threads/${threadId}/turn-diffs`),
 };
 
 export const turnErrorApi = {
   list: (threadId: string) =>
-    mtFetch<unknown[]>(`/threads/${threadId}/turn-errors`),
+    mtFetch<TurnErrorDto[]>(`/threads/${threadId}/turn-errors`),
 };

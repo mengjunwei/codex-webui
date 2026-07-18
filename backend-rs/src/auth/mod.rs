@@ -110,20 +110,19 @@ impl AuthService {
         })
     }
 
-    /// 校验 JWT 并确认 `sub == "webui"`。任何失败都返回 `Ok(false)`
-    /// 而非错误（对应 TS 中 try/catch → false 的模式）。
+    /// 校验 JWT 签名 + 过期时间。接受任何有效 JWT(单租户 sub="webui" 或多租户 sub=user_id)。
+    /// WebSocket 认证只需要"token 有效",不需要区分用户类型。
     pub fn verify_jwt(&self, token: &str) -> Result<bool, AppError> {
         let mut validation = Validation::new(Algorithm::HS256);
-        validation.sub = Some(SUBJECT.to_string());
         validation.validate_exp = true;
-        validation.leeway = 0; // 与 TS 对齐（Node jsonwebtoken 默认为 0）
+        validation.leeway = 0;
 
         match decode::<Claims>(
             token,
             &DecodingKey::from_secret(self.jwt_secret.as_bytes()),
             &validation,
         ) {
-            Ok(data) => Ok(data.claims.sub == SUBJECT),
+            Ok(_) => Ok(true), // 签名+exp 通过即可
             Err(_) => Ok(false),
         }
     }

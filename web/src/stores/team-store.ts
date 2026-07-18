@@ -33,14 +33,14 @@ export const useTeamStore = create<TeamStore>((set, get) => ({
     try {
       const data = await teamsApi.list();
       // 后端返回直接数组 [{...}],兼容 {teams: [...]} 格式
-      const teams = Array.isArray(data) ? data : ((data as ListTeamsResponse).teams ?? []);
+      const teams = Array.isArray(data) ? data : ((data as any).teams ?? []);
       set({ teams, loading: false });
 
       // Auto-select first team if none selected.
       const { currentTeamId } = get();
       if (!currentTeamId && teams.length > 0) {
         get().setCurrentTeam(teams[0].id);
-      } else if (currentTeamId && !teams.some(t => t.id === currentTeamId)) {
+      } else if (currentTeamId && !teams.some((t: any) => t.id === currentTeamId)) {
         // Current team no longer exists — select first.
         get().setCurrentTeam(teams[0]?.id ?? null);
       }
@@ -65,7 +65,7 @@ export const useTeamStore = create<TeamStore>((set, get) => ({
   },
 
   joinTeam: async (code: string) => {
-    const team = await teamsApi.joinWithCode(code);
+    const team = await teamsApi.join({ code });
     set(state => ({ teams: [...state.teams, team] }));
     get().setCurrentTeam(team.id);
     return team;
