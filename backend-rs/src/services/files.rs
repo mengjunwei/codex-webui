@@ -180,7 +180,7 @@ pub async fn is_workspace_root(state: &AppState, p: &Path) -> bool {
 /// `\\?\C:\Users\xxx` 不会按字符串前缀匹配。家目录在运行时不会变化，因此用
 /// `OnceCell` 一次性规范化并缓存 —— 每次路径校验都重新 canonicalize
 /// 浪费系统调用且可能因为短期进程差异导致结果不一致。
-pub async fn compute_workspace_roots(db: &sea_orm::DatabaseConnection, dynamic_roots: &HashSet<String>) -> Vec<String> {
+pub async fn compute_workspace_roots(db: &sea_orm::DatabaseConnection, dynamic_roots: &HashSet<String>, codex_home: Option<&Path>) -> Vec<String> {
     let mut out: HashSet<String> = HashSet::new();
     // 家目录 —— 规范化以匹配 Windows 上规范化后文件路径的逐字前缀（\\?\）
     // （修复评审提出的 C1）。home 不随运行时变化，用 OnceCell 缓存其 canonical
@@ -208,6 +208,20 @@ pub async fn compute_workspace_roots(db: &sea_orm::DatabaseConnection, dynamic_r
     for r in dynamic_roots {
         out.insert(r.clone());
     }
+    // 多租户 workspace:codex_home 下 users/ + teams/ 是各会话 cwd 的根目录,
+    // 加入校验白名单,否则文件树/终端访问会话 cwd 被拒(files.path_outside_workspace)。
+    // 注:当前 files 模块未做 per-user 隔离,任意登录用户可浏览所有 workspace;
+    // per-user 隔离待后续按 user_id 过滤(需 workspace 校验链贯穿 user_id)。
+    if let Some(ch) = codex_home {
+        for sub in ["users", "teams"] {
+            let p = ch.join(sub);
+            if p.is_dir() {
+                if let Ok(c) = std::fs::canonicalize(&p) {
+                    out.insert(c.to_string_lossy().to_string());
+                }
+            }
+        }
+    }
     out.into_iter().collect()
 }
 
@@ -217,12 +231,12 @@ pub async fn workspace_roots(state: &AppState) -> Vec<String> {
         .lock()
         .map(|g| g.iter().cloned().collect())
         .unwrap_or_default();
-    compute_workspace_roots(&state.db, &dyn_roots).await
+    compute_workspace_roots(&state.db, &dyn_roots, Some(&state.codex_home)).await
 }
 
 /// 判断规范化路径是否位于任一工作区根目录之下（含等于根本身）。
-pub async fn is_path_in_workspace(db: &sea_orm::DatabaseConnection, dynamic_roots: &HashSet<String>, p: &Path) -> bool {
-    let roots = compute_workspace_roots(db, dynamic_roots).await;
+pub async fn is_path_in_workspace(db: &sea_orm::DatabaseConnection, dynamic_roots: &HashSet<String>, codex_home: Option<&Path>, p: &Path) -> bool {
+    let roots = compute_workspace_roots(db, dynamic_roots, codex_home).await;
     let p_str = p.to_string_lossy().to_string();
     roots.iter().any(|r| is_within(p, Path::new(r)) || p_str == *r)
 }
@@ -237,6 +251,7 @@ pub async fn is_path_in_workspace(db: &sea_orm::DatabaseConnection, dynamic_root
 pub async fn resolve_terminal_cwd(
     db: &sea_orm::DatabaseConnection,
     dynamic_roots: &HashSet<String>,
+    codex_home: &Path,
     context_key: &str,
     requested: Option<&str>,
     default_cwd: Option<&str>,
@@ -276,7 +291,7 @@ pub async fn resolve_terminal_cwd(
             None,
         )
     })?;
-    if !is_path_in_workspace(db, dynamic_roots, &canon).await {
+    if !is_path_in_workspace(db, dynamic_roots, Some(codex_home), &canon).await {
         return Err(AppError::business(
             ErrorCode::FilesPathOutsideWorkspace,
             StatusCode::FORBIDDEN,

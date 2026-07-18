@@ -185,6 +185,7 @@ async fn main() -> anyhow::Result<()> {
         terminal: terminal.clone(),
         db: db.clone(),
         dynamic_files_roots: dynamic_files_roots.clone(),
+        codex_home: codex_home.clone(),
         active_threads: active_threads.clone(),
     };
     let (ws_layer, io) = codex_webui::api::realtime::build(rt_state);

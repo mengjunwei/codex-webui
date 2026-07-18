@@ -233,7 +233,7 @@ pub async fn get_roots(State(state): State<AppState>) -> Result<Json<serde_json:
         .lock()
         .map(|g| g.iter().cloned().collect())
         .unwrap_or_default();
-    let mut roots = compute_workspace_roots(&state.db, &dyn_roots).await;
+    let mut roots = compute_workspace_roots(&state.db, &dyn_roots, Some(&state.codex_home)).await;
     roots.sort();
     Ok(Json(json!({
         "roots": roots,

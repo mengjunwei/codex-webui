@@ -459,6 +459,8 @@ pub async fn mt_create_thread(
     let (team_id, is_personal) = match team_id_raw {
         Some(tid) => {
             teams::require_member(db, &tid, &uid.0).await?;
+            // 确保 team 共享 workspace 目录存在(codex 会话 cwd 落在此处)。
+            let _ = crate::services::workspace::ensure_team_shared(&state, &tid).await;
             (tid, false)
         }
         None => {
@@ -470,11 +472,14 @@ pub async fn mt_create_thread(
 
     metrics::counter!("mt_threads_created_total").increment(1);
 
-    // 对于个人 workspace,设置 cwd 到个人目录
-    if is_personal {
-        let personal_cwd = crate::services::workspace::personal_path(&state.codex_home, &uid.0);
-        rest.insert("cwd".to_string(), Value::String(personal_cwd.to_string_lossy().to_string()));
-    }
+    // 设置 cwd 到对应 workspace(personal→users/{uid}/personal;team→teams/{tid}/shared),
+    // 确保 codex 会话工作目录落在 workspace 根内(文件树/终端沙箱校验才能通过)。
+    let ws_cwd = if is_personal {
+        crate::services::workspace::personal_path(&state.codex_home, &uid.0)
+    } else {
+        crate::services::workspace::team_shared_path(&state.codex_home, &team_id)
+    };
+    rest.insert("cwd".to_string(), Value::String(ws_cwd.to_string_lossy().to_string()));
 
     let target = resolve_worker(&state, &team_id, None, is_personal).await?;
     // client_for 的 team_id 必须与 PG threads.team_id 一致(personal=纯 user_id;
