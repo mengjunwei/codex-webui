@@ -131,3 +131,4 @@ codex-config/
 TODO.local.md
 NOTES.local.md
 scratch/
+.playwright-mcp/
