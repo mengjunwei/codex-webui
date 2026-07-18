@@ -1,48 +1,71 @@
 /**
- * Login dialog for Codex account: API Key or ChatGPT device code.
- *
- * TODO: accountLogin / accountCancelLogin 端点已下线,
- *       待迁移到新 mt-client API。当前渲染只读占位 UI。
+ * Account 登录对话框 — 旧端点已下线,当前为邮箱+密码登录。
+ * 多租户模式下,账号管理通过 /api/mt/auth/* 端点。
  */
+import { useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-} from '@/components/ui/dialog';
 import { Button } from '@/components/ui/button';
+import { Input } from '@/components/ui/input';
+import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog';
+import { showSnackbar } from '@/stores/snackbar-store';
 
 interface Props {
   open: boolean;
-  onOpenChange: (open: boolean) => void;
-  onChanged: () => void;
+  onClose: () => void;
+  onSuccess?: () => void;
 }
 
-export function AccountLoginDialog({
-  open,
-  onOpenChange,
-  onChanged,
-}: Props) {
+export function AccountLoginDialog({ open, onClose }: Props) {
   const { t } = useTranslation();
-  // 占位:旧 accountLogin/accountCancelLogin 已下线,暂不接入实际登录流程
-  void onChanged;
+  const [email, setEmail] = useState('');
+  const [password, setPassword] = useState('');
+  const [loading, setLoading] = useState(false);
+
+  const handleLogin = async () => {
+    if (!email.trim() || !password.trim()) return;
+    setLoading(true);
+    try {
+      const res = await fetch('/api/mt/auth/login', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email: email.trim(), password: password.trim() }),
+      });
+      if (!res.ok) throw new Error('Login failed');
+      const data = await res.json() as { accessToken: string; refreshToken: string };
+      sessionStorage.setItem('codex.webui.jwt', data.accessToken);
+      sessionStorage.setItem('codex.webui.refreshToken', data.refreshToken);
+      showSnackbar(t('Login successful'), 'success');
+      onClose();
+    } catch {
+      showSnackbar(t('Login failed'), 'error');
+    } finally {
+      setLoading(false);
+    }
+  };
+
   return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
+    <Dialog open={open} onOpenChange={onClose}>
       <DialogContent>
         <DialogHeader>
-          <DialogTitle>{t('Login to Codex')}</DialogTitle>
-          <DialogDescription>
-            {t('Codex account login is temporarily unavailable.')}
-          </DialogDescription>
+          <DialogTitle>{t('Account Login')}</DialogTitle>
         </DialogHeader>
-        <DialogFooter>
-          <Button variant="outline" onClick={() => onOpenChange(false)}>
-            {t('Close')}
+        <div className="space-y-4">
+          <Input
+            type="email"
+            placeholder={t('Email')}
+            value={email}
+            onChange={(e) => setEmail(e.target.value)}
+          />
+          <Input
+            type="password"
+            placeholder={t('Password')}
+            value={password}
+            onChange={(e) => setPassword(e.target.value)}
+          />
+          <Button onClick={() => void handleLogin()} disabled={loading || !email.trim() || !password.trim()} className="w-full">
+            {loading ? 'Loading...' : t('Sign in')}
           </Button>
-        </DialogFooter>
+        </div>
       </DialogContent>
     </Dialog>
   );
