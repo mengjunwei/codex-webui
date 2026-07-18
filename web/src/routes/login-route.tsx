@@ -29,9 +29,22 @@ export function LoginRoute() {
     }
   }, [navigate, redirect]);
 
+  const handleRegister = useCallback(async (email: string, password: string): Promise<boolean> => {
+    try {
+      const data = await authApi.register({ email, password }) as { accessToken: string; refreshToken: string };
+      setApiToken(data.accessToken);
+      setRefreshToken(data.refreshToken);
+      resetSocket();
+      void navigate({ to: redirect });
+      return true;
+    } catch {
+      return false;
+    }
+  }, [navigate, redirect]);
+
   return (
     <>
-      <LoginPage onLogin={handleLogin} />
+      <LoginPage onLogin={handleLogin} onRegister={handleRegister} />
       <SnackbarContainer />
     </>
   );

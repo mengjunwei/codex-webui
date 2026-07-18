@@ -13,6 +13,7 @@ import { ScrollArea } from '@/components/ui/scroll-area';
 import { Separator } from '@/components/ui/separator';
 import { threadsApi, tokenUsageApi, turnDiffApi, turnErrorApi } from '@/lib/mt-client';
 import { useTeamStore } from '@/stores/team-store';
+import { TeamSelector } from './team-selector';
 import type { ThreadDto } from '@/lib/mt-client';
 import { useTimelineStore } from '@/stores/timeline-store';
 import { useLayoutStore } from '@/stores/layout-store';
@@ -320,6 +321,11 @@ export function ThreadSidebar() {
   // ── Render ──────────────────────────────────────────────────────────
   return (
     <div className="flex h-full flex-col bg-card/80">
+      {/* Team selector */}
+      <div className="px-2 py-2">
+        <TeamSelector />
+      </div>
+      <Separator />
       {/* Global actions */}
       <div className="space-y-0.5 px-2 py-2">
         <button
