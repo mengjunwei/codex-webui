@@ -16,9 +16,9 @@ export function LoginRoute() {
 
   const handleLogin = useCallback(async (email: string, password: string): Promise<boolean> => {
     try {
-      const data = await authApi.login({ email, password });
-      setApiToken(data.access_token);
-      setRefreshToken(data.refresh_token);
+      const data = await authApi.login({ email, password }) as { accessToken: string; refreshToken: string };
+      setApiToken(data.accessToken);
+      setRefreshToken(data.refreshToken);
       resetSocket();
       void navigate({ to: redirect });
       return true;

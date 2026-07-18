@@ -32,7 +32,8 @@ export const useTeamStore = create<TeamStore>((set, get) => ({
     set({ loading: true, error: null });
     try {
       const data = await teamsApi.list();
-      const teams = data.teams ?? [];
+      // 后端返回直接数组 [{...}],兼容 {teams: [...]} 格式
+      const teams = Array.isArray(data) ? data : ((data as ListTeamsResponse).teams ?? []);
       set({ teams, loading: false });
 
       // Auto-select first team if none selected.

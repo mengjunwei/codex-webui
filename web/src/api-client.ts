@@ -51,12 +51,12 @@ export function configureApiClient() {
       if (!refreshResponse.ok) throw new Error('refresh failed');
 
       const data = await refreshResponse.json() as {
-        access_token: string;
-        refresh_token: string;
+        accessToken: string;
+        refreshToken: string;
       };
 
-      setApiToken(data.access_token);
-      setRefreshToken(data.refresh_token);
+      setApiToken(data.accessToken);
+      setRefreshToken(data.refreshToken);
 
       // Retry the original request with the new token.
       // 在前端需要访问前 HTTP方法和头（response.request 不存在）。
