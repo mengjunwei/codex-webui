@@ -234,25 +234,19 @@ struct InvokeReq {
 
 /// 通用 codex 会话方法执行(fork/rollback/resume 等,其它节点转发而来)。
 ///
-/// thread/resume 走 PG 缓存:集群下 invoke 可能落到任意副本转发而来,但 owner
-/// 进程始终是同一个(mt_invoke_thread 已 sticky 路由)。PG 缓存跨进程共享,
-/// owner 端命中直接返回,避免 RPC 转发后 owner 端再次 race。
+/// thread/resume:读 PG cache 作兜底(codex 失败时返回),不短路 —— 仍调 codex
+/// 确保 owner 进程内存持有 thread(进程重启后需重新加载)。
 async fn thread_invoke(
     State(state): State<AppState>,
     headers: axum::http::HeaderMap,
     Json(req): Json<InvokeReq>,
 ) -> Result<Json<Value>, AppError> {
     require_internal_token(&state, &headers).await?;
-    if req.method == "thread/resume" {
-        if let Some(cached) = crate::services::multitenant::resume_cache::get_cached_resume(
-            &state.db, &req.thread_id,
-        )
-        .await
-        {
-            tracing::debug!(thread_id = %req.thread_id, "internal thread/resume pg cache hit");
-            return Ok(Json(cached));
-        }
-    }
+    let cache_fallback: Option<Value> = if req.method == "thread/resume" {
+        crate::services::multitenant::resume_cache::get_cached_resume(&state.db, &req.thread_id).await
+    } else {
+        None
+    };
     let lease = state
         .mt_team_codex
         .client_for(&req.team_id, &state.db, &state.mt_master_key, false)
@@ -264,11 +258,20 @@ async fn thread_invoke(
             m.entry("persistExtendedHistory".to_string()).or_insert(Value::Bool(true));
         }
     }
-    let resp = lease
+    let resp = match lease
         .client()
         .request(&req.method, Some(params))
         .await
-        .map_err(|e| AppError::internal(format!("codex {}: {e}", req.method)))?;
+    {
+        Ok(v) => v,
+        Err(crate::codex::jsonrpc::RpcError::ServerError { code: -32600, .. })
+            if req.method == "thread/resume" && cache_fallback.is_some() =>
+        {
+            tracing::warn!(thread_id = %req.thread_id, "internal thread/resume -32600, serving cached fallback");
+            cache_fallback.unwrap()
+        }
+        Err(e) => return Err(AppError::internal(format!("codex {}: {e}", req.method))),
+    };
     if req.method == "thread/resume" {
         let _ = crate::services::multitenant::resume_cache::put_cached_resume(
             &state.db, &req.thread_id, &resp,

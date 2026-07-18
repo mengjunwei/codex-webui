@@ -1074,18 +1074,14 @@ pub async fn mt_invoke_thread(
     let db = require_db(&state);
     let (team_id, workspace_type) = require_thread_team(db, &thread_id, &uid.0).await?;
     let target = resolve_worker(&state, &team_id, Some(&thread_id), workspace_type == "personal").await?;
-    // thread/resume 走 PG 缓存:mt_create_thread 已写入,任意 owner 节点命中可复用,
-    // 避免集群下 invoke 落到不同副本时各自走 codex RPC 触发 -32600 race。
-    if body.method == "thread/resume" {
-        if let Some(cached) = crate::services::multitenant::resume_cache::get_cached_resume(
-            db, &thread_id,
-        )
-        .await
-        {
-            tracing::debug!(thread_id = %thread_id, "thread/resume pg cache hit");
-            return Ok(Json(cached));
-        }
-    }
+    // thread/resume 读 PG cache 作兜底(codex -32600 race 时返回),不短路 ——
+    // 仍调 codex 取最新 turns + 确保 codex 内存持有 thread(进程重启/evict 后需重新加载)。
+    // 若短路返回旧 cache,进入会话后发消息再刷新会看不到新对话(cache 是旧快照)。
+    let cache_fallback: Option<Value> = if body.method == "thread/resume" {
+        crate::services::multitenant::resume_cache::get_cached_resume(db, &thread_id).await
+    } else {
+        None
+    };
     let mut params = body.params.unwrap_or(Value::Object(Default::default()));
     if let Value::Object(ref mut m) = params {
         m.entry("threadId").or_insert(Value::String(thread_id.clone()));
@@ -1101,7 +1097,6 @@ pub async fn mt_invoke_thread(
             .mt_team_codex
             .client_for(&team_id, db, &state.mt_master_key, workspace_type == "personal")
             .await?;
-        let mut last_err: Option<crate::codex::jsonrpc::RpcError> = None;
         let mut attempt = 0u32;
         let value = loop {
             let r = lease.client().request(&body.method, Some(params.clone())).await;
@@ -1113,8 +1108,17 @@ pub async fn mt_invoke_thread(
                     attempt += 1;
                     tracing::debug!(method = %body.method, thread_id = %thread_id, attempt, "codex -32600, retrying after backoff");
                     tokio::time::sleep(std::time::Duration::from_millis(200 * attempt as u64)).await;
-                    last_err = Some(crate::codex::jsonrpc::RpcError::ServerError { code: -32600, message: String::new() });
                     continue;
+                }
+                // retry 耗尽(-32600):用 cache 兜底(若有),否则报错。
+                Err(crate::codex::jsonrpc::RpcError::ServerError { code: -32600, .. })
+                    if needs_retry =>
+                {
+                    if let Some(fb) = cache_fallback.clone() {
+                        tracing::warn!(thread_id = %thread_id, method = %body.method, "codex -32600 after retries, serving cached fallback");
+                        break fb;
+                    }
+                    return Err(AppError::internal(format!("codex {} -32600 after retries (no cache fallback)", body.method)));
                 }
                 Err(e) => {
                     return Err(AppError::internal(format!("codex {}: {e}", body.method)));
@@ -1124,8 +1128,7 @@ pub async fn mt_invoke_thread(
         if attempt > 0 {
             tracing::info!(method = %body.method, thread_id = %thread_id, attempt, "codex recovered after retry");
         }
-        let _ = last_err;
-        // resume 成功也写 PG 缓存(跨节点 + 重启都可复用)
+        // resume 成功写 PG 缓存(下次 codex -32600 race 时作兜底)
         if body.method == "thread/resume" {
             let _ = crate::services::multitenant::resume_cache::put_cached_resume(
                 db, &thread_id, &value,
