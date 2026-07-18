@@ -2,7 +2,7 @@
 import { useEffect, useId, useRef, useState } from 'react';
 import { FileText, Loader2 } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
-import { onlyOfficeGetConfig } from '@/generated/api/sdk.gen';
+import { getConfig as onlyOfficeGetConfig } from '@/generated/api/sdk.gen';
 
 interface Props {
   filePath: string;
@@ -43,7 +43,7 @@ export function OnlyOfficeViewer({ filePath }: Props) {
         await loadOnlyOfficeScript(data.scriptUrl);
         if (cancelled || !window.DocsAPI) return;
         editorRef.current?.destroyEditor?.();
-        editorRef.current = new window.DocsAPI.DocEditor(elementId, data.config);
+        editorRef.current = new window.DocsAPI.DocEditor(elementId, data.config as Record<string, unknown>);
         setStatus('ready');
       })
       .catch(() => {

@@ -28,7 +28,7 @@ export function FileToolbar({ onUpload }: FileToolbarProps) {
     void queryClient.invalidateQueries({
       predicate: ({ queryKey }) => {
         const key = queryKey[0] as { _id?: string } | undefined;
-        return key?._id === 'filesReadTree';
+        return key?._id === 'readTree';
       },
     });
   };

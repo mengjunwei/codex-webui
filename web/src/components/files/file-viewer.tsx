@@ -6,7 +6,7 @@ import { useEffect } from 'react';
 import { useQuery, keepPreviousData } from '@tanstack/react-query';
 import { Loader2 } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
-import { filesGetMetadataOptions } from '@/generated/api/@tanstack/react-query.gen';
+import { getMetadataOptions } from '@/generated/api/@tanstack/react-query.gen';
 import { useFilesStore } from '@/stores/files-store';
 import { getFileCategory, isInlineLoadingCategory } from '@/lib/file-category';
 import { FileContentViewer } from './viewers';
@@ -17,7 +17,7 @@ export function FileViewer() {
   const setFileMtime = useFilesStore((s) => s.setFileMtime);
 
   const { data: metadata, isLoading } = useQuery({
-    ...filesGetMetadataOptions({ query: { path: selectedFile! } }),
+    ...getMetadataOptions({ query: { path: selectedFile! } }),
     enabled: !!selectedFile,
     placeholderData: keepPreviousData,
   });

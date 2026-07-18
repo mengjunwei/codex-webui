@@ -7,8 +7,8 @@ import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 import { Button } from '@/components/ui/button';
 import {
-  codexStatusGetStatusOptions,
-  codexStatusGetStatusQueryKey,
+  statusOptions,
+  statusQueryKey,
 } from '@/generated/api/@tanstack/react-query.gen';
 
 export function CodexStatusBanner() {
@@ -16,7 +16,7 @@ export function CodexStatusBanner() {
   const queryClient = useQueryClient();
 
   const { data, isLoading } = useQuery({
-    ...codexStatusGetStatusOptions(),
+    ...statusOptions(),
     refetchOnWindowFocus: true,
   });
 
@@ -45,7 +45,7 @@ export function CodexStatusBanner() {
 
   const handleRefresh = () => {
     void queryClient.invalidateQueries({
-      queryKey: codexStatusGetStatusQueryKey(),
+      queryKey: statusQueryKey(),
     });
   };
 

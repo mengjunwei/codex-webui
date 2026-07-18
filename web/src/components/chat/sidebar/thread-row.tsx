@@ -14,7 +14,7 @@ import {
 import { useTranslation } from 'react-i18next';
 import { Button } from '@/components/ui/button';
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
-import type { ThreadDto } from '@/generated/api';
+import type { ThreadDto } from './sidebar-types';
 import { cn } from '@/lib/utils';
 import { threadLabel } from './sidebar-types';
 

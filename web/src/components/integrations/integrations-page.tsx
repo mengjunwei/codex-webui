@@ -8,18 +8,14 @@ import { useTranslation } from 'react-i18next';
 import { Button } from '@/components/ui/button';
 import { Separator } from '@/components/ui/separator';
 import { useTimelineStore } from '@/stores/timeline-store';
-import { PluginsTab } from './plugins-tab';
 import { AppsTab } from './apps-tab';
-import { McpsTab } from './mcps-tab';
 
-const TABS = ['plugins', 'apps', 'mcps'] as const;
+const TABS = ['apps'] as const;
 type IntegrationTab = (typeof TABS)[number];
 
 function tabLabel(tab: IntegrationTab): string {
   const labels: Record<IntegrationTab, string> = {
-    plugins: 'Plugins',
     apps: 'Apps',
-    mcps: 'MCP Servers',
   };
   return labels[tab];
 }
@@ -30,7 +26,7 @@ export function IntegrationsPage() {
   const threadId = useTimelineStore((s) => s.threadId);
   const tab = useRouterState({
     select: (state) =>
-      ((state.location.search as { tab?: IntegrationTab }).tab ?? 'plugins'),
+      ((state.location.search as { tab?: IntegrationTab }).tab ?? 'apps'),
   });
 
   const navigateBack = () => {
@@ -72,9 +68,8 @@ export function IntegrationsPage() {
 
         <Separator />
 
-        {tab === 'plugins' && <PluginsTab />}
         {tab === 'apps' && <AppsTab />}
-        {tab === 'mcps' && <McpsTab />}
+        {/* Plugins and MCP tabs removed - endpoints deprecated */}
       </div>
     </div>
   );

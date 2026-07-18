@@ -1,12 +1,21 @@
 /**
  * Zustand store for multi-thread chat timeline state.
  * The selected thread only controls visibility; live thread state is isolated by threadId.
+ *
+ * TODO: ThreadDto / TurnDto / FileUpdateChangeDto 来自旧 OpenAPI SDK,已下线。
+ *       当前从 mt-client 返回的 thread/turn 形状是 any,这里用本地 any 别名,
+ *       待后端补全 OpenAPI 注解后再恢复强类型。
  */
 import { create } from 'zustand';
 import { getSocket } from '../socket';
 import type { TimelineEntry, TurnItem, TurnPlanState } from '../types/timeline';
 import type { ApprovalRequest, ResolvableApprovalDecision, UserInputRequest } from '../types/approval';
-import type { ThreadDto, TurnDto, FileUpdateChangeDto } from '../generated/api';
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+type ThreadDto = any;
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+type TurnDto = any;
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+type FileUpdateChangeDto = any;
 import type { ThreadTokenUsage, ThreadStatusType } from '../types/codex-notifications';
 
 const DEFAULT_MAX_IDLE_SUBSCRIPTIONS = 30;

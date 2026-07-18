@@ -2,17 +2,18 @@
  * Notification dispatcher for Codex app-server events.
  * Maps every ServerNotification method to a typed handler.
  * Unknown methods fall through to a dev-only debug log.
+ *
+ * TODO: accountReadAccountQueryKey / accountReadRateLimitsQueryKey /
+ *       codexStatusGetStatusQueryKey 旧 SDK 函数已下线,这些端点对应的账号/MCP/
+ *       Codex 状态通知暂时只本地更新 store,不再主动 invalidate 查询。
  */
 import type { QueryClient } from '@tanstack/react-query';
-import {
-  accountReadAccountQueryKey,
-  accountReadRateLimitsQueryKey,
-  appsListAppsQueryKey,
-  codexStatusGetStatusQueryKey,
-  mcpServersListServersQueryKey,
-  threadsListThreadsQueryKey,
-} from '@/generated/api/@tanstack/react-query.gen';
-import type { FileUpdateChangeDto, RateLimitSnapshotDto } from '@/generated/api';
+// TODO: FileUpdateChangeDto / RateLimitSnapshotDto 来自旧 OpenAPI SDK,已下线。
+//       当前用本地 any 别名,待新 mt-client API 注解补全后再恢复强类型。
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+type FileUpdateChangeDto = any;
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+type RateLimitSnapshotDto = any;
 import { useAccountStore } from '@/stores/account-store';
 import { useMcpStore } from '@/stores/mcp-store';
 import { showSnackbar } from '@/stores/snackbar-store';
@@ -114,39 +115,24 @@ function shouldRecordFinalError(threadId: string | undefined, turnId: string | u
 
 let invalidateTimer: ReturnType<typeof setTimeout> | null = null;
 
+/** 多租户 threads 列表查询键前缀（供 useQuery / invalidateQueries 共用） */
+export const MT_THREADS_QUERY_KEY_PREFIX = 'mt-threads';
+
 function debouncedInvalidateThreadList(queryClient: QueryClient): void {
   if (invalidateTimer) clearTimeout(invalidateTimer);
   invalidateTimer = setTimeout(() => {
-    void queryClient.invalidateQueries({ queryKey: threadsListThreadsQueryKey() });
+    void queryClient.invalidateQueries({
+      predicate: (query) => {
+        const key = query.queryKey;
+        return Array.isArray(key) && key[0] === MT_THREADS_QUERY_KEY_PREFIX;
+      },
+    });
     invalidateTimer = null;
   }, 300);
 }
 
-let invalidateMcpTimer: ReturnType<typeof setTimeout> | null = null;
-
-function debouncedInvalidateMcpServers(queryClient: QueryClient): void {
-  if (invalidateMcpTimer) clearTimeout(invalidateMcpTimer);
-  invalidateMcpTimer = setTimeout(() => {
-    void queryClient.invalidateQueries({ queryKey: mcpServersListServersQueryKey() });
-    invalidateMcpTimer = null;
-  }, 500);
-}
-
-/** Matches generated TanStack Query keys whose first element has `{ _id: id }`. */
-function queryHasId(query: { queryKey: readonly unknown[] }, id: string): boolean {
-  const first = query.queryKey[0];
-  return (
-    typeof first === 'object' &&
-    first !== null &&
-    '_id' in first &&
-    (first as { _id?: unknown })._id === id
-  );
-}
-
-function invalidateAccountQueries(queryClient: QueryClient): void {
-  void queryClient.invalidateQueries({ queryKey: accountReadAccountQueryKey() });
-  void queryClient.invalidateQueries({ queryKey: accountReadRateLimitsQueryKey() });
-  void queryClient.invalidateQueries({ queryKey: codexStatusGetStatusQueryKey() });
+function invalidateAccountQueries(_queryClient: QueryClient): void {
+  // TODO: 旧 SDK 查询键已下线。当前只刷新本地 store,不再 invalidate 旧查询。
 }
 
 function isPlanStepStatus(value: unknown): value is TurnPlanStepStatus {
@@ -318,7 +304,7 @@ const handleTurnCompleted: Handler = (params, ctx) => {
 
   if (!hasThreadScope(params, ctx)) {
     // Still invalidate thread list for non-active threads
-    void ctx.queryClient.invalidateQueries({ queryKey: threadsListThreadsQueryKey() });
+    debouncedInvalidateThreadList(ctx.queryClient);
     return;
   }
 
@@ -334,7 +320,12 @@ const handleTurnCompleted: Handler = (params, ctx) => {
     ctx.addSystemMessage(`Error: ${turn.error.message}`, 'error', turnId);
   }
 
-  void ctx.queryClient.invalidateQueries({ queryKey: threadsListThreadsQueryKey() });
+  void ctx.queryClient.invalidateQueries({
+    predicate: (query) => {
+      const key = query.queryKey;
+      return Array.isArray(key) && key[0] === MT_THREADS_QUERY_KEY_PREFIX;
+    },
+  });
 };
 
 // ---------------------------------------------------------------------------
@@ -440,7 +431,8 @@ const handleMcpToolCallProgress: Handler = (params, ctx) => {
   }));
 };
 
-const handleMcpStartupStatusUpdated: Handler = (params, ctx) => {
+// eslint-disable-next-line @typescript-eslint/no-unused-vars
+const handleMcpStartupStatusUpdated: Handler = (params, _ctx) => {
   const name = params.name as string | undefined;
   const status = params.status as string | undefined;
   if (!name || !isMcpStartupStatus(status)) return;
@@ -450,7 +442,7 @@ const handleMcpStartupStatusUpdated: Handler = (params, ctx) => {
     error: typeof params.error === 'string' ? params.error : null,
   });
   if (status === 'ready' || status === 'failed') {
-    debouncedInvalidateMcpServers(ctx.queryClient);
+    // MCP 服务端列表查询已迁移至 mt-client，无需旧查询键失效
   }
 };
 
@@ -558,27 +550,25 @@ const handleAccountLoginCompleted: Handler = (params, ctx) => {
   }
 };
 
-const handleAccountRateLimitsUpdated: Handler = (params, ctx) => {
+const handleAccountRateLimitsUpdated: Handler = (params, _ctx) => {
   const rateLimits = params.rateLimits as RateLimitSnapshotDto | undefined;
   if (!rateLimits) return;
   useAccountStore.getState().setRateLimitSnapshot(rateLimits);
-  void ctx.queryClient.invalidateQueries({ queryKey: accountReadRateLimitsQueryKey() });
+  // TODO: 旧 accountReadRateLimitsQueryKey 已下线,新 mt-client 待接入
 };
 
-const handleSkillsChanged: Handler = (_params, ctx) => {
-  void ctx.queryClient.invalidateQueries({
-    predicate: (query) => queryHasId(query, 'skillsListSkills'),
-  });
+const handleSkillsChanged: Handler = (_params, _ctx) => {
+  // skills 查询已迁移至 mt-client，无需旧查询键失效
 };
 
 /** Invalidate apps query when app list changes (e.g. after plugin install). */
-const handleAppListUpdated: Handler = (_params, ctx) => {
-  void ctx.queryClient.invalidateQueries({ queryKey: appsListAppsQueryKey() });
+const handleAppListUpdated: Handler = (_params, _ctx) => {
+  // apps 查询已迁移至 mt-client，无需旧查询键失效
 };
 
 /** Refresh MCP status and show toast after OAuth login completes. */
-const handleMcpOauthLoginCompleted: Handler = (params, ctx) => {
-  void ctx.queryClient.invalidateQueries({ queryKey: mcpServersListServersQueryKey() });
+const handleMcpOauthLoginCompleted: Handler = (params, _ctx) => {
+  // MCP 服务端列表查询已迁移至 mt-client，无需旧查询键失效
   const name = typeof params.name === 'string' ? params.name : 'MCP server';
   const success = params.success === true;
   if (success) {

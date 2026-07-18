@@ -3,8 +3,25 @@
 import { type DefaultError, type InfiniteData, infiniteQueryOptions, queryOptions, type UseMutationOptions } from '@tanstack/react-query';
 
 import { client } from '../client.gen';
-import { accountCancelLogin, accountLogin, accountLogout, accountReadAccount, accountReadRateLimits, appGetStatus, appsListApps, archiveListArchive, archiveReadEntry, authLogin, authLogout, chatUploadAttachment, codexConfigReadConfig, codexConfigReadRawConfig, codexConfigUpdateConfig, codexConfigUpdateRawConfig, codexStatusGetStatus, codexStatusUpdateApprovalPolicy, codexStatusUpdateSandboxMode, filesAddRoot, filesCopyPath, filesCreateDirectory, filesCreateFile, filesDeletePath, filesDownloadFile, filesGetMetadata, filesGetRoots, filesMovePath, filesReadFile, filesReadTree, filesRenamePath, filesServeFile, filesUploadFiles, filesWriteFile, logsExportDiagnostics, logsListLogs, mcpServersListServers, mcpServersReloadAll, mcpServersStartOauthLogin, modelsListModels, onlyOfficeGetConfig, onlyOfficeHandleCallback, type Options, pendingApprovalsListPending, pendingApprovalsRespond, pluginsInstallPlugin, pluginsListPlugins, pluginsReadPlugin, pluginsUninstallPlugin, settingsGetSetting, settingsListSettings, settingsResetSetting, settingsUpdateSetting, settingsUpdateSettings, skillsListSkills, skillsWriteSkillConfig, threadsArchiveThread, threadsCompactThread, threadsForkThread, threadsInterruptTurn, threadsListLoadedThreads, threadsListThreads, threadsReadThread, threadsResumeThread, threadsRollbackThread, threadsSetThreadName, threadsStartThread, threadsStartTurn, threadsSteerTurn, threadsUnarchiveThread, tokenUsageReadThreadTokenUsage, turnDiffReadThreadTurnDiffs, turnErrorsReadThreadTurnErrors } from '../sdk.gen';
-import type { AccountCancelLoginData, AccountCancelLoginError, AccountCancelLoginResponse, AccountLoginData, AccountLoginError, AccountLoginResponse, AccountLogoutData, AccountLogoutError, AccountLogoutResponse, AccountReadAccountData, AccountReadAccountError, AccountReadAccountResponse, AccountReadRateLimitsData, AccountReadRateLimitsError, AccountReadRateLimitsResponse, AppGetStatusData, AppGetStatusResponse, AppsListAppsData, AppsListAppsError, AppsListAppsResponse, ArchiveListArchiveData, ArchiveListArchiveError, ArchiveListArchiveResponse, ArchiveReadEntryData, ArchiveReadEntryError, AuthLoginData, AuthLoginError, AuthLoginResponse, AuthLogoutData, AuthLogoutResponse, ChatUploadAttachmentData, ChatUploadAttachmentError, ChatUploadAttachmentResponse, CodexConfigReadConfigData, CodexConfigReadConfigError, CodexConfigReadConfigResponse, CodexConfigReadRawConfigData, CodexConfigReadRawConfigError, CodexConfigReadRawConfigResponse, CodexConfigUpdateConfigData, CodexConfigUpdateConfigError, CodexConfigUpdateConfigResponse, CodexConfigUpdateRawConfigData, CodexConfigUpdateRawConfigError, CodexConfigUpdateRawConfigResponse, CodexStatusGetStatusData, CodexStatusGetStatusError, CodexStatusGetStatusResponse, CodexStatusUpdateApprovalPolicyData, CodexStatusUpdateApprovalPolicyError, CodexStatusUpdateApprovalPolicyResponse, CodexStatusUpdateSandboxModeData, CodexStatusUpdateSandboxModeError, CodexStatusUpdateSandboxModeResponse, FilesAddRootData, FilesAddRootError, FilesAddRootResponse, FilesCopyPathData, FilesCopyPathError, FilesCopyPathResponse, FilesCreateDirectoryData, FilesCreateDirectoryError, FilesCreateDirectoryResponse, FilesCreateFileData, FilesCreateFileError, FilesCreateFileResponse, FilesDeletePathData, FilesDeletePathError, FilesDeletePathResponse, FilesDownloadFileData, FilesDownloadFileError, FilesGetMetadataData, FilesGetMetadataError, FilesGetMetadataResponse, FilesGetRootsData, FilesGetRootsError, FilesGetRootsResponse, FilesMovePathData, FilesMovePathError, FilesMovePathResponse, FilesReadFileData, FilesReadFileError, FilesReadFileResponse, FilesReadTreeData, FilesReadTreeError, FilesReadTreeResponse, FilesRenamePathData, FilesRenamePathError, FilesRenamePathResponse, FilesServeFileData, FilesServeFileError, FilesUploadFilesData, FilesUploadFilesError, FilesUploadFilesResponse, FilesWriteFileData, FilesWriteFileError, FilesWriteFileResponse, LogsExportDiagnosticsData, LogsExportDiagnosticsError, LogsExportDiagnosticsResponse, LogsListLogsData, LogsListLogsError, LogsListLogsResponse, McpServersListServersData, McpServersListServersError, McpServersListServersResponse, McpServersReloadAllData, McpServersReloadAllError, McpServersReloadAllResponse, McpServersStartOauthLoginData, McpServersStartOauthLoginError, McpServersStartOauthLoginResponse, ModelsListModelsData, ModelsListModelsError, ModelsListModelsResponse, OnlyOfficeGetConfigData, OnlyOfficeGetConfigError, OnlyOfficeGetConfigResponse, OnlyOfficeHandleCallbackData, OnlyOfficeHandleCallbackResponse, PendingApprovalsListPendingData, PendingApprovalsListPendingResponse, PendingApprovalsRespondData, PendingApprovalsRespondResponse, PluginsInstallPluginData, PluginsInstallPluginError, PluginsInstallPluginResponse, PluginsListPluginsData, PluginsListPluginsError, PluginsListPluginsResponse, PluginsReadPluginData, PluginsReadPluginError, PluginsReadPluginResponse, PluginsUninstallPluginData, PluginsUninstallPluginError, PluginsUninstallPluginResponse, SettingsGetSettingData, SettingsGetSettingError, SettingsGetSettingResponse, SettingsListSettingsData, SettingsListSettingsError, SettingsListSettingsResponse, SettingsResetSettingData, SettingsResetSettingError, SettingsResetSettingResponse, SettingsUpdateSettingData, SettingsUpdateSettingError, SettingsUpdateSettingResponse, SettingsUpdateSettingsData, SettingsUpdateSettingsError, SettingsUpdateSettingsResponse, SkillsListSkillsData, SkillsListSkillsError, SkillsListSkillsResponse, SkillsWriteSkillConfigData, SkillsWriteSkillConfigError, SkillsWriteSkillConfigResponse, ThreadsArchiveThreadData, ThreadsArchiveThreadError, ThreadsArchiveThreadResponse, ThreadsCompactThreadData, ThreadsCompactThreadError, ThreadsCompactThreadResponse, ThreadsForkThreadData, ThreadsForkThreadError, ThreadsForkThreadResponse, ThreadsInterruptTurnData, ThreadsInterruptTurnError, ThreadsInterruptTurnResponse, ThreadsListLoadedThreadsData, ThreadsListLoadedThreadsError, ThreadsListLoadedThreadsResponse, ThreadsListThreadsData, ThreadsListThreadsError, ThreadsListThreadsResponse, ThreadsReadThreadData, ThreadsReadThreadError, ThreadsReadThreadResponse, ThreadsResumeThreadData, ThreadsResumeThreadError, ThreadsResumeThreadResponse, ThreadsRollbackThreadData, ThreadsRollbackThreadError, ThreadsRollbackThreadResponse, ThreadsSetThreadNameData, ThreadsSetThreadNameError, ThreadsSetThreadNameResponse, ThreadsStartThreadData, ThreadsStartThreadError, ThreadsStartThreadResponse, ThreadsStartTurnData, ThreadsStartTurnError, ThreadsStartTurnResponse, ThreadsSteerTurnData, ThreadsSteerTurnError, ThreadsSteerTurnResponse, ThreadsUnarchiveThreadData, ThreadsUnarchiveThreadError, ThreadsUnarchiveThreadResponse, TokenUsageReadThreadTokenUsageData, TokenUsageReadThreadTokenUsageError, TokenUsageReadThreadTokenUsageResponse, TurnDiffReadThreadTurnDiffsData, TurnDiffReadThreadTurnDiffsError, TurnDiffReadThreadTurnDiffsResponse, TurnErrorsReadThreadTurnErrorsData, TurnErrorsReadThreadTurnErrorsError, TurnErrorsReadThreadTurnErrorsResponse } from '../types.gen';
+import { archiveEntry, archiveList, copyPath, createDirectory, createFile, deleteOne, deletePath, downloadFile, exportDiagnostics, getConfig, getMetadata, getOne, getRoots, handleCallback, list, listLogs, movePath, type Options, ping, readConfig, readFile, readTree, renamePath, serveFile, status, updateBatch, updateOne, uploadAttachment, uploadFiles, writeFile } from '../sdk.gen';
+import type { ArchiveEntryData, ArchiveEntryError, ArchiveEntryResponse, ArchiveListData, ArchiveListError, ArchiveListResponse2, CopyPathData, CopyPathError, CopyPathResponse2, CreateDirectoryData, CreateDirectoryError, CreateDirectoryResponse2, CreateFileData, CreateFileError, CreateFileResponse2, DeleteOneData, DeleteOneResponse, DeletePathData, DeletePathError, DeletePathResponse, DownloadFileData, DownloadFileError, DownloadFileResponse, ExportDiagnosticsData, ExportDiagnosticsError, ExportDiagnosticsResponse, GetConfigData, GetConfigError, GetConfigResponse, GetMetadataData, GetMetadataError, GetMetadataResponse, GetOneData, GetOneResponse, GetRootsData, GetRootsError, GetRootsResponse, HandleCallbackData, HandleCallbackError, HandleCallbackResponse, ListData, ListLogsData, ListLogsError, ListLogsResponse, ListResponse, MovePathData, MovePathError, MovePathResponse, PingData, PingError, PingResponse, ReadConfigData, ReadConfigError, ReadConfigResponse, ReadFileData, ReadFileError, ReadFileResponse, ReadTreeData, ReadTreeError, ReadTreeResponse, RenamePathData, RenamePathError, RenamePathResponse2, ServeFileData, ServeFileError, ServeFileResponse, StatusData, StatusError, StatusResponse, UpdateBatchData, UpdateBatchResponse, UpdateOneData, UpdateOneResponse, UploadAttachmentData, UploadAttachmentError, UploadAttachmentResponse, UploadFilesData, UploadFilesError, UploadFilesResponse2, WriteFileData, WriteFileError, WriteFileResponse2 } from '../types.gen';
+
+/**
+ * POST /api/chat/upload —— 单文件 multipart 附件上传。
+ */
+export const uploadAttachmentMutation = (options?: Partial<Options<UploadAttachmentData>>): UseMutationOptions<UploadAttachmentResponse, UploadAttachmentError, Options<UploadAttachmentData>> => {
+    const mutationOptions: UseMutationOptions<UploadAttachmentResponse, UploadAttachmentError, Options<UploadAttachmentData>> = {
+        mutationFn: async (fnOptions) => {
+            const { data } = await uploadAttachment({
+                ...options,
+                ...fnOptions,
+                throwOnError: true
+            });
+            return data;
+        }
+    };
+    return mutationOptions;
+};
 
 export type QueryKey<TOptions extends Options> = [
     Pick<TOptions, 'baseUrl' | 'body' | 'headers' | 'path' | 'query'> & {
@@ -39,14 +56,11 @@ const createQueryKey = <TOptions extends Options>(id: string, options?: TOptions
     return [params];
 };
 
-export const appGetStatusQueryKey = (options?: Options<AppGetStatusData>) => createQueryKey('appGetStatus', options);
+export const readConfigQueryKey = (options?: Options<ReadConfigData>) => createQueryKey('readConfig', options);
 
-/**
- * Health check
- */
-export const appGetStatusOptions = (options?: Options<AppGetStatusData>) => queryOptions<AppGetStatusResponse, DefaultError, AppGetStatusResponse, ReturnType<typeof appGetStatusQueryKey>>({
+export const readConfigOptions = (options?: Options<ReadConfigData>) => queryOptions<ReadConfigResponse, ReadConfigError, ReadConfigResponse, ReturnType<typeof readConfigQueryKey>>({
     queryFn: async ({ queryKey, signal }) => {
-        const { data } = await appGetStatus({
+        const { data } = await readConfig({
             ...options,
             ...queryKey[0],
             signal,
@@ -54,51 +68,14 @@ export const appGetStatusOptions = (options?: Options<AppGetStatusData>) => quer
         });
         return data;
     },
-    queryKey: appGetStatusQueryKey(options)
+    queryKey: readConfigQueryKey(options)
 });
 
-/**
- * Login with the WebUI API key
- */
-export const authLoginMutation = (options?: Partial<Options<AuthLoginData>>): UseMutationOptions<AuthLoginResponse, AuthLoginError, Options<AuthLoginData>> => {
-    const mutationOptions: UseMutationOptions<AuthLoginResponse, AuthLoginError, Options<AuthLoginData>> = {
-        mutationFn: async (fnOptions) => {
-            const { data } = await authLogin({
-                ...options,
-                ...fnOptions,
-                throwOnError: true
-            });
-            return data;
-        }
-    };
-    return mutationOptions;
-};
+export const statusQueryKey = (options?: Options<StatusData>) => createQueryKey('status', options);
 
-/**
- * Logout the current WebUI session
- */
-export const authLogoutMutation = (options?: Partial<Options<AuthLogoutData>>): UseMutationOptions<AuthLogoutResponse, DefaultError, Options<AuthLogoutData>> => {
-    const mutationOptions: UseMutationOptions<AuthLogoutResponse, DefaultError, Options<AuthLogoutData>> = {
-        mutationFn: async (fnOptions) => {
-            const { data } = await authLogout({
-                ...options,
-                ...fnOptions,
-                throwOnError: true
-            });
-            return data;
-        }
-    };
-    return mutationOptions;
-};
-
-export const archiveListArchiveQueryKey = (options: Options<ArchiveListArchiveData>) => createQueryKey('archiveListArchive', options);
-
-/**
- * List archive contents
- */
-export const archiveListArchiveOptions = (options: Options<ArchiveListArchiveData>) => queryOptions<ArchiveListArchiveResponse, ArchiveListArchiveError, ArchiveListArchiveResponse, ReturnType<typeof archiveListArchiveQueryKey>>({
+export const statusOptions = (options?: Options<StatusData>) => queryOptions<StatusResponse, StatusError, StatusResponse, ReturnType<typeof statusQueryKey>>({
     queryFn: async ({ queryKey, signal }) => {
-        const { data } = await archiveListArchive({
+        const { data } = await status({
             ...options,
             ...queryKey[0],
             signal,
@@ -106,17 +83,14 @@ export const archiveListArchiveOptions = (options: Options<ArchiveListArchiveDat
         });
         return data;
     },
-    queryKey: archiveListArchiveQueryKey(options)
+    queryKey: statusQueryKey(options)
 });
 
-export const archiveReadEntryQueryKey = (options: Options<ArchiveReadEntryData>) => createQueryKey('archiveReadEntry', options);
+export const archiveEntryQueryKey = (options?: Options<ArchiveEntryData>) => createQueryKey('archiveEntry', options);
 
-/**
- * Read one archive entry without extracting to disk
- */
-export const archiveReadEntryOptions = (options: Options<ArchiveReadEntryData>) => queryOptions<unknown, ArchiveReadEntryError, unknown, ReturnType<typeof archiveReadEntryQueryKey>>({
+export const archiveEntryOptions = (options?: Options<ArchiveEntryData>) => queryOptions<ArchiveEntryResponse, ArchiveEntryError, ArchiveEntryResponse, ReturnType<typeof archiveEntryQueryKey>>({
     queryFn: async ({ queryKey, signal }) => {
-        const { data } = await archiveReadEntry({
+        const { data } = await archiveEntry({
             ...options,
             ...queryKey[0],
             signal,
@@ -124,17 +98,14 @@ export const archiveReadEntryOptions = (options: Options<ArchiveReadEntryData>) 
         });
         return data;
     },
-    queryKey: archiveReadEntryQueryKey(options)
+    queryKey: archiveEntryQueryKey(options)
 });
 
-export const filesReadTreeQueryKey = (options: Options<FilesReadTreeData>) => createQueryKey('filesReadTree', options);
+export const archiveListQueryKey = (options?: Options<ArchiveListData>) => createQueryKey('archiveList', options);
 
-/**
- * Read directory tree (one level, lazy load)
- */
-export const filesReadTreeOptions = (options: Options<FilesReadTreeData>) => queryOptions<FilesReadTreeResponse, FilesReadTreeError, FilesReadTreeResponse, ReturnType<typeof filesReadTreeQueryKey>>({
+export const archiveListOptions = (options?: Options<ArchiveListData>) => queryOptions<ArchiveListResponse2, ArchiveListError, ArchiveListResponse2, ReturnType<typeof archiveListQueryKey>>({
     queryFn: async ({ queryKey, signal }) => {
-        const { data } = await filesReadTree({
+        const { data } = await archiveList({
             ...options,
             ...queryKey[0],
             signal,
@@ -142,17 +113,73 @@ export const filesReadTreeOptions = (options: Options<FilesReadTreeData>) => que
         });
         return data;
     },
-    queryKey: filesReadTreeQueryKey(options)
+    queryKey: archiveListQueryKey(options)
 });
 
-export const filesReadFileQueryKey = (options: Options<FilesReadFileData>) => createQueryKey('filesReadFile', options);
+export const copyPathMutation = (options?: Partial<Options<CopyPathData>>): UseMutationOptions<CopyPathResponse2, CopyPathError, Options<CopyPathData>> => {
+    const mutationOptions: UseMutationOptions<CopyPathResponse2, CopyPathError, Options<CopyPathData>> = {
+        mutationFn: async (fnOptions) => {
+            const { data } = await copyPath({
+                ...options,
+                ...fnOptions,
+                throwOnError: true
+            });
+            return data;
+        }
+    };
+    return mutationOptions;
+};
+
+export const createDirectoryMutation = (options?: Partial<Options<CreateDirectoryData>>): UseMutationOptions<CreateDirectoryResponse2, CreateDirectoryError, Options<CreateDirectoryData>> => {
+    const mutationOptions: UseMutationOptions<CreateDirectoryResponse2, CreateDirectoryError, Options<CreateDirectoryData>> = {
+        mutationFn: async (fnOptions) => {
+            const { data } = await createDirectory({
+                ...options,
+                ...fnOptions,
+                throwOnError: true
+            });
+            return data;
+        }
+    };
+    return mutationOptions;
+};
+
+export const createFileMutation = (options?: Partial<Options<CreateFileData>>): UseMutationOptions<CreateFileResponse2, CreateFileError, Options<CreateFileData>> => {
+    const mutationOptions: UseMutationOptions<CreateFileResponse2, CreateFileError, Options<CreateFileData>> = {
+        mutationFn: async (fnOptions) => {
+            const { data } = await createFile({
+                ...options,
+                ...fnOptions,
+                throwOnError: true
+            });
+            return data;
+        }
+    };
+    return mutationOptions;
+};
+
+export const deletePathMutation = (options?: Partial<Options<DeletePathData>>): UseMutationOptions<DeletePathResponse, DeletePathError, Options<DeletePathData>> => {
+    const mutationOptions: UseMutationOptions<DeletePathResponse, DeletePathError, Options<DeletePathData>> = {
+        mutationFn: async (fnOptions) => {
+            const { data } = await deletePath({
+                ...options,
+                ...fnOptions,
+                throwOnError: true
+            });
+            return data;
+        }
+    };
+    return mutationOptions;
+};
+
+export const downloadFileQueryKey = (options?: Options<DownloadFileData>) => createQueryKey('downloadFile', options);
 
 /**
- * Read a text file
+ * GET /api/files/download?path=… —— 以附件形式下载（不支持 Range）。
  */
-export const filesReadFileOptions = (options: Options<FilesReadFileData>) => queryOptions<FilesReadFileResponse, FilesReadFileError, FilesReadFileResponse, ReturnType<typeof filesReadFileQueryKey>>({
+export const downloadFileOptions = (options?: Options<DownloadFileData>) => queryOptions<DownloadFileResponse, DownloadFileError, DownloadFileResponse, ReturnType<typeof downloadFileQueryKey>>({
     queryFn: async ({ queryKey, signal }) => {
-        const { data } = await filesReadFile({
+        const { data } = await downloadFile({
             ...options,
             ...queryKey[0],
             signal,
@@ -160,119 +187,14 @@ export const filesReadFileOptions = (options: Options<FilesReadFileData>) => que
         });
         return data;
     },
-    queryKey: filesReadFileQueryKey(options)
+    queryKey: downloadFileQueryKey(options)
 });
 
-/**
- * Create a new file
- */
-export const filesCreateFileMutation = (options?: Partial<Options<FilesCreateFileData>>): UseMutationOptions<FilesCreateFileResponse, FilesCreateFileError, Options<FilesCreateFileData>> => {
-    const mutationOptions: UseMutationOptions<FilesCreateFileResponse, FilesCreateFileError, Options<FilesCreateFileData>> = {
-        mutationFn: async (fnOptions) => {
-            const { data } = await filesCreateFile({
-                ...options,
-                ...fnOptions,
-                throwOnError: true
-            });
-            return data;
-        }
-    };
-    return mutationOptions;
-};
+export const getMetadataQueryKey = (options?: Options<GetMetadataData>) => createQueryKey('getMetadata', options);
 
-/**
- * Create a new directory
- */
-export const filesCreateDirectoryMutation = (options?: Partial<Options<FilesCreateDirectoryData>>): UseMutationOptions<FilesCreateDirectoryResponse, FilesCreateDirectoryError, Options<FilesCreateDirectoryData>> => {
-    const mutationOptions: UseMutationOptions<FilesCreateDirectoryResponse, FilesCreateDirectoryError, Options<FilesCreateDirectoryData>> = {
-        mutationFn: async (fnOptions) => {
-            const { data } = await filesCreateDirectory({
-                ...options,
-                ...fnOptions,
-                throwOnError: true
-            });
-            return data;
-        }
-    };
-    return mutationOptions;
-};
-
-/**
- * Write/save a file
- */
-export const filesWriteFileMutation = (options?: Partial<Options<FilesWriteFileData>>): UseMutationOptions<FilesWriteFileResponse, FilesWriteFileError, Options<FilesWriteFileData>> => {
-    const mutationOptions: UseMutationOptions<FilesWriteFileResponse, FilesWriteFileError, Options<FilesWriteFileData>> = {
-        mutationFn: async (fnOptions) => {
-            const { data } = await filesWriteFile({
-                ...options,
-                ...fnOptions,
-                throwOnError: true
-            });
-            return data;
-        }
-    };
-    return mutationOptions;
-};
-
-/**
- * Rename a file or directory within the same parent
- */
-export const filesRenamePathMutation = (options?: Partial<Options<FilesRenamePathData>>): UseMutationOptions<FilesRenamePathResponse, FilesRenamePathError, Options<FilesRenamePathData>> => {
-    const mutationOptions: UseMutationOptions<FilesRenamePathResponse, FilesRenamePathError, Options<FilesRenamePathData>> = {
-        mutationFn: async (fnOptions) => {
-            const { data } = await filesRenamePath({
-                ...options,
-                ...fnOptions,
-                throwOnError: true
-            });
-            return data;
-        }
-    };
-    return mutationOptions;
-};
-
-/**
- * Copy a file or directory
- */
-export const filesCopyPathMutation = (options?: Partial<Options<FilesCopyPathData>>): UseMutationOptions<FilesCopyPathResponse, FilesCopyPathError, Options<FilesCopyPathData>> => {
-    const mutationOptions: UseMutationOptions<FilesCopyPathResponse, FilesCopyPathError, Options<FilesCopyPathData>> = {
-        mutationFn: async (fnOptions) => {
-            const { data } = await filesCopyPath({
-                ...options,
-                ...fnOptions,
-                throwOnError: true
-            });
-            return data;
-        }
-    };
-    return mutationOptions;
-};
-
-/**
- * Move a file or directory
- */
-export const filesMovePathMutation = (options?: Partial<Options<FilesMovePathData>>): UseMutationOptions<FilesMovePathResponse, FilesMovePathError, Options<FilesMovePathData>> => {
-    const mutationOptions: UseMutationOptions<FilesMovePathResponse, FilesMovePathError, Options<FilesMovePathData>> = {
-        mutationFn: async (fnOptions) => {
-            const { data } = await filesMovePath({
-                ...options,
-                ...fnOptions,
-                throwOnError: true
-            });
-            return data;
-        }
-    };
-    return mutationOptions;
-};
-
-export const filesGetMetadataQueryKey = (options: Options<FilesGetMetadataData>) => createQueryKey('filesGetMetadata', options);
-
-/**
- * Get file/directory metadata
- */
-export const filesGetMetadataOptions = (options: Options<FilesGetMetadataData>) => queryOptions<FilesGetMetadataResponse, FilesGetMetadataError, FilesGetMetadataResponse, ReturnType<typeof filesGetMetadataQueryKey>>({
+export const getMetadataOptions = (options?: Options<GetMetadataData>) => queryOptions<GetMetadataResponse, GetMetadataError, GetMetadataResponse, ReturnType<typeof getMetadataQueryKey>>({
     queryFn: async ({ queryKey, signal }) => {
-        const { data } = await filesGetMetadata({
+        const { data } = await getMetadata({
             ...options,
             ...queryKey[0],
             signal,
@@ -280,17 +202,28 @@ export const filesGetMetadataOptions = (options: Options<FilesGetMetadataData>) 
         });
         return data;
     },
-    queryKey: filesGetMetadataQueryKey(options)
+    queryKey: getMetadataQueryKey(options)
 });
 
-export const filesServeFileQueryKey = (options: Options<FilesServeFileData>) => createQueryKey('filesServeFile', options);
+export const movePathMutation = (options?: Partial<Options<MovePathData>>): UseMutationOptions<MovePathResponse, MovePathError, Options<MovePathData>> => {
+    const mutationOptions: UseMutationOptions<MovePathResponse, MovePathError, Options<MovePathData>> = {
+        mutationFn: async (fnOptions) => {
+            const { data } = await movePath({
+                ...options,
+                ...fnOptions,
+                throwOnError: true
+            });
+            return data;
+        }
+    };
+    return mutationOptions;
+};
 
-/**
- * Serve a file inline with correct Content-Type (for img/pdf/etc.)
- */
-export const filesServeFileOptions = (options: Options<FilesServeFileData>) => queryOptions<unknown, FilesServeFileError, unknown, ReturnType<typeof filesServeFileQueryKey>>({
+export const readFileQueryKey = (options?: Options<ReadFileData>) => createQueryKey('readFile', options);
+
+export const readFileOptions = (options?: Options<ReadFileData>) => queryOptions<ReadFileResponse, ReadFileError, ReadFileResponse, ReturnType<typeof readFileQueryKey>>({
     queryFn: async ({ queryKey, signal }) => {
-        const { data } = await filesServeFile({
+        const { data } = await readFile({
             ...options,
             ...queryKey[0],
             signal,
@@ -298,17 +231,31 @@ export const filesServeFileOptions = (options: Options<FilesServeFileData>) => q
         });
         return data;
     },
-    queryKey: filesServeFileQueryKey(options)
+    queryKey: readFileQueryKey(options)
 });
 
-export const filesDownloadFileQueryKey = (options: Options<FilesDownloadFileData>) => createQueryKey('filesDownloadFile', options);
+export const renamePathMutation = (options?: Partial<Options<RenamePathData>>): UseMutationOptions<RenamePathResponse2, RenamePathError, Options<RenamePathData>> => {
+    const mutationOptions: UseMutationOptions<RenamePathResponse2, RenamePathError, Options<RenamePathData>> = {
+        mutationFn: async (fnOptions) => {
+            const { data } = await renamePath({
+                ...options,
+                ...fnOptions,
+                throwOnError: true
+            });
+            return data;
+        }
+    };
+    return mutationOptions;
+};
+
+export const getRootsQueryKey = (options?: Options<GetRootsData>) => createQueryKey('getRoots', options);
 
 /**
- * Download a file
+ * GET /api/files/roots → 已配置根目录 + 动态根目录 + 家目录。
  */
-export const filesDownloadFileOptions = (options: Options<FilesDownloadFileData>) => queryOptions<unknown, FilesDownloadFileError, unknown, ReturnType<typeof filesDownloadFileQueryKey>>({
+export const getRootsOptions = (options?: Options<GetRootsData>) => queryOptions<GetRootsResponse, GetRootsError, GetRootsResponse, ReturnType<typeof getRootsQueryKey>>({
     queryFn: async ({ queryKey, signal }) => {
-        const { data } = await filesDownloadFile({
+        const { data } = await getRoots({
             ...options,
             ...queryKey[0],
             signal,
@@ -316,17 +263,20 @@ export const filesDownloadFileOptions = (options: Options<FilesDownloadFileData>
         });
         return data;
     },
-    queryKey: filesDownloadFileQueryKey(options)
+    queryKey: getRootsQueryKey(options)
 });
 
-export const filesGetRootsQueryKey = (options?: Options<FilesGetRootsData>) => createQueryKey('filesGetRoots', options);
+export const serveFileQueryKey = (options?: Options<ServeFileData>) => createQueryKey('serveFile', options);
 
 /**
- * List configured workspace roots and home directory
+ * GET /api/files/serve?path=… —— 支持字节区段的内联预览。
+ * 被 <img>/<video>/<pdf> 标签以及 OnlyOffice Document Server 用于获取文件。
+ * 支持 RFC 6750 `access_token` 查询参数回退（由该路径的鉴权中间件处理）。
+ * 返回 200/206/416。
  */
-export const filesGetRootsOptions = (options?: Options<FilesGetRootsData>) => queryOptions<FilesGetRootsResponse, FilesGetRootsError, FilesGetRootsResponse, ReturnType<typeof filesGetRootsQueryKey>>({
+export const serveFileOptions = (options?: Options<ServeFileData>) => queryOptions<ServeFileResponse, ServeFileError, ServeFileResponse, ReturnType<typeof serveFileQueryKey>>({
     queryFn: async ({ queryKey, signal }) => {
-        const { data } = await filesGetRoots({
+        const { data } = await serveFile({
             ...options,
             ...queryKey[0],
             signal,
@@ -334,68 +284,14 @@ export const filesGetRootsOptions = (options?: Options<FilesGetRootsData>) => qu
         });
         return data;
     },
-    queryKey: filesGetRootsQueryKey(options)
+    queryKey: serveFileQueryKey(options)
 });
 
-/**
- * Register a workspace root (e.g. thread cwd)
- */
-export const filesAddRootMutation = (options?: Partial<Options<FilesAddRootData>>): UseMutationOptions<FilesAddRootResponse, FilesAddRootError, Options<FilesAddRootData>> => {
-    const mutationOptions: UseMutationOptions<FilesAddRootResponse, FilesAddRootError, Options<FilesAddRootData>> = {
-        mutationFn: async (fnOptions) => {
-            const { data } = await filesAddRoot({
-                ...options,
-                ...fnOptions,
-                throwOnError: true
-            });
-            return data;
-        }
-    };
-    return mutationOptions;
-};
+export const readTreeQueryKey = (options?: Options<ReadTreeData>) => createQueryKey('readTree', options);
 
-/**
- * Delete a file, symlink, or directory
- */
-export const filesDeletePathMutation = (options?: Partial<Options<FilesDeletePathData>>): UseMutationOptions<FilesDeletePathResponse, FilesDeletePathError, Options<FilesDeletePathData>> => {
-    const mutationOptions: UseMutationOptions<FilesDeletePathResponse, FilesDeletePathError, Options<FilesDeletePathData>> = {
-        mutationFn: async (fnOptions) => {
-            const { data } = await filesDeletePath({
-                ...options,
-                ...fnOptions,
-                throwOnError: true
-            });
-            return data;
-        }
-    };
-    return mutationOptions;
-};
-
-/**
- * Upload one or more files into a directory
- */
-export const filesUploadFilesMutation = (options?: Partial<Options<FilesUploadFilesData>>): UseMutationOptions<FilesUploadFilesResponse, FilesUploadFilesError, Options<FilesUploadFilesData>> => {
-    const mutationOptions: UseMutationOptions<FilesUploadFilesResponse, FilesUploadFilesError, Options<FilesUploadFilesData>> = {
-        mutationFn: async (fnOptions) => {
-            const { data } = await filesUploadFiles({
-                ...options,
-                ...fnOptions,
-                throwOnError: true
-            });
-            return data;
-        }
-    };
-    return mutationOptions;
-};
-
-export const settingsListSettingsQueryKey = (options?: Options<SettingsListSettingsData>) => createQueryKey('settingsListSettings', options);
-
-/**
- * List runtime settings
- */
-export const settingsListSettingsOptions = (options?: Options<SettingsListSettingsData>) => queryOptions<SettingsListSettingsResponse, SettingsListSettingsError, SettingsListSettingsResponse, ReturnType<typeof settingsListSettingsQueryKey>>({
+export const readTreeOptions = (options?: Options<ReadTreeData>) => queryOptions<ReadTreeResponse, ReadTreeError, ReadTreeResponse, ReturnType<typeof readTreeQueryKey>>({
     queryFn: async ({ queryKey, signal }) => {
-        const { data } = await settingsListSettings({
+        const { data } = await readTree({
             ...options,
             ...queryKey[0],
             signal,
@@ -403,16 +299,13 @@ export const settingsListSettingsOptions = (options?: Options<SettingsListSettin
         });
         return data;
     },
-    queryKey: settingsListSettingsQueryKey(options)
+    queryKey: readTreeQueryKey(options)
 });
 
-/**
- * Batch update runtime settings
- */
-export const settingsUpdateSettingsMutation = (options?: Partial<Options<SettingsUpdateSettingsData>>): UseMutationOptions<SettingsUpdateSettingsResponse, SettingsUpdateSettingsError, Options<SettingsUpdateSettingsData>> => {
-    const mutationOptions: UseMutationOptions<SettingsUpdateSettingsResponse, SettingsUpdateSettingsError, Options<SettingsUpdateSettingsData>> = {
+export const uploadFilesMutation = (options?: Partial<Options<UploadFilesData>>): UseMutationOptions<UploadFilesResponse2, UploadFilesError, Options<UploadFilesData>> => {
+    const mutationOptions: UseMutationOptions<UploadFilesResponse2, UploadFilesError, Options<UploadFilesData>> = {
         mutationFn: async (fnOptions) => {
-            const { data } = await settingsUpdateSettings({
+            const { data } = await uploadFiles({
                 ...options,
                 ...fnOptions,
                 throwOnError: true
@@ -423,13 +316,10 @@ export const settingsUpdateSettingsMutation = (options?: Partial<Options<Setting
     return mutationOptions;
 };
 
-/**
- * Reset one runtime setting to env/default
- */
-export const settingsResetSettingMutation = (options?: Partial<Options<SettingsResetSettingData>>): UseMutationOptions<SettingsResetSettingResponse, SettingsResetSettingError, Options<SettingsResetSettingData>> => {
-    const mutationOptions: UseMutationOptions<SettingsResetSettingResponse, SettingsResetSettingError, Options<SettingsResetSettingData>> = {
+export const writeFileMutation = (options?: Partial<Options<WriteFileData>>): UseMutationOptions<WriteFileResponse2, WriteFileError, Options<WriteFileData>> => {
+    const mutationOptions: UseMutationOptions<WriteFileResponse2, WriteFileError, Options<WriteFileData>> = {
         mutationFn: async (fnOptions) => {
-            const { data } = await settingsResetSetting({
+            const { data } = await writeFile({
                 ...options,
                 ...fnOptions,
                 throwOnError: true
@@ -440,14 +330,11 @@ export const settingsResetSettingMutation = (options?: Partial<Options<SettingsR
     return mutationOptions;
 };
 
-export const settingsGetSettingQueryKey = (options: Options<SettingsGetSettingData>) => createQueryKey('settingsGetSetting', options);
+export const listLogsQueryKey = (options?: Options<ListLogsData>) => createQueryKey('listLogs', options);
 
-/**
- * Read one runtime setting
- */
-export const settingsGetSettingOptions = (options: Options<SettingsGetSettingData>) => queryOptions<SettingsGetSettingResponse, SettingsGetSettingError, SettingsGetSettingResponse, ReturnType<typeof settingsGetSettingQueryKey>>({
+export const listLogsOptions = (options?: Options<ListLogsData>) => queryOptions<ListLogsResponse, ListLogsError, ListLogsResponse, ReturnType<typeof listLogsQueryKey>>({
     queryFn: async ({ queryKey, signal }) => {
-        const { data } = await settingsGetSetting({
+        const { data } = await listLogs({
             ...options,
             ...queryKey[0],
             signal,
@@ -455,268 +342,7 @@ export const settingsGetSettingOptions = (options: Options<SettingsGetSettingDat
         });
         return data;
     },
-    queryKey: settingsGetSettingQueryKey(options)
-});
-
-/**
- * Update one runtime setting
- */
-export const settingsUpdateSettingMutation = (options?: Partial<Options<SettingsUpdateSettingData>>): UseMutationOptions<SettingsUpdateSettingResponse, SettingsUpdateSettingError, Options<SettingsUpdateSettingData>> => {
-    const mutationOptions: UseMutationOptions<SettingsUpdateSettingResponse, SettingsUpdateSettingError, Options<SettingsUpdateSettingData>> = {
-        mutationFn: async (fnOptions) => {
-            const { data } = await settingsUpdateSetting({
-                ...options,
-                ...fnOptions,
-                throwOnError: true
-            });
-            return data;
-        }
-    };
-    return mutationOptions;
-};
-
-/**
- * Upload one chat attachment for rich user input
- */
-export const chatUploadAttachmentMutation = (options?: Partial<Options<ChatUploadAttachmentData>>): UseMutationOptions<ChatUploadAttachmentResponse, ChatUploadAttachmentError, Options<ChatUploadAttachmentData>> => {
-    const mutationOptions: UseMutationOptions<ChatUploadAttachmentResponse, ChatUploadAttachmentError, Options<ChatUploadAttachmentData>> = {
-        mutationFn: async (fnOptions) => {
-            const { data } = await chatUploadAttachment({
-                ...options,
-                ...fnOptions,
-                throwOnError: true
-            });
-            return data;
-        }
-    };
-    return mutationOptions;
-};
-
-export const codexStatusGetStatusQueryKey = (options?: Options<CodexStatusGetStatusData>) => createQueryKey('codexStatusGetStatus', options);
-
-/**
- * Get aggregated Codex runtime status
- */
-export const codexStatusGetStatusOptions = (options?: Options<CodexStatusGetStatusData>) => queryOptions<CodexStatusGetStatusResponse, CodexStatusGetStatusError, CodexStatusGetStatusResponse, ReturnType<typeof codexStatusGetStatusQueryKey>>({
-    queryFn: async ({ queryKey, signal }) => {
-        const { data } = await codexStatusGetStatus({
-            ...options,
-            ...queryKey[0],
-            signal,
-            throwOnError: true
-        });
-        return data;
-    },
-    queryKey: codexStatusGetStatusQueryKey(options)
-});
-
-/**
- * Update approval policy (hot-reloads all threads)
- */
-export const codexStatusUpdateApprovalPolicyMutation = (options?: Partial<Options<CodexStatusUpdateApprovalPolicyData>>): UseMutationOptions<CodexStatusUpdateApprovalPolicyResponse, CodexStatusUpdateApprovalPolicyError, Options<CodexStatusUpdateApprovalPolicyData>> => {
-    const mutationOptions: UseMutationOptions<CodexStatusUpdateApprovalPolicyResponse, CodexStatusUpdateApprovalPolicyError, Options<CodexStatusUpdateApprovalPolicyData>> = {
-        mutationFn: async (fnOptions) => {
-            const { data } = await codexStatusUpdateApprovalPolicy({
-                ...options,
-                ...fnOptions,
-                throwOnError: true
-            });
-            return data;
-        }
-    };
-    return mutationOptions;
-};
-
-/**
- * Update sandbox mode (hot-reloads all threads)
- */
-export const codexStatusUpdateSandboxModeMutation = (options?: Partial<Options<CodexStatusUpdateSandboxModeData>>): UseMutationOptions<CodexStatusUpdateSandboxModeResponse, CodexStatusUpdateSandboxModeError, Options<CodexStatusUpdateSandboxModeData>> => {
-    const mutationOptions: UseMutationOptions<CodexStatusUpdateSandboxModeResponse, CodexStatusUpdateSandboxModeError, Options<CodexStatusUpdateSandboxModeData>> = {
-        mutationFn: async (fnOptions) => {
-            const { data } = await codexStatusUpdateSandboxMode({
-                ...options,
-                ...fnOptions,
-                throwOnError: true
-            });
-            return data;
-        }
-    };
-    return mutationOptions;
-};
-
-export const codexConfigReadConfigQueryKey = (options?: Options<CodexConfigReadConfigData>) => createQueryKey('codexConfigReadConfig', options);
-
-/**
- * Read Codex config with origin metadata
- */
-export const codexConfigReadConfigOptions = (options?: Options<CodexConfigReadConfigData>) => queryOptions<CodexConfigReadConfigResponse, CodexConfigReadConfigError, CodexConfigReadConfigResponse, ReturnType<typeof codexConfigReadConfigQueryKey>>({
-    queryFn: async ({ queryKey, signal }) => {
-        const { data } = await codexConfigReadConfig({
-            ...options,
-            ...queryKey[0],
-            signal,
-            throwOnError: true
-        });
-        return data;
-    },
-    queryKey: codexConfigReadConfigQueryKey(options)
-});
-
-/**
- * Update curated Codex config fields
- */
-export const codexConfigUpdateConfigMutation = (options?: Partial<Options<CodexConfigUpdateConfigData>>): UseMutationOptions<CodexConfigUpdateConfigResponse, CodexConfigUpdateConfigError, Options<CodexConfigUpdateConfigData>> => {
-    const mutationOptions: UseMutationOptions<CodexConfigUpdateConfigResponse, CodexConfigUpdateConfigError, Options<CodexConfigUpdateConfigData>> = {
-        mutationFn: async (fnOptions) => {
-            const { data } = await codexConfigUpdateConfig({
-                ...options,
-                ...fnOptions,
-                throwOnError: true
-            });
-            return data;
-        }
-    };
-    return mutationOptions;
-};
-
-export const codexConfigReadRawConfigQueryKey = (options?: Options<CodexConfigReadRawConfigData>) => createQueryKey('codexConfigReadRawConfig', options);
-
-/**
- * Read raw user config.toml
- */
-export const codexConfigReadRawConfigOptions = (options?: Options<CodexConfigReadRawConfigData>) => queryOptions<CodexConfigReadRawConfigResponse, CodexConfigReadRawConfigError, CodexConfigReadRawConfigResponse, ReturnType<typeof codexConfigReadRawConfigQueryKey>>({
-    queryFn: async ({ queryKey, signal }) => {
-        const { data } = await codexConfigReadRawConfig({
-            ...options,
-            ...queryKey[0],
-            signal,
-            throwOnError: true
-        });
-        return data;
-    },
-    queryKey: codexConfigReadRawConfigQueryKey(options)
-});
-
-/**
- * Write raw user config.toml and reload Codex config
- */
-export const codexConfigUpdateRawConfigMutation = (options?: Partial<Options<CodexConfigUpdateRawConfigData>>): UseMutationOptions<CodexConfigUpdateRawConfigResponse, CodexConfigUpdateRawConfigError, Options<CodexConfigUpdateRawConfigData>> => {
-    const mutationOptions: UseMutationOptions<CodexConfigUpdateRawConfigResponse, CodexConfigUpdateRawConfigError, Options<CodexConfigUpdateRawConfigData>> = {
-        mutationFn: async (fnOptions) => {
-            const { data } = await codexConfigUpdateRawConfig({
-                ...options,
-                ...fnOptions,
-                throwOnError: true
-            });
-            return data;
-        }
-    };
-    return mutationOptions;
-};
-
-export const accountReadAccountQueryKey = (options?: Options<AccountReadAccountData>) => createQueryKey('accountReadAccount', options);
-
-/**
- * Read Codex account state and provider metadata
- */
-export const accountReadAccountOptions = (options?: Options<AccountReadAccountData>) => queryOptions<AccountReadAccountResponse, AccountReadAccountError, AccountReadAccountResponse, ReturnType<typeof accountReadAccountQueryKey>>({
-    queryFn: async ({ queryKey, signal }) => {
-        const { data } = await accountReadAccount({
-            ...options,
-            ...queryKey[0],
-            signal,
-            throwOnError: true
-        });
-        return data;
-    },
-    queryKey: accountReadAccountQueryKey(options)
-});
-
-/**
- * Start Codex account login
- */
-export const accountLoginMutation = (options?: Partial<Options<AccountLoginData>>): UseMutationOptions<AccountLoginResponse, AccountLoginError, Options<AccountLoginData>> => {
-    const mutationOptions: UseMutationOptions<AccountLoginResponse, AccountLoginError, Options<AccountLoginData>> = {
-        mutationFn: async (fnOptions) => {
-            const { data } = await accountLogin({
-                ...options,
-                ...fnOptions,
-                throwOnError: true
-            });
-            return data;
-        }
-    };
-    return mutationOptions;
-};
-
-/**
- * Cancel a pending Codex account login
- */
-export const accountCancelLoginMutation = (options?: Partial<Options<AccountCancelLoginData>>): UseMutationOptions<AccountCancelLoginResponse, AccountCancelLoginError, Options<AccountCancelLoginData>> => {
-    const mutationOptions: UseMutationOptions<AccountCancelLoginResponse, AccountCancelLoginError, Options<AccountCancelLoginData>> = {
-        mutationFn: async (fnOptions) => {
-            const { data } = await accountCancelLogin({
-                ...options,
-                ...fnOptions,
-                throwOnError: true
-            });
-            return data;
-        }
-    };
-    return mutationOptions;
-};
-
-/**
- * Logout Codex account
- */
-export const accountLogoutMutation = (options?: Partial<Options<AccountLogoutData>>): UseMutationOptions<AccountLogoutResponse, AccountLogoutError, Options<AccountLogoutData>> => {
-    const mutationOptions: UseMutationOptions<AccountLogoutResponse, AccountLogoutError, Options<AccountLogoutData>> = {
-        mutationFn: async (fnOptions) => {
-            const { data } = await accountLogout({
-                ...options,
-                ...fnOptions,
-                throwOnError: true
-            });
-            return data;
-        }
-    };
-    return mutationOptions;
-};
-
-export const accountReadRateLimitsQueryKey = (options?: Options<AccountReadRateLimitsData>) => createQueryKey('accountReadRateLimits', options);
-
-/**
- * Read Codex account rate limits
- */
-export const accountReadRateLimitsOptions = (options?: Options<AccountReadRateLimitsData>) => queryOptions<AccountReadRateLimitsResponse, AccountReadRateLimitsError, AccountReadRateLimitsResponse, ReturnType<typeof accountReadRateLimitsQueryKey>>({
-    queryFn: async ({ queryKey, signal }) => {
-        const { data } = await accountReadRateLimits({
-            ...options,
-            ...queryKey[0],
-            signal,
-            throwOnError: true
-        });
-        return data;
-    },
-    queryKey: accountReadRateLimitsQueryKey(options)
-});
-
-export const appsListAppsQueryKey = (options?: Options<AppsListAppsData>) => createQueryKey('appsListApps', options);
-
-/**
- * List Codex apps/connectors
- */
-export const appsListAppsOptions = (options?: Options<AppsListAppsData>) => queryOptions<AppsListAppsResponse, AppsListAppsError, AppsListAppsResponse, ReturnType<typeof appsListAppsQueryKey>>({
-    queryFn: async ({ queryKey, signal }) => {
-        const { data } = await appsListApps({
-            ...options,
-            ...queryKey[0],
-            signal,
-            throwOnError: true
-        });
-        return data;
-    },
-    queryKey: appsListAppsQueryKey(options)
+    queryKey: listLogsQueryKey(options)
 });
 
 const createInfiniteParams = <K extends Pick<QueryKey<Options>[0], 'body' | 'headers' | 'path' | 'query'>>(queryKey: QueryKey<Options>, page: K) => {
@@ -748,637 +374,20 @@ const createInfiniteParams = <K extends Pick<QueryKey<Options>[0], 'body' | 'hea
     return params as unknown as typeof page;
 };
 
-export const appsListAppsInfiniteQueryKey = (options?: Options<AppsListAppsData>): QueryKey<Options<AppsListAppsData>> => createQueryKey('appsListApps', options, true);
+export const listLogsInfiniteQueryKey = (options?: Options<ListLogsData>): QueryKey<Options<ListLogsData>> => createQueryKey('listLogs', options, true);
 
-/**
- * List Codex apps/connectors
- */
-export const appsListAppsInfiniteOptions = (options?: Options<AppsListAppsData>) => infiniteQueryOptions<AppsListAppsResponse, AppsListAppsError, InfiniteData<AppsListAppsResponse>, QueryKey<Options<AppsListAppsData>>, string | Pick<QueryKey<Options<AppsListAppsData>>[0], 'body' | 'headers' | 'path' | 'query'>>(
+export const listLogsInfiniteOptions = (options?: Options<ListLogsData>) => infiniteQueryOptions<ListLogsResponse, ListLogsError, InfiniteData<ListLogsResponse>, QueryKey<Options<ListLogsData>>, string | Pick<QueryKey<Options<ListLogsData>>[0], 'body' | 'headers' | 'path' | 'query'>>(
 // @ts-ignore
 {
     queryFn: async ({ pageParam, queryKey, signal }) => {
         // @ts-ignore
-        const page: Pick<QueryKey<Options<AppsListAppsData>>[0], 'body' | 'headers' | 'path' | 'query'> = typeof pageParam === 'object' ? pageParam : {
-            query: {
-                cursor: pageParam
-            }
-        };
-        const params = createInfiniteParams(queryKey, page);
-        const { data } = await appsListApps({
-            ...options,
-            ...params,
-            signal,
-            throwOnError: true
-        });
-        return data;
-    },
-    queryKey: appsListAppsInfiniteQueryKey(options)
-});
-
-export const skillsListSkillsQueryKey = (options: Options<SkillsListSkillsData>) => createQueryKey('skillsListSkills', options);
-
-/**
- * List Codex skills for a working directory
- */
-export const skillsListSkillsOptions = (options: Options<SkillsListSkillsData>) => queryOptions<SkillsListSkillsResponse, SkillsListSkillsError, SkillsListSkillsResponse, ReturnType<typeof skillsListSkillsQueryKey>>({
-    queryFn: async ({ queryKey, signal }) => {
-        const { data } = await skillsListSkills({
-            ...options,
-            ...queryKey[0],
-            signal,
-            throwOnError: true
-        });
-        return data;
-    },
-    queryKey: skillsListSkillsQueryKey(options)
-});
-
-/**
- * Update Codex skill enablement config
- */
-export const skillsWriteSkillConfigMutation = (options?: Partial<Options<SkillsWriteSkillConfigData>>): UseMutationOptions<SkillsWriteSkillConfigResponse, SkillsWriteSkillConfigError, Options<SkillsWriteSkillConfigData>> => {
-    const mutationOptions: UseMutationOptions<SkillsWriteSkillConfigResponse, SkillsWriteSkillConfigError, Options<SkillsWriteSkillConfigData>> = {
-        mutationFn: async (fnOptions) => {
-            const { data } = await skillsWriteSkillConfig({
-                ...options,
-                ...fnOptions,
-                throwOnError: true
-            });
-            return data;
-        }
-    };
-    return mutationOptions;
-};
-
-export const threadsListThreadsQueryKey = (options?: Options<ThreadsListThreadsData>) => createQueryKey('threadsListThreads', options);
-
-/**
- * List threads
- */
-export const threadsListThreadsOptions = (options?: Options<ThreadsListThreadsData>) => queryOptions<ThreadsListThreadsResponse, ThreadsListThreadsError, ThreadsListThreadsResponse, ReturnType<typeof threadsListThreadsQueryKey>>({
-    queryFn: async ({ queryKey, signal }) => {
-        const { data } = await threadsListThreads({
-            ...options,
-            ...queryKey[0],
-            signal,
-            throwOnError: true
-        });
-        return data;
-    },
-    queryKey: threadsListThreadsQueryKey(options)
-});
-
-export const threadsListThreadsInfiniteQueryKey = (options?: Options<ThreadsListThreadsData>): QueryKey<Options<ThreadsListThreadsData>> => createQueryKey('threadsListThreads', options, true);
-
-/**
- * List threads
- */
-export const threadsListThreadsInfiniteOptions = (options?: Options<ThreadsListThreadsData>) => infiniteQueryOptions<ThreadsListThreadsResponse, ThreadsListThreadsError, InfiniteData<ThreadsListThreadsResponse>, QueryKey<Options<ThreadsListThreadsData>>, string | Pick<QueryKey<Options<ThreadsListThreadsData>>[0], 'body' | 'headers' | 'path' | 'query'>>(
-// @ts-ignore
-{
-    queryFn: async ({ pageParam, queryKey, signal }) => {
-        // @ts-ignore
-        const page: Pick<QueryKey<Options<ThreadsListThreadsData>>[0], 'body' | 'headers' | 'path' | 'query'> = typeof pageParam === 'object' ? pageParam : {
-            query: {
-                cursor: pageParam
-            }
-        };
-        const params = createInfiniteParams(queryKey, page);
-        const { data } = await threadsListThreads({
-            ...options,
-            ...params,
-            signal,
-            throwOnError: true
-        });
-        return data;
-    },
-    queryKey: threadsListThreadsInfiniteQueryKey(options)
-});
-
-/**
- * Create a new thread
- */
-export const threadsStartThreadMutation = (options?: Partial<Options<ThreadsStartThreadData>>): UseMutationOptions<ThreadsStartThreadResponse, ThreadsStartThreadError, Options<ThreadsStartThreadData>> => {
-    const mutationOptions: UseMutationOptions<ThreadsStartThreadResponse, ThreadsStartThreadError, Options<ThreadsStartThreadData>> = {
-        mutationFn: async (fnOptions) => {
-            const { data } = await threadsStartThread({
-                ...options,
-                ...fnOptions,
-                throwOnError: true
-            });
-            return data;
-        }
-    };
-    return mutationOptions;
-};
-
-export const threadsListLoadedThreadsQueryKey = (options?: Options<ThreadsListLoadedThreadsData>) => createQueryKey('threadsListLoadedThreads', options);
-
-/**
- * List loaded thread IDs
- */
-export const threadsListLoadedThreadsOptions = (options?: Options<ThreadsListLoadedThreadsData>) => queryOptions<ThreadsListLoadedThreadsResponse, ThreadsListLoadedThreadsError, ThreadsListLoadedThreadsResponse, ReturnType<typeof threadsListLoadedThreadsQueryKey>>({
-    queryFn: async ({ queryKey, signal }) => {
-        const { data } = await threadsListLoadedThreads({
-            ...options,
-            ...queryKey[0],
-            signal,
-            throwOnError: true
-        });
-        return data;
-    },
-    queryKey: threadsListLoadedThreadsQueryKey(options)
-});
-
-export const threadsListLoadedThreadsInfiniteQueryKey = (options?: Options<ThreadsListLoadedThreadsData>): QueryKey<Options<ThreadsListLoadedThreadsData>> => createQueryKey('threadsListLoadedThreads', options, true);
-
-/**
- * List loaded thread IDs
- */
-export const threadsListLoadedThreadsInfiniteOptions = (options?: Options<ThreadsListLoadedThreadsData>) => infiniteQueryOptions<ThreadsListLoadedThreadsResponse, ThreadsListLoadedThreadsError, InfiniteData<ThreadsListLoadedThreadsResponse>, QueryKey<Options<ThreadsListLoadedThreadsData>>, string | Pick<QueryKey<Options<ThreadsListLoadedThreadsData>>[0], 'body' | 'headers' | 'path' | 'query'>>(
-// @ts-ignore
-{
-    queryFn: async ({ pageParam, queryKey, signal }) => {
-        // @ts-ignore
-        const page: Pick<QueryKey<Options<ThreadsListLoadedThreadsData>>[0], 'body' | 'headers' | 'path' | 'query'> = typeof pageParam === 'object' ? pageParam : {
-            query: {
-                cursor: pageParam
-            }
-        };
-        const params = createInfiniteParams(queryKey, page);
-        const { data } = await threadsListLoadedThreads({
-            ...options,
-            ...params,
-            signal,
-            throwOnError: true
-        });
-        return data;
-    },
-    queryKey: threadsListLoadedThreadsInfiniteQueryKey(options)
-});
-
-export const threadsReadThreadQueryKey = (options: Options<ThreadsReadThreadData>) => createQueryKey('threadsReadThread', options);
-
-/**
- * Read a thread by ID
- */
-export const threadsReadThreadOptions = (options: Options<ThreadsReadThreadData>) => queryOptions<ThreadsReadThreadResponse, ThreadsReadThreadError, ThreadsReadThreadResponse, ReturnType<typeof threadsReadThreadQueryKey>>({
-    queryFn: async ({ queryKey, signal }) => {
-        const { data } = await threadsReadThread({
-            ...options,
-            ...queryKey[0],
-            signal,
-            throwOnError: true
-        });
-        return data;
-    },
-    queryKey: threadsReadThreadQueryKey(options)
-});
-
-/**
- * Resume a thread and subscribe to events
- */
-export const threadsResumeThreadMutation = (options?: Partial<Options<ThreadsResumeThreadData>>): UseMutationOptions<ThreadsResumeThreadResponse, ThreadsResumeThreadError, Options<ThreadsResumeThreadData>> => {
-    const mutationOptions: UseMutationOptions<ThreadsResumeThreadResponse, ThreadsResumeThreadError, Options<ThreadsResumeThreadData>> = {
-        mutationFn: async (fnOptions) => {
-            const { data } = await threadsResumeThread({
-                ...options,
-                ...fnOptions,
-                throwOnError: true
-            });
-            return data;
-        }
-    };
-    return mutationOptions;
-};
-
-/**
- * Start a new turn (send message)
- */
-export const threadsStartTurnMutation = (options?: Partial<Options<ThreadsStartTurnData>>): UseMutationOptions<ThreadsStartTurnResponse, ThreadsStartTurnError, Options<ThreadsStartTurnData>> => {
-    const mutationOptions: UseMutationOptions<ThreadsStartTurnResponse, ThreadsStartTurnError, Options<ThreadsStartTurnData>> = {
-        mutationFn: async (fnOptions) => {
-            const { data } = await threadsStartTurn({
-                ...options,
-                ...fnOptions,
-                throwOnError: true
-            });
-            return data;
-        }
-    };
-    return mutationOptions;
-};
-
-/**
- * Send mid-turn user input to an active turn
- */
-export const threadsSteerTurnMutation = (options?: Partial<Options<ThreadsSteerTurnData>>): UseMutationOptions<ThreadsSteerTurnResponse, ThreadsSteerTurnError, Options<ThreadsSteerTurnData>> => {
-    const mutationOptions: UseMutationOptions<ThreadsSteerTurnResponse, ThreadsSteerTurnError, Options<ThreadsSteerTurnData>> = {
-        mutationFn: async (fnOptions) => {
-            const { data } = await threadsSteerTurn({
-                ...options,
-                ...fnOptions,
-                throwOnError: true
-            });
-            return data;
-        }
-    };
-    return mutationOptions;
-};
-
-/**
- * Interrupt an in-progress turn
- */
-export const threadsInterruptTurnMutation = (options?: Partial<Options<ThreadsInterruptTurnData>>): UseMutationOptions<ThreadsInterruptTurnResponse, ThreadsInterruptTurnError, Options<ThreadsInterruptTurnData>> => {
-    const mutationOptions: UseMutationOptions<ThreadsInterruptTurnResponse, ThreadsInterruptTurnError, Options<ThreadsInterruptTurnData>> = {
-        mutationFn: async (fnOptions) => {
-            const { data } = await threadsInterruptTurn({
-                ...options,
-                ...fnOptions,
-                throwOnError: true
-            });
-            return data;
-        }
-    };
-    return mutationOptions;
-};
-
-/**
- * Archive a thread
- */
-export const threadsArchiveThreadMutation = (options?: Partial<Options<ThreadsArchiveThreadData>>): UseMutationOptions<ThreadsArchiveThreadResponse, ThreadsArchiveThreadError, Options<ThreadsArchiveThreadData>> => {
-    const mutationOptions: UseMutationOptions<ThreadsArchiveThreadResponse, ThreadsArchiveThreadError, Options<ThreadsArchiveThreadData>> = {
-        mutationFn: async (fnOptions) => {
-            const { data } = await threadsArchiveThread({
-                ...options,
-                ...fnOptions,
-                throwOnError: true
-            });
-            return data;
-        }
-    };
-    return mutationOptions;
-};
-
-/**
- * Unarchive a thread
- */
-export const threadsUnarchiveThreadMutation = (options?: Partial<Options<ThreadsUnarchiveThreadData>>): UseMutationOptions<ThreadsUnarchiveThreadResponse, ThreadsUnarchiveThreadError, Options<ThreadsUnarchiveThreadData>> => {
-    const mutationOptions: UseMutationOptions<ThreadsUnarchiveThreadResponse, ThreadsUnarchiveThreadError, Options<ThreadsUnarchiveThreadData>> = {
-        mutationFn: async (fnOptions) => {
-            const { data } = await threadsUnarchiveThread({
-                ...options,
-                ...fnOptions,
-                throwOnError: true
-            });
-            return data;
-        }
-    };
-    return mutationOptions;
-};
-
-/**
- * Compact thread context
- */
-export const threadsCompactThreadMutation = (options?: Partial<Options<ThreadsCompactThreadData>>): UseMutationOptions<ThreadsCompactThreadResponse, ThreadsCompactThreadError, Options<ThreadsCompactThreadData>> => {
-    const mutationOptions: UseMutationOptions<ThreadsCompactThreadResponse, ThreadsCompactThreadError, Options<ThreadsCompactThreadData>> = {
-        mutationFn: async (fnOptions) => {
-            const { data } = await threadsCompactThread({
-                ...options,
-                ...fnOptions,
-                throwOnError: true
-            });
-            return data;
-        }
-    };
-    return mutationOptions;
-};
-
-/**
- * Fork a thread
- */
-export const threadsForkThreadMutation = (options?: Partial<Options<ThreadsForkThreadData>>): UseMutationOptions<ThreadsForkThreadResponse, ThreadsForkThreadError, Options<ThreadsForkThreadData>> => {
-    const mutationOptions: UseMutationOptions<ThreadsForkThreadResponse, ThreadsForkThreadError, Options<ThreadsForkThreadData>> = {
-        mutationFn: async (fnOptions) => {
-            const { data } = await threadsForkThread({
-                ...options,
-                ...fnOptions,
-                throwOnError: true
-            });
-            return data;
-        }
-    };
-    return mutationOptions;
-};
-
-/**
- * Rollback turns from a thread
- */
-export const threadsRollbackThreadMutation = (options?: Partial<Options<ThreadsRollbackThreadData>>): UseMutationOptions<ThreadsRollbackThreadResponse, ThreadsRollbackThreadError, Options<ThreadsRollbackThreadData>> => {
-    const mutationOptions: UseMutationOptions<ThreadsRollbackThreadResponse, ThreadsRollbackThreadError, Options<ThreadsRollbackThreadData>> = {
-        mutationFn: async (fnOptions) => {
-            const { data } = await threadsRollbackThread({
-                ...options,
-                ...fnOptions,
-                throwOnError: true
-            });
-            return data;
-        }
-    };
-    return mutationOptions;
-};
-
-/**
- * Set thread name
- */
-export const threadsSetThreadNameMutation = (options?: Partial<Options<ThreadsSetThreadNameData>>): UseMutationOptions<ThreadsSetThreadNameResponse, ThreadsSetThreadNameError, Options<ThreadsSetThreadNameData>> => {
-    const mutationOptions: UseMutationOptions<ThreadsSetThreadNameResponse, ThreadsSetThreadNameError, Options<ThreadsSetThreadNameData>> = {
-        mutationFn: async (fnOptions) => {
-            const { data } = await threadsSetThreadName({
-                ...options,
-                ...fnOptions,
-                throwOnError: true
-            });
-            return data;
-        }
-    };
-    return mutationOptions;
-};
-
-export const pendingApprovalsListPendingQueryKey = (options?: Options<PendingApprovalsListPendingData>) => createQueryKey('pendingApprovalsListPending', options);
-
-/**
- * List pending approval requests
- */
-export const pendingApprovalsListPendingOptions = (options?: Options<PendingApprovalsListPendingData>) => queryOptions<PendingApprovalsListPendingResponse, DefaultError, PendingApprovalsListPendingResponse, ReturnType<typeof pendingApprovalsListPendingQueryKey>>({
-    queryFn: async ({ queryKey, signal }) => {
-        const { data } = await pendingApprovalsListPending({
-            ...options,
-            ...queryKey[0],
-            signal,
-            throwOnError: true
-        });
-        return data;
-    },
-    queryKey: pendingApprovalsListPendingQueryKey(options)
-});
-
-/**
- * Respond to a pending approval request
- */
-export const pendingApprovalsRespondMutation = (options?: Partial<Options<PendingApprovalsRespondData>>): UseMutationOptions<PendingApprovalsRespondResponse, DefaultError, Options<PendingApprovalsRespondData>> => {
-    const mutationOptions: UseMutationOptions<PendingApprovalsRespondResponse, DefaultError, Options<PendingApprovalsRespondData>> = {
-        mutationFn: async (fnOptions) => {
-            const { data } = await pendingApprovalsRespond({
-                ...options,
-                ...fnOptions,
-                throwOnError: true
-            });
-            return data;
-        }
-    };
-    return mutationOptions;
-};
-
-export const tokenUsageReadThreadTokenUsageQueryKey = (options: Options<TokenUsageReadThreadTokenUsageData>) => createQueryKey('tokenUsageReadThreadTokenUsage', options);
-
-/**
- * Read persisted token usage snapshots for a thread
- */
-export const tokenUsageReadThreadTokenUsageOptions = (options: Options<TokenUsageReadThreadTokenUsageData>) => queryOptions<TokenUsageReadThreadTokenUsageResponse, TokenUsageReadThreadTokenUsageError, TokenUsageReadThreadTokenUsageResponse, ReturnType<typeof tokenUsageReadThreadTokenUsageQueryKey>>({
-    queryFn: async ({ queryKey, signal }) => {
-        const { data } = await tokenUsageReadThreadTokenUsage({
-            ...options,
-            ...queryKey[0],
-            signal,
-            throwOnError: true
-        });
-        return data;
-    },
-    queryKey: tokenUsageReadThreadTokenUsageQueryKey(options)
-});
-
-export const pluginsListPluginsQueryKey = (options?: Options<PluginsListPluginsData>) => createQueryKey('pluginsListPlugins', options);
-
-/**
- * List Codex plugin marketplaces
- */
-export const pluginsListPluginsOptions = (options?: Options<PluginsListPluginsData>) => queryOptions<PluginsListPluginsResponse, PluginsListPluginsError, PluginsListPluginsResponse, ReturnType<typeof pluginsListPluginsQueryKey>>({
-    queryFn: async ({ queryKey, signal }) => {
-        const { data } = await pluginsListPlugins({
-            ...options,
-            ...queryKey[0],
-            signal,
-            throwOnError: true
-        });
-        return data;
-    },
-    queryKey: pluginsListPluginsQueryKey(options)
-});
-
-export const pluginsReadPluginQueryKey = (options: Options<PluginsReadPluginData>) => createQueryKey('pluginsReadPlugin', options);
-
-/**
- * Read Codex plugin detail
- */
-export const pluginsReadPluginOptions = (options: Options<PluginsReadPluginData>) => queryOptions<PluginsReadPluginResponse, PluginsReadPluginError, PluginsReadPluginResponse, ReturnType<typeof pluginsReadPluginQueryKey>>({
-    queryFn: async ({ queryKey, signal }) => {
-        const { data } = await pluginsReadPlugin({
-            ...options,
-            ...queryKey[0],
-            signal,
-            throwOnError: true
-        });
-        return data;
-    },
-    queryKey: pluginsReadPluginQueryKey(options)
-});
-
-/**
- * Install Codex plugin
- */
-export const pluginsInstallPluginMutation = (options?: Partial<Options<PluginsInstallPluginData>>): UseMutationOptions<PluginsInstallPluginResponse, PluginsInstallPluginError, Options<PluginsInstallPluginData>> => {
-    const mutationOptions: UseMutationOptions<PluginsInstallPluginResponse, PluginsInstallPluginError, Options<PluginsInstallPluginData>> = {
-        mutationFn: async (fnOptions) => {
-            const { data } = await pluginsInstallPlugin({
-                ...options,
-                ...fnOptions,
-                throwOnError: true
-            });
-            return data;
-        }
-    };
-    return mutationOptions;
-};
-
-/**
- * Uninstall Codex plugin
- */
-export const pluginsUninstallPluginMutation = (options?: Partial<Options<PluginsUninstallPluginData>>): UseMutationOptions<PluginsUninstallPluginResponse, PluginsUninstallPluginError, Options<PluginsUninstallPluginData>> => {
-    const mutationOptions: UseMutationOptions<PluginsUninstallPluginResponse, PluginsUninstallPluginError, Options<PluginsUninstallPluginData>> = {
-        mutationFn: async (fnOptions) => {
-            const { data } = await pluginsUninstallPlugin({
-                ...options,
-                ...fnOptions,
-                throwOnError: true
-            });
-            return data;
-        }
-    };
-    return mutationOptions;
-};
-
-export const onlyOfficeGetConfigQueryKey = (options: Options<OnlyOfficeGetConfigData>) => createQueryKey('onlyOfficeGetConfig', options);
-
-/**
- * Build OnlyOffice editor config for a file
- */
-export const onlyOfficeGetConfigOptions = (options: Options<OnlyOfficeGetConfigData>) => queryOptions<OnlyOfficeGetConfigResponse, OnlyOfficeGetConfigError, OnlyOfficeGetConfigResponse, ReturnType<typeof onlyOfficeGetConfigQueryKey>>({
-    queryFn: async ({ queryKey, signal }) => {
-        const { data } = await onlyOfficeGetConfig({
-            ...options,
-            ...queryKey[0],
-            signal,
-            throwOnError: true
-        });
-        return data;
-    },
-    queryKey: onlyOfficeGetConfigQueryKey(options)
-});
-
-/**
- * OnlyOffice document save callback
- */
-export const onlyOfficeHandleCallbackMutation = (options?: Partial<Options<OnlyOfficeHandleCallbackData>>): UseMutationOptions<OnlyOfficeHandleCallbackResponse, DefaultError, Options<OnlyOfficeHandleCallbackData>> => {
-    const mutationOptions: UseMutationOptions<OnlyOfficeHandleCallbackResponse, DefaultError, Options<OnlyOfficeHandleCallbackData>> = {
-        mutationFn: async (fnOptions) => {
-            const { data } = await onlyOfficeHandleCallback({
-                ...options,
-                ...fnOptions,
-                throwOnError: true
-            });
-            return data;
-        }
-    };
-    return mutationOptions;
-};
-
-export const turnDiffReadThreadTurnDiffsQueryKey = (options: Options<TurnDiffReadThreadTurnDiffsData>) => createQueryKey('turnDiffReadThreadTurnDiffs', options);
-
-/**
- * Read persisted turn-level diffs for a thread
- */
-export const turnDiffReadThreadTurnDiffsOptions = (options: Options<TurnDiffReadThreadTurnDiffsData>) => queryOptions<TurnDiffReadThreadTurnDiffsResponse, TurnDiffReadThreadTurnDiffsError, TurnDiffReadThreadTurnDiffsResponse, ReturnType<typeof turnDiffReadThreadTurnDiffsQueryKey>>({
-    queryFn: async ({ queryKey, signal }) => {
-        const { data } = await turnDiffReadThreadTurnDiffs({
-            ...options,
-            ...queryKey[0],
-            signal,
-            throwOnError: true
-        });
-        return data;
-    },
-    queryKey: turnDiffReadThreadTurnDiffsQueryKey(options)
-});
-
-export const turnErrorsReadThreadTurnErrorsQueryKey = (options: Options<TurnErrorsReadThreadTurnErrorsData>) => createQueryKey('turnErrorsReadThreadTurnErrors', options);
-
-/**
- * Read persisted turn errors for a thread
- */
-export const turnErrorsReadThreadTurnErrorsOptions = (options: Options<TurnErrorsReadThreadTurnErrorsData>) => queryOptions<TurnErrorsReadThreadTurnErrorsResponse, TurnErrorsReadThreadTurnErrorsError, TurnErrorsReadThreadTurnErrorsResponse, ReturnType<typeof turnErrorsReadThreadTurnErrorsQueryKey>>({
-    queryFn: async ({ queryKey, signal }) => {
-        const { data } = await turnErrorsReadThreadTurnErrors({
-            ...options,
-            ...queryKey[0],
-            signal,
-            throwOnError: true
-        });
-        return data;
-    },
-    queryKey: turnErrorsReadThreadTurnErrorsQueryKey(options)
-});
-
-export const modelsListModelsQueryKey = (options?: Options<ModelsListModelsData>) => createQueryKey('modelsListModels', options);
-
-/**
- * List available models
- */
-export const modelsListModelsOptions = (options?: Options<ModelsListModelsData>) => queryOptions<ModelsListModelsResponse, ModelsListModelsError, ModelsListModelsResponse, ReturnType<typeof modelsListModelsQueryKey>>({
-    queryFn: async ({ queryKey, signal }) => {
-        const { data } = await modelsListModels({
-            ...options,
-            ...queryKey[0],
-            signal,
-            throwOnError: true
-        });
-        return data;
-    },
-    queryKey: modelsListModelsQueryKey(options)
-});
-
-export const modelsListModelsInfiniteQueryKey = (options?: Options<ModelsListModelsData>): QueryKey<Options<ModelsListModelsData>> => createQueryKey('modelsListModels', options, true);
-
-/**
- * List available models
- */
-export const modelsListModelsInfiniteOptions = (options?: Options<ModelsListModelsData>) => infiniteQueryOptions<ModelsListModelsResponse, ModelsListModelsError, InfiniteData<ModelsListModelsResponse>, QueryKey<Options<ModelsListModelsData>>, string | Pick<QueryKey<Options<ModelsListModelsData>>[0], 'body' | 'headers' | 'path' | 'query'>>(
-// @ts-ignore
-{
-    queryFn: async ({ pageParam, queryKey, signal }) => {
-        // @ts-ignore
-        const page: Pick<QueryKey<Options<ModelsListModelsData>>[0], 'body' | 'headers' | 'path' | 'query'> = typeof pageParam === 'object' ? pageParam : {
-            query: {
-                cursor: pageParam
-            }
-        };
-        const params = createInfiniteParams(queryKey, page);
-        const { data } = await modelsListModels({
-            ...options,
-            ...params,
-            signal,
-            throwOnError: true
-        });
-        return data;
-    },
-    queryKey: modelsListModelsInfiniteQueryKey(options)
-});
-
-export const logsListLogsQueryKey = (options?: Options<LogsListLogsData>) => createQueryKey('logsListLogs', options);
-
-/**
- * List structured application logs
- */
-export const logsListLogsOptions = (options?: Options<LogsListLogsData>) => queryOptions<LogsListLogsResponse, LogsListLogsError, LogsListLogsResponse, ReturnType<typeof logsListLogsQueryKey>>({
-    queryFn: async ({ queryKey, signal }) => {
-        const { data } = await logsListLogs({
-            ...options,
-            ...queryKey[0],
-            signal,
-            throwOnError: true
-        });
-        return data;
-    },
-    queryKey: logsListLogsQueryKey(options)
-});
-
-export const logsListLogsInfiniteQueryKey = (options?: Options<LogsListLogsData>): QueryKey<Options<LogsListLogsData>> => createQueryKey('logsListLogs', options, true);
-
-/**
- * List structured application logs
- */
-export const logsListLogsInfiniteOptions = (options?: Options<LogsListLogsData>) => infiniteQueryOptions<LogsListLogsResponse, LogsListLogsError, InfiniteData<LogsListLogsResponse>, QueryKey<Options<LogsListLogsData>>, number | Pick<QueryKey<Options<LogsListLogsData>>[0], 'body' | 'headers' | 'path' | 'query'>>(
-// @ts-ignore
-{
-    queryFn: async ({ pageParam, queryKey, signal }) => {
-        // @ts-ignore
-        const page: Pick<QueryKey<Options<LogsListLogsData>>[0], 'body' | 'headers' | 'path' | 'query'> = typeof pageParam === 'object' ? pageParam : {
+        const page: Pick<QueryKey<Options<ListLogsData>>[0], 'body' | 'headers' | 'path' | 'query'> = typeof pageParam === 'object' ? pageParam : {
             query: {
                 offset: pageParam
             }
         };
         const params = createInfiniteParams(queryKey, page);
-        const { data } = await logsListLogs({
+        const { data } = await listLogs({
             ...options,
             ...params,
             signal,
@@ -1386,17 +395,14 @@ export const logsListLogsInfiniteOptions = (options?: Options<LogsListLogsData>)
         });
         return data;
     },
-    queryKey: logsListLogsInfiniteQueryKey(options)
+    queryKey: listLogsInfiniteQueryKey(options)
 });
 
-export const logsExportDiagnosticsQueryKey = (options?: Options<LogsExportDiagnosticsData>) => createQueryKey('logsExportDiagnostics', options);
+export const exportDiagnosticsQueryKey = (options?: Options<ExportDiagnosticsData>) => createQueryKey('exportDiagnostics', options);
 
-/**
- * Export sanitized diagnostics bundle
- */
-export const logsExportDiagnosticsOptions = (options?: Options<LogsExportDiagnosticsData>) => queryOptions<LogsExportDiagnosticsResponse, LogsExportDiagnosticsError, LogsExportDiagnosticsResponse, ReturnType<typeof logsExportDiagnosticsQueryKey>>({
+export const exportDiagnosticsOptions = (options?: Options<ExportDiagnosticsData>) => queryOptions<ExportDiagnosticsResponse, ExportDiagnosticsError, ExportDiagnosticsResponse, ReturnType<typeof exportDiagnosticsQueryKey>>({
     queryFn: async ({ queryKey, signal }) => {
-        const { data } = await logsExportDiagnostics({
+        const { data } = await exportDiagnostics({
             ...options,
             ...queryKey[0],
             signal,
@@ -1404,61 +410,13 @@ export const logsExportDiagnosticsOptions = (options?: Options<LogsExportDiagnos
         });
         return data;
     },
-    queryKey: logsExportDiagnosticsQueryKey(options)
+    queryKey: exportDiagnosticsQueryKey(options)
 });
 
-export const mcpServersListServersQueryKey = (options?: Options<McpServersListServersData>) => createQueryKey('mcpServersListServers', options);
-
-/**
- * List MCP server status
- */
-export const mcpServersListServersOptions = (options?: Options<McpServersListServersData>) => queryOptions<McpServersListServersResponse, McpServersListServersError, McpServersListServersResponse, ReturnType<typeof mcpServersListServersQueryKey>>({
-    queryFn: async ({ queryKey, signal }) => {
-        const { data } = await mcpServersListServers({
-            ...options,
-            ...queryKey[0],
-            signal,
-            throwOnError: true
-        });
-        return data;
-    },
-    queryKey: mcpServersListServersQueryKey(options)
-});
-
-export const mcpServersListServersInfiniteQueryKey = (options?: Options<McpServersListServersData>): QueryKey<Options<McpServersListServersData>> => createQueryKey('mcpServersListServers', options, true);
-
-/**
- * List MCP server status
- */
-export const mcpServersListServersInfiniteOptions = (options?: Options<McpServersListServersData>) => infiniteQueryOptions<McpServersListServersResponse, McpServersListServersError, InfiniteData<McpServersListServersResponse>, QueryKey<Options<McpServersListServersData>>, string | Pick<QueryKey<Options<McpServersListServersData>>[0], 'body' | 'headers' | 'path' | 'query'>>(
-// @ts-ignore
-{
-    queryFn: async ({ pageParam, queryKey, signal }) => {
-        // @ts-ignore
-        const page: Pick<QueryKey<Options<McpServersListServersData>>[0], 'body' | 'headers' | 'path' | 'query'> = typeof pageParam === 'object' ? pageParam : {
-            query: {
-                cursor: pageParam
-            }
-        };
-        const params = createInfiniteParams(queryKey, page);
-        const { data } = await mcpServersListServers({
-            ...options,
-            ...params,
-            signal,
-            throwOnError: true
-        });
-        return data;
-    },
-    queryKey: mcpServersListServersInfiniteQueryKey(options)
-});
-
-/**
- * Reload all MCP servers
- */
-export const mcpServersReloadAllMutation = (options?: Partial<Options<McpServersReloadAllData>>): UseMutationOptions<McpServersReloadAllResponse, McpServersReloadAllError, Options<McpServersReloadAllData>> => {
-    const mutationOptions: UseMutationOptions<McpServersReloadAllResponse, McpServersReloadAllError, Options<McpServersReloadAllData>> = {
+export const handleCallbackMutation = (options?: Partial<Options<HandleCallbackData>>): UseMutationOptions<HandleCallbackResponse, HandleCallbackError, Options<HandleCallbackData>> => {
+    const mutationOptions: UseMutationOptions<HandleCallbackResponse, HandleCallbackError, Options<HandleCallbackData>> = {
         mutationFn: async (fnOptions) => {
-            const { data } = await mcpServersReloadAll({
+            const { data } = await handleCallback({
                 ...options,
                 ...fnOptions,
                 throwOnError: true
@@ -1469,13 +427,40 @@ export const mcpServersReloadAllMutation = (options?: Partial<Options<McpServers
     return mutationOptions;
 };
 
-/**
- * Start MCP server OAuth login
- */
-export const mcpServersStartOauthLoginMutation = (options?: Partial<Options<McpServersStartOauthLoginData>>): UseMutationOptions<McpServersStartOauthLoginResponse, McpServersStartOauthLoginError, Options<McpServersStartOauthLoginData>> => {
-    const mutationOptions: UseMutationOptions<McpServersStartOauthLoginResponse, McpServersStartOauthLoginError, Options<McpServersStartOauthLoginData>> = {
+export const getConfigQueryKey = (options?: Options<GetConfigData>) => createQueryKey('getConfig', options);
+
+export const getConfigOptions = (options?: Options<GetConfigData>) => queryOptions<GetConfigResponse, GetConfigError, GetConfigResponse, ReturnType<typeof getConfigQueryKey>>({
+    queryFn: async ({ queryKey, signal }) => {
+        const { data } = await getConfig({
+            ...options,
+            ...queryKey[0],
+            signal,
+            throwOnError: true
+        });
+        return data;
+    },
+    queryKey: getConfigQueryKey(options)
+});
+
+export const listQueryKey = (options?: Options<ListData>) => createQueryKey('list', options);
+
+export const listOptions = (options?: Options<ListData>) => queryOptions<ListResponse, DefaultError, ListResponse, ReturnType<typeof listQueryKey>>({
+    queryFn: async ({ queryKey, signal }) => {
+        const { data } = await list({
+            ...options,
+            ...queryKey[0],
+            signal,
+            throwOnError: true
+        });
+        return data;
+    },
+    queryKey: listQueryKey(options)
+});
+
+export const updateBatchMutation = (options?: Partial<Options<UpdateBatchData>>): UseMutationOptions<UpdateBatchResponse, DefaultError, Options<UpdateBatchData>> => {
+    const mutationOptions: UseMutationOptions<UpdateBatchResponse, DefaultError, Options<UpdateBatchData>> = {
         mutationFn: async (fnOptions) => {
-            const { data } = await mcpServersStartOauthLogin({
+            const { data } = await updateBatch({
                 ...options,
                 ...fnOptions,
                 throwOnError: true
@@ -1485,3 +470,66 @@ export const mcpServersStartOauthLoginMutation = (options?: Partial<Options<McpS
     };
     return mutationOptions;
 };
+
+export const deleteOneMutation = (options?: Partial<Options<DeleteOneData>>): UseMutationOptions<DeleteOneResponse, DefaultError, Options<DeleteOneData>> => {
+    const mutationOptions: UseMutationOptions<DeleteOneResponse, DefaultError, Options<DeleteOneData>> = {
+        mutationFn: async (fnOptions) => {
+            const { data } = await deleteOne({
+                ...options,
+                ...fnOptions,
+                throwOnError: true
+            });
+            return data;
+        }
+    };
+    return mutationOptions;
+};
+
+export const getOneQueryKey = (options: Options<GetOneData>) => createQueryKey('getOne', options);
+
+export const getOneOptions = (options: Options<GetOneData>) => queryOptions<GetOneResponse, DefaultError, GetOneResponse, ReturnType<typeof getOneQueryKey>>({
+    queryFn: async ({ queryKey, signal }) => {
+        const { data } = await getOne({
+            ...options,
+            ...queryKey[0],
+            signal,
+            throwOnError: true
+        });
+        return data;
+    },
+    queryKey: getOneQueryKey(options)
+});
+
+export const updateOneMutation = (options?: Partial<Options<UpdateOneData>>): UseMutationOptions<UpdateOneResponse, DefaultError, Options<UpdateOneData>> => {
+    const mutationOptions: UseMutationOptions<UpdateOneResponse, DefaultError, Options<UpdateOneData>> = {
+        mutationFn: async (fnOptions) => {
+            const { data } = await updateOne({
+                ...options,
+                ...fnOptions,
+                throwOnError: true
+            });
+            return data;
+        }
+    };
+    return mutationOptions;
+};
+
+export const pingQueryKey = (options?: Options<PingData>) => createQueryKey('ping', options);
+
+/**
+ * 健康检查 / 探针。返回 `{ "ok": true }`。
+ *
+ * 同时绑定到 `GET /api/status` 与 `GET /api/_ping`（此处文档只登记前者）。
+ */
+export const pingOptions = (options?: Options<PingData>) => queryOptions<PingResponse, PingError, PingResponse, ReturnType<typeof pingQueryKey>>({
+    queryFn: async ({ queryKey, signal }) => {
+        const { data } = await ping({
+            ...options,
+            ...queryKey[0],
+            signal,
+            throwOnError: true
+        });
+        return data;
+    },
+    queryKey: pingQueryKey(options)
+});

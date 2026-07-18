@@ -1,20 +1,25 @@
 /** Thin adapter over generated SDK for runtime settings endpoints. */
 import {
-  settingsListSettings,
-  settingsUpdateSetting,
-  settingsResetSetting,
+  list as settingsListSettings,
+  updateOne as settingsUpdateSetting,
+  deleteOne as settingsResetSetting,
 } from '@/generated/api/sdk.gen';
-import type {
-  SettingDto,
-  SettingConstraintsDto,
-  UpdateSettingDto,
-} from '@/generated/api/types.gen';
+import type { SettingDto } from '@/generated/api/types.gen';
+
+// TODO: SettingConstraintsDto / UpdateSettingDto 来自旧 OpenAPI SDK,已下线。
+//       当前用本地最小形状替代。
+export interface SettingConstraints {
+  [key: string]: unknown;
+}
+export interface UpdateSettingDto {
+  value: unknown;
+}
 
 export type SettingType = SettingDto['type'];
 export type SettingCategory = SettingDto['category'];
 export type SettingSource = SettingDto['source'];
 export type SettingValue = SettingDto['value'];
-export type SettingConstraints = SettingConstraintsDto;
+export type SettingConstraintsAlias = SettingConstraints;
 
 /** Frontend-friendly alias for the generated SettingDto. */
 export type RuntimeSetting = SettingDto;

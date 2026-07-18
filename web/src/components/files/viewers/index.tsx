@@ -4,7 +4,7 @@
  */
 import { useQuery } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
-import { settingsListSettings } from '@/generated/api/sdk.gen';
+import { list as settingsListSettings } from '@/generated/api/sdk.gen';
 import { getFileCategory } from '@/lib/file-category';
 import { ArchiveViewer } from './archive-viewer';
 import { AudioViewer } from './audio-viewer';
@@ -81,7 +81,7 @@ function useOnlyOfficeUrl(): string | null {
         query: { category: 'general' },
         throwOnError: true,
       });
-      return data.settings;
+      return data.settings as Array<{ key: string; value: unknown }>;
     },
     staleTime: 30_000,
   });

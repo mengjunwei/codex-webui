@@ -9,7 +9,8 @@ import { useConnectionStore } from '../stores/connection-store';
 import { useTimelineStore } from '../stores/timeline-store';
 import { showSnackbar } from '@/stores/snackbar-store';
 import { handleNotification, type NotificationContext } from './notification-handlers';
-import { tokenUsageReadThreadTokenUsage, turnDiffReadThreadTurnDiffs, turnErrorsReadThreadTurnErrors, threadsResumeThread } from '@/generated/api/sdk.gen';
+import { threadsApi, tokenUsageApi, turnDiffApi, turnErrorApi, type TokenUsageDto, type TurnDiffDto, type TurnErrorDto } from '@/lib/mt-client';
+import type { ThreadStatusType } from '@/types/codex-notifications';
 import { parseAvailableDecisions, parseStringArray, parseNetworkAmendments } from '@/lib/approval-parsers';
 import { userInputFromSocket } from '@/lib/user-input-parsers';
 import i18n from '@/i18n';
@@ -169,28 +170,29 @@ export function useCodexSocket(enabled = true) {
           'info',
         );
         // Restore full thread state via deduped resume, then hydrate dependent data sequentially.
-        void threadsResumeThread({ path: { threadId } })
-          .then(async ({ data }) => {
-            if (!data) return;
-            store.hydrateTimelineForThread(threadId, data.thread.turns, data.cwd);
-            store.setThreadStatusForThread(threadId, data.thread.status);
-            const activeTurn = data.thread.turns?.find((t: { status?: string }) => t.status === 'inProgress');
+        void threadsApi.invoke(threadId, { method: 'thread/resume' })
+          .then(async (data: unknown) => {
+            const result = data as { thread?: { turns?: { id?: string; status?: string }[]; status?: unknown }; cwd?: string } | undefined;
+            if (!result) return;
+            store.hydrateTimelineForThread(threadId, result.thread?.turns ?? [], result.cwd);
+            if (result.thread?.status) store.setThreadStatusForThread(threadId, result.thread.status as ThreadStatusType);
+            const activeTurn = result.thread?.turns?.find((t: { status?: string }) => t.status === 'inProgress');
             store.setActiveTurnIdForThread(threadId, activeTurn?.id ?? null);
             store.setLoadingForThread(threadId, Boolean(activeTurn));
             // Hydrate after timeline is in place to avoid race.
             const [tokenRes, diffRes, errorRes] = await Promise.allSettled([
-              tokenUsageReadThreadTokenUsage({ path: { threadId } }),
-              turnDiffReadThreadTurnDiffs({ path: { threadId } }),
-              turnErrorsReadThreadTurnErrors({ path: { threadId } }),
+              tokenUsageApi.list(threadId),
+              turnDiffApi.list(threadId),
+              turnErrorApi.list(threadId),
             ]);
-            if (tokenRes.status === 'fulfilled' && tokenRes.value.data) {
-              store.hydrateTokenUsageForThread(threadId, tokenRes.value.data.turns);
+            if (tokenRes.status === 'fulfilled' && tokenRes.value) {
+              store.hydrateTokenUsageForThread(threadId, (tokenRes.value as TokenUsageDto[]).map(t => ({ turnId: t.turn_id, usage: t as unknown as import('@/types/codex-notifications').ThreadTokenUsage })));
             }
-            if (diffRes.status === 'fulfilled' && diffRes.value.data) {
-              store.hydrateTurnDiffsForThread(threadId, diffRes.value.data.turns);
+            if (diffRes.status === 'fulfilled' && diffRes.value) {
+              store.hydrateTurnDiffsForThread(threadId, (diffRes.value as TurnDiffDto[]).map(d => ({ turnId: d.turn_id, diff: d.diff })));
             }
-            if (errorRes.status === 'fulfilled' && errorRes.value.data) {
-              store.hydrateTurnErrorsForThread(threadId, errorRes.value.data.errors);
+            if (errorRes.status === 'fulfilled' && errorRes.value) {
+              store.hydrateTurnErrorsForThread(threadId, (errorRes.value as TurnErrorDto[]).map(e => ({ turnId: e.turn_id, message: e.message })));
             }
           })
           .catch(() =>

@@ -1,7 +1,6 @@
 import { useState } from 'react';
 import { Activity, Check, Edit3, EllipsisVertical, Globe, Menu, Moon, PanelLeftOpen, Settings, Sun, X } from 'lucide-react';
 import { useNavigate, useRouterState } from '@tanstack/react-router';
-import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
@@ -17,16 +16,10 @@ import {
   TooltipContent,
   TooltipTrigger,
 } from '@/components/ui/tooltip';
-import {
-  threadsListThreadsQueryKey,
-  threadsSetThreadNameMutation,
-} from '@/generated/api/@tanstack/react-query.gen';
 import { useBreakpoint } from '@/hooks/use-breakpoint';
 import { useConnectionStore } from '@/stores/connection-store';
 import { useLayoutStore } from '@/stores/layout-store';
 import { useTimelineStore } from '@/stores/timeline-store';
-import { AccountRateLimitBadge } from './account-rate-limit-badge';
-import { McpStatusBadge } from './mcp-status-badge';
 
 /** Mobile overflow menu — closes after each action. */
 function MobileOverflowMenu({
@@ -82,10 +75,8 @@ export function ChatHeader({ dark, onToggleDark, onToggleDiagnostics }: Props) {
   const threadId = useTimelineStore((s) => s.threadId);
   const threadTitle = useTimelineStore((s) => s.threadTitle);
   const threadMode = useTimelineStore((s) => s.threadMode);
-  const setThreadTitle = useTimelineStore((s) => s.setThreadTitle);
   const [editing, setEditing] = useState(false);
   const [draftName, setDraftName] = useState('');
-  const queryClient = useQueryClient();
 
   // ── Responsive ──────────────────────────────────────────────────────
   const breakpoint = useBreakpoint();
@@ -98,14 +89,11 @@ export function ChatHeader({ dark, onToggleDark, onToggleDiagnostics }: Props) {
     select: (s) => s.location.pathname.startsWith('/diagnostics'),
   });
 
-  const renameThread = useMutation({
-    ...threadsSetThreadNameMutation(),
-    onSuccess: (_res, variables) => {
-      setThreadTitle(variables.body.name.trim());
-      setEditing(false);
-      void queryClient.invalidateQueries({ queryKey: threadsListThreadsQueryKey() });
-    },
-  });
+  // TODO: threadsSetThreadNameMutation / threadsListThreadsQueryKey 已下线,待迁移到新 mt-client API
+  const renameThread = {
+    mutate: (_args: { path: { threadId: string }; body: { name: string } }) => {},
+    isPending: false,
+  };
 
   const toggleLanguage = () => {
     const next = i18n.language.startsWith('zh') ? 'en' : 'zh-CN';
@@ -215,8 +203,7 @@ export function ChatHeader({ dark, onToggleDark, onToggleDiagnostics }: Props) {
           )}
         </div>
         {/* Always visible badges */}
-        <McpStatusBadge mode="header" />
-        <span className="hidden sm:inline-flex"><AccountRateLimitBadge /></span>
+        {/* McpStatusBadge / AccountRateLimitBadge 已下线 */}
         <Badge
           variant={connected ? 'default' : 'secondary'}
           className="text-xs transition-colors duration-300"

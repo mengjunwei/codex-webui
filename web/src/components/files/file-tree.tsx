@@ -15,7 +15,7 @@ import { useTranslation } from 'react-i18next';
 import { DragDropProvider, useDraggable, useDroppable } from '@dnd-kit/react';
 import { Feedback } from '@dnd-kit/dom';
 import { ScrollArea } from '@/components/ui/scroll-area';
-import { filesReadTreeOptions } from '@/generated/api/@tanstack/react-query.gen';
+import { readTreeOptions } from '@/generated/api/@tanstack/react-query.gen';
 import { useFilesStore } from '@/stores/files-store';
 import { cn } from '@/lib/utils';
 import { useFileOperations } from '@/hooks/use-file-operations';
@@ -178,7 +178,7 @@ function FlatDirectory({ dirPath, selectedFile, onFileClick, onDirClick, openDia
   const { t } = useTranslation();
 
   const { data: entries, isLoading } = useQuery({
-    ...filesReadTreeOptions({ query: { root: dirPath } }),
+    ...readTreeOptions({ query: { root: dirPath } }),
   });
 
   if (isLoading) {

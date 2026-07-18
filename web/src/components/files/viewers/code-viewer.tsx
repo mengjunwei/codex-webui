@@ -9,9 +9,9 @@ import { useQuery, useMutation, useQueryClient, keepPreviousData } from '@tansta
 import { useTranslation } from 'react-i18next';
 import { Button } from '@/components/ui/button';
 import {
-  filesReadFileOptions,
-  filesWriteFileMutation,
-  filesReadFileQueryKey,
+  readFileOptions,
+  writeFileMutation,
+  readFileQueryKey,
 } from '@/generated/api/@tanstack/react-query.gen';
 import { useFilesStore } from '@/stores/files-store';
 
@@ -27,16 +27,16 @@ export function CodeViewer({ filePath }: Props) {
   const editorRef = useRef<Parameters<OnMount>[0] | null>(null);
 
   const { data: fileData, isLoading } = useQuery({
-    ...filesReadFileOptions({ query: { path: filePath } }),
+    ...readFileOptions({ query: { path: filePath } }),
     placeholderData: keepPreviousData,
   });
 
   const writeFile = useMutation({
-    ...filesWriteFileMutation(),
+    ...writeFileMutation(),
     onSuccess: (res) => {
       setFileMtime(res.mtime);
       void queryClient.invalidateQueries({
-        queryKey: filesReadFileQueryKey({ query: { path: filePath } }),
+        queryKey: readFileQueryKey({ query: { path: filePath } }),
       });
     },
   });
@@ -52,7 +52,7 @@ export function CodeViewer({ filePath }: Props) {
         body: {
           path: filePath,
           content: value,
-          expectedMtime: fileMtime ?? undefined,
+          expected_mtime: fileMtime ?? undefined,
         },
       });
     }

@@ -1,13 +1,26 @@
 /**
  * Parsers for Codex item/tool/requestUserInput server requests.
  * Defensively handles untrusted payloads to prevent UI crashes.
+ *
+ * TODO: PendingServerRequestDto 来自旧 OpenAPI SDK,已下线。
+ *       这里用本地最小形状替代,字段与旧类型保持一致。
  */
-import type { PendingServerRequestDto } from '@/generated/api';
 import type {
   UserInputOption,
   UserInputQuestion,
   UserInputRequest,
 } from '@/types/approval';
+
+/** 本地最小形状,替代已下线的 PendingServerRequestDto。 */
+interface PendingServerRequestDto {
+  requestId: string | number;
+  threadId: string;
+  turnId?: string;
+  itemId?: string;
+  status?: string;
+  method: string;
+  params: Record<string, unknown>;
+}
 
 /** Parses one option, returning null for malformed data. */
 function parseOption(value: unknown): UserInputOption | null {

@@ -4,7 +4,7 @@
  */
 import { useEffect, useRef, useState, useCallback } from 'react';
 import { useParams, useNavigate } from '@tanstack/react-router';
-import { useMutation, useQueryClient } from '@tanstack/react-query';
+import { useMutation } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 import { ChatTimeline } from '@/components/chat/chat-timeline';
 import { ChatInput, type ChatInputHandle } from '@/components/chat/chat-input';
@@ -22,11 +22,7 @@ import {
 import { useBreakpoint } from '@/hooks/use-breakpoint';
 import { useTimelineStore } from '@/stores/timeline-store';
 import { showSnackbar } from '@/stores/snackbar-store';
-import {
-  threadsResumeThreadMutation,
-  threadsReadThreadOptions,
-} from '@/generated/api/@tanstack/react-query.gen';
-import { tokenUsageReadThreadTokenUsage, turnDiffReadThreadTurnDiffs, turnErrorsReadThreadTurnErrors } from '@/generated/api/sdk.gen';
+import { threadsApi, tokenUsageApi, turnDiffApi, turnErrorApi } from '@/lib/mt-client';
 
 /** Extracts a display label from a thread DTO. */
 function threadLabel(thread: { name?: string | null; preview?: string | null }): string {
@@ -37,7 +33,6 @@ export function ThreadView() {
   const { threadId } = useParams({ strict: false }) as { threadId: string };
   const { t } = useTranslation();
   const navigate = useNavigate();
-  const queryClient = useQueryClient();
   const chatInputRef = useRef<ChatInputHandle>(null);
   const [sessionPanelOpen, setSessionPanelOpen] = useState(false);
 
@@ -74,38 +69,80 @@ export function ThreadView() {
     setPendingOpenFile(null);
   }, []);
 
+  /** 加载 token-usage / turn-diffs / turn-errors 补充数据 */
+  const loadSupplementaryData = useCallback((tid: string) => {
+    void tokenUsageApi
+      .get(tid)
+      .then((rows) => {
+        if (rows.length > 0) {
+          hydrateTokenUsageForThread(
+            tid,
+            rows.map((r) => ({
+              turnId: r.turn_id,
+              usage: {
+                total: {
+                  totalTokens: r.total_tokens,
+                  inputTokens: r.input_tokens,
+                  outputTokens: r.output_tokens,
+                  cachedInputTokens: r.cached_input_tokens,
+                  reasoningOutputTokens: r.reasoning_output_tokens,
+                },
+                last: {
+                  totalTokens: r.total_tokens,
+                  inputTokens: r.input_tokens,
+                  outputTokens: r.output_tokens,
+                  cachedInputTokens: r.cached_input_tokens,
+                  reasoningOutputTokens: r.reasoning_output_tokens,
+                },
+                modelContextWindow: r.model_context_window ?? 0,
+              } as any,
+            })),
+          );
+        }
+      })
+      .catch(() => undefined);
+    void turnDiffApi
+      .list(tid)
+      .then((rows) => {
+        if (rows.length > 0) {
+          hydrateTurnDiffsForThread(tid, rows.map((r) => ({ turnId: r.turn_id, diff: r.diff })));
+        }
+      })
+      .catch(() => undefined);
+    void turnErrorApi
+      .list(tid)
+      .then((rows) => {
+        if (rows.length > 0) {
+          hydrateTurnErrorsForThread(tid, rows.map((r) => ({ turnId: r.turn_id, message: r.message })));
+        }
+      })
+      .catch(() => undefined);
+  }, [hydrateTokenUsageForThread, hydrateTurnDiffsForThread, hydrateTurnErrorsForThread]);
+
   const resumeThread = useMutation({
-    ...threadsResumeThreadMutation(),
-    onSuccess: (res) => {
+    mutationFn: (threadId: string) =>
+      threadsApi.invoke(threadId, { method: 'thread/resume' }),
+    onSuccess: (res: any) => {
       const tid = res.thread.id;
       const title = threadLabel(res.thread);
       setThreadTitleForThread(tid, title);
       hydrateTimelineForThread(tid, res.thread.turns, res.cwd);
       // Restore active turn state so sidebar shows loading and input stays in steer mode.
       setThreadStatusForThread(tid, res.thread.status);
-      const activeTurn = res.thread.turns.find((t) => t.status === 'inProgress');
+      const activeTurn = res.thread.turns.find((t: any) => t.status === 'inProgress');
       if (activeTurn) {
         setActiveTurnIdForThread(tid, activeTurn.id);
         setLoadingForThread(tid, true);
       } else {
         setLoadingForThread(tid, false);
       }
-      void tokenUsageReadThreadTokenUsage({ path: { threadId: tid } })
-        .then(({ data }) => data && hydrateTokenUsageForThread(tid, data.turns))
-        .catch(() => undefined);
-      void turnDiffReadThreadTurnDiffs({ path: { threadId: tid } })
-        .then(({ data }) => data && hydrateTurnDiffsForThread(tid, data.turns))
-        .catch(() => undefined);
-      void turnErrorsReadThreadTurnErrors({ path: { threadId: tid } })
-        .then(({ data }) => data && hydrateTurnErrorsForThread(tid, data.errors))
-        .catch(() => undefined);
+      loadSupplementaryData(tid);
     },
-    onError: (_err, vars) => {
-      const failedId = vars.path.threadId;
-      setLoadingForThread(failedId, false);
+    onError: (_err, threadId) => {
+      setLoadingForThread(threadId, false);
       // Only attempt archived read if this thread is still selected.
-      if (useTimelineStore.getState().threadId === failedId) {
-        void tryReadArchived(failedId);
+      if (useTimelineStore.getState().threadId === threadId) {
+        void tryReadArchived(threadId);
       }
     },
   });
@@ -113,24 +150,11 @@ export function ThreadView() {
   /** Fallback: try to read the thread as an archived snapshot. */
   const tryReadArchived = async (targetId: string) => {
     try {
-      const res = await queryClient.fetchQuery(
-        threadsReadThreadOptions({
-          path: { threadId: targetId },
-          query: { includeTurns: true },
-        }),
-      );
+      const res: any = await threadsApi.invoke(targetId, { method: 'thread/read', params: { includeTurns: true } });
       // Guard: user may have navigated away during the fetch.
       if (useTimelineStore.getState().threadId !== targetId) return;
       setReadOnlyThread(res.thread);
-      void tokenUsageReadThreadTokenUsage({ path: { threadId: targetId } })
-        .then(({ data }) => data && hydrateTokenUsageForThread(targetId, data.turns))
-        .catch(() => undefined);
-      void turnDiffReadThreadTurnDiffs({ path: { threadId: targetId } })
-        .then(({ data }) => data && hydrateTurnDiffsForThread(targetId, data.turns))
-        .catch(() => undefined);
-      void turnErrorsReadThreadTurnErrors({ path: { threadId: targetId } })
-        .then(({ data }) => data && hydrateTurnErrorsForThread(targetId, data.errors))
-        .catch(() => undefined);
+      loadSupplementaryData(targetId);
     } catch {
       if (useTimelineStore.getState().threadId !== targetId) return;
       showSnackbar(t('Thread not found or cannot be opened.'), 'error');
@@ -142,7 +166,7 @@ export function ThreadView() {
   useEffect(() => {
     setActiveThread(threadId);
     setLoadingForThread(threadId, true);
-    resumeThread.mutate({ path: { threadId } });
+    resumeThread.mutate(threadId);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [threadId]);
 

@@ -3,15 +3,15 @@ import { useMemo, useState } from 'react';
 import { Download, RefreshCw, Copy } from 'lucide-react';
 import { useQuery } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
-import { logsListLogsOptions } from '@/generated/api/@tanstack/react-query.gen';
-import type { LogEntryDto, LogsListLogsData } from '@/generated/api';
-import { logsExportDiagnostics } from '@/generated/api';
+import { listLogsOptions } from '@/generated/api/@tanstack/react-query.gen';
+import type { LogEntry, ListLogsData } from '@/generated/api';
+import { exportDiagnostics } from '@/generated/api';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { ScrollArea } from '@/components/ui/scroll-area';
 
-type LogLevel = NonNullable<NonNullable<LogsListLogsData['query']>['level']>;
+type LogLevel = NonNullable<NonNullable<ListLogsData['query']>['level']>;
 
 const LEVELS: Array<'' | LogLevel> = ['', 'trace', 'debug', 'info', 'warn', 'error', 'fatal'];
 const PAGE_SIZE = 50;
@@ -24,12 +24,12 @@ export function DiagnosticsPanel() {
   const [offset, setOffset] = useState(0);
 
   const query = useQuery(
-    logsListLogsOptions({
+    listLogsOptions({
       query: {
         level: (level || undefined) as LogLevel | undefined,
         source: source || undefined,
-        offset,
-        limit: PAGE_SIZE,
+        offset: String(offset),
+        limit: String(PAGE_SIZE),
       },
     }),
   );
@@ -44,12 +44,12 @@ export function DiagnosticsPanel() {
   }, [offset, query.data, total]);
 
   const handleExport = async () => {
-    const { data: bundle } = await logsExportDiagnostics({ throwOnError: true });
+    const { data: bundle } = await exportDiagnostics({ throwOnError: true });
     downloadJson(bundle, `codex-webui-diagnostics-${bundle.exportedAt}.json`);
   };
 
   const handleCopyExport = async () => {
-    const { data: bundle } = await logsExportDiagnostics({ throwOnError: true });
+    const { data: bundle } = await exportDiagnostics({ throwOnError: true });
     await navigator.clipboard.writeText(JSON.stringify(bundle, null, 2));
   };
 
@@ -155,7 +155,7 @@ export function DiagnosticsPanel() {
   );
 }
 
-function LogEntryDtoRow({ entry }: { entry: LogEntryDto }) {
+function LogEntryDtoRow({ entry }: { entry: LogEntry }) {
   return (
     <article className="space-y-2 px-4 py-3 text-sm">
       <div className="flex flex-wrap items-center gap-2">

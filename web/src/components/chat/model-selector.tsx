@@ -1,9 +1,11 @@
 /**
  * Model and reasoning effort selector for the chat input area.
  * Displays current model + effort as a compact badge, opens a popover to change.
+ *
+ * TODO: codexStatusGetStatusOptions / modelsListModelsOptions 已下线,
+ *       待迁移到新 mt-client API。当前返回空数据。
  */
 import { Bot, ChevronDown } from 'lucide-react';
-import { useQuery } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 import { Button } from '@/components/ui/button';
 import {
@@ -11,11 +13,6 @@ import {
   PopoverContent,
   PopoverTrigger,
 } from '@/components/ui/popover';
-import {
-  codexStatusGetStatusOptions,
-  modelsListModelsOptions,
-} from '@/generated/api/@tanstack/react-query.gen';
-import type { ModelDto } from '@/generated/api';
 import { useModelStore } from '@/stores/model-store';
 import { cn } from '@/lib/utils';
 
@@ -31,8 +28,18 @@ const DEFAULT_EFFORTS: Array<{ reasoningEffort: ReasoningEffort }> = [
   { reasoningEffort: 'xhigh' },
 ];
 
+interface LocalModelDto {
+  id: string;
+  model: string;
+  displayName?: string;
+  isDefault?: boolean;
+  hidden?: boolean;
+  defaultReasoningEffort?: ReasoningEffort;
+  supportedReasoningEfforts: Array<{ reasoningEffort: ReasoningEffort }>;
+}
+
 /** Short display label for a model. */
-function modelLabel(model: ModelDto): string {
+function modelLabel(model: LocalModelDto): string {
   return model.displayName || model.model;
 }
 
@@ -44,19 +51,10 @@ export function ModelSelector() {
   const setModelOverride = useModelStore((s) => s.setModelOverride);
   const setEffortOverride = useModelStore((s) => s.setEffortOverride);
 
-  // Config model from status (lightweight, cached)
-  const { data: statusData } = useQuery({
-    ...codexStatusGetStatusOptions(),
-    refetchOnWindowFocus: true,
-  });
-  // Full model list from dedicated endpoint (longer staleTime)
-  const { data: modelsData } = useQuery({
-    ...modelsListModelsOptions(),
-    staleTime: 60_000,
-  });
+  // TODO: 迁移到新 mt-client API — 当前返回空数据
+  const configModel: string | null = null;
+  const models: LocalModelDto[] = [];
 
-  const configModel = (statusData?.config.data as { model?: string } | undefined)?.model;
-  const models = modelsData?.data?.filter((m) => !m.hidden) ?? [];
   const activeModelId = modelOverride ?? configModel ?? null;
   const activeModel = models.find((m) => m.model === activeModelId);
   const activeEffort = effortOverride ?? activeModel?.defaultReasoningEffort ?? null;
@@ -66,7 +64,7 @@ export function ModelSelector() {
     : activeModelId ?? t('Default');
   const displayEffort = activeEffort ?? '';
 
-  const handleModelSelect = (model: ModelDto) => {
+  const handleModelSelect = (model: LocalModelDto) => {
     if (model.model === configModel) {
       setModelOverride(null);
     } else {

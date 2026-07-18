@@ -2,7 +2,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { Binary, Loader2 } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
-import { filesGetMetadata } from '@/generated/api/sdk.gen';
+import { getMetadata } from '@/generated/api/sdk.gen';
 import { fetchPreviewBytes, type PreviewSource } from './preview-source';
 
 interface Props {
@@ -65,7 +65,7 @@ export function BinaryViewer({ source }: Props) {
 async function loadMetadata(source: PreviewSource): Promise<Metadata> {
   if (source.kind === 'archive') return { size: source.size };
   try {
-    const { data } = await filesGetMetadata({ query: { path: source.filePath }, throwOnError: true });
+    const { data } = await getMetadata({ query: { path: source.filePath }, throwOnError: true });
     return { size: data.size };
   } catch {
     return {};

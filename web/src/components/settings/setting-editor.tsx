@@ -55,16 +55,25 @@ export function SettingEditor({
 
       <div className="flex flex-wrap items-end gap-2">
         {setting.type === 'number' ? (
-          <Input
-            type="number"
-            value={draft}
-            min={setting.constraints.min}
-            max={setting.constraints.max}
-            step={setting.constraints.integer ? 1 : undefined}
-            disabled={disabled}
-            onChange={(e) => onDraftChange(setting.key, e.target.value)}
-            className="h-8 w-40"
-          />
+          (() => {
+            const constraints = (setting.constraints ?? {}) as {
+              min?: number;
+              max?: number;
+              integer?: boolean;
+            };
+            return (
+              <Input
+                type="number"
+                value={draft}
+                min={constraints.min}
+                max={constraints.max}
+                step={constraints.integer ? 1 : undefined}
+                disabled={disabled}
+                onChange={(e) => onDraftChange(setting.key, e.target.value)}
+                className="h-8 w-40"
+              />
+            );
+          })()
         ) : (
           <Input
             value={draft}

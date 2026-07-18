@@ -8,7 +8,8 @@ import { useMutation } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 import { Button } from '@/components/ui/button';
 import { Textarea } from '@/components/ui/textarea';
-import { threadsInterruptTurnMutation, threadsStartTurnMutation, threadsSteerTurnMutation } from '@/generated/api/@tanstack/react-query.gen';
+import { threadsApi } from '@/lib/mt-client';
+import { useTeamStore } from '@/stores/team-store';
 import { cn } from '@/lib/utils';
 import { getApiErrorMessage } from '@/lib/api-error';
 import { useTimelineStore } from '@/stores/timeline-store';
@@ -18,7 +19,6 @@ import { useChatMention } from '@/hooks/use-chat-mention';
 import { SecurityPolicyBadge } from './security-policy-badge';
 import { ModelSelector } from './model-selector';
 import { TokenUsageRing } from './token-usage-ring';
-import { McpStatusBadge } from './mcp-status-badge';
 import { SkillSelector } from './skill-selector';
 import { AttachmentChips } from './attachment-chips';
 import { MentionPopover } from './mention-popover';
@@ -44,6 +44,7 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput(
   const textareaRef = useRef<HTMLTextAreaElement>(null);
 
   const { t } = useTranslation();
+  const currentTeamId = useTeamStore((s) => s.currentTeamId);
   const threadId = useTimelineStore((s) => s.threadId);
   const threadCwd = useTimelineStore((s) => s.threadCwd);
   const threadMode = useTimelineStore((s) => s.threadMode);
@@ -114,15 +115,18 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput(
 
   // ── Turn mutations ───────────────────────────────────────
   const startTurn = useMutation({
-    ...threadsStartTurnMutation(),
+    mutationFn: (vars: { path: { threadId: string }; body: Record<string, unknown> }) =>
+      threadsApi.startTurn(vars.path.threadId, { threadId: vars.path.threadId, team_id: currentTeamId!, ...vars.body }),
     onError: (err) => addSystemError(getApiErrorMessage(err)),
   });
   const steer = useMutation({
-    ...threadsSteerTurnMutation(),
+    mutationFn: (vars: { path: { threadId: string; turnId: string }; body: { input: unknown } }) =>
+      threadsApi.invoke(vars.path.threadId, { method: 'turn/steer', params: { turnId: vars.path.turnId, ...vars.body } }),
     onError: (err) => addSystemError(getApiErrorMessage(err)),
   });
   const interruptTurn = useMutation({
-    ...threadsInterruptTurnMutation(),
+    mutationFn: (vars: { path: { threadId: string; turnId: string } }) =>
+      threadsApi.invoke(vars.path.threadId, { method: 'turn/interrupt', params: { turnId: vars.path.turnId } }),
     onError: (err) => addSystemError(getApiErrorMessage(err)),
   });
 
@@ -236,7 +240,7 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput(
             <div className="flex items-center gap-1">
               <ModelSelector />
               <SecurityPolicyBadge />
-              <McpStatusBadge />
+              {/* McpStatusBadge 已下线 */}
               <SkillSelector
                 cwd={threadCwd}
                 disabled={!threadId || readOnly}

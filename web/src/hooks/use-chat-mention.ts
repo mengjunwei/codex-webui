@@ -5,7 +5,7 @@
  */
 import { useCallback, useMemo, useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
-import { filesReadTreeOptions } from '@/generated/api/@tanstack/react-query.gen';
+import { readTreeOptions } from '@/generated/api/@tanstack/react-query.gen';
 import type { MentionResult } from '@/components/chat/mention-popover';
 import { escapeMentionPath, unescapeMentionPath } from '@/lib/mention-utils';
 import type { ChatFileAttachment } from '@/types/attachments';
@@ -67,7 +67,7 @@ export function useChatMention({
   const browseDir = !cwd ? '' : !browsePath ? cwd : `${cwd}/${browsePath}`;
 
   const { data: entries, isLoading: mentionLoading } = useQuery({
-    ...filesReadTreeOptions({ query: { root: browseDir } }),
+    ...readTreeOptions({ query: { root: browseDir } }),
     enabled: mentionOpen && Boolean(browseDir),
   });
 

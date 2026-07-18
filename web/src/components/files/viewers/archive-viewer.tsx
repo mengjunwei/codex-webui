@@ -3,8 +3,8 @@ import { useMemo, useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { Archive, ChevronRight, File, Folder, Loader2, Lock } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
-import { archiveListArchiveOptions } from '@/generated/api/@tanstack/react-query.gen';
-import type { ArchiveEntryDto } from '@/generated/api/types.gen';
+import { archiveListOptions } from '@/generated/api/@tanstack/react-query.gen';
+import type { ArchiveEntryDto, ArchiveListResponse } from '@/generated/api/types.gen';
 import { getFileCategory } from '@/lib/file-category';
 import { FileContentViewer } from '.';
 import type { PreviewSource } from './preview-source';
@@ -24,9 +24,10 @@ export function ArchiveViewer({ filePath }: Props) {
     if (selected) setSelected(null);
   }
 
-  const query = useQuery(archiveListArchiveOptions({ query: { path: filePath } }));
+  const query = useQuery(archiveListOptions({ query: { path: filePath } }));
+  const archiveData = query.data as ArchiveListResponse | undefined;
 
-  const firstFile = useMemo(() => findFirstFile(query.data?.entries ?? []), [query.data]);
+  const firstFile = useMemo(() => findFirstFile(archiveData?.entries ?? []), [archiveData]);
   const active = selected ?? firstFile;
 
   if (query.isLoading) {
@@ -37,10 +38,10 @@ export function ArchiveViewer({ filePath }: Props) {
   return (
     <div className="grid h-full grid-cols-[minmax(14rem,20rem)_1fr]">
       <div className="min-h-0 overflow-auto border-r border-border bg-card/30 p-2">
-        {(query.data?.entries ?? []).length === 0 ? (
+        {(archiveData?.entries ?? []).length === 0 ? (
           <div className="p-2 text-sm text-muted-foreground">{t('Empty archive')}</div>
         ) : (
-          query.data?.entries.map((entry) => (
+          archiveData?.entries.map((entry) => (
             <ArchiveTreeNode key={entry.path} entry={entry} selectedPath={active?.path ?? null} onSelect={setSelected} />
           ))
         )}
@@ -87,7 +88,7 @@ function ArchiveTreeNode({
       </button>
       {isDirectory && expanded && (
         <div className="ml-4">
-          {(entry.children ?? []).map((child) => (
+          {(entry.children as ArchiveEntryDto[] | undefined ?? []).map((child: ArchiveEntryDto) => (
             <ArchiveTreeNode key={child.path} entry={child} selectedPath={selectedPath} onSelect={onSelect} />
           ))}
         </div>
@@ -103,13 +104,14 @@ function ArchiveEntryPreview({ archivePath, entry }: { archivePath: string; entr
     archivePath,
     entryPath: entry.path,
     label: entry.path,
-    size: entry.size,
+    size: entry.size ?? undefined,
   }), [archivePath, entry.path, entry.size]);
   const category = getFileCategory(entry.path);
 
   if (entry.encrypted) return <ArchiveMessage message={t('Encrypted files are not supported')} />;
   if (entry.unsupported) return <ArchiveMessage message={t('Archive entry type is not supported')} />;
-  if (entry.size !== undefined && entry.size > 50 * 1024 * 1024) {
+  const entrySize = entry.size ?? 0;
+  if (entrySize > 50 * 1024 * 1024) {
     return <ArchiveMessage message={t('Archive entry exceeds the preview size limit')} />;
   }
   return (
@@ -128,7 +130,7 @@ function ArchiveEntryPreview({ archivePath, entry }: { archivePath: string; entr
 function findFirstFile(entries: ArchiveEntryDto[]): ArchiveEntryDto | null {
   for (const entry of entries) {
     if (entry.type === 'file') return entry;
-    const child = findFirstFile(entry.children ?? []);
+    const child = findFirstFile((entry.children as ArchiveEntryDto[] | undefined) ?? []);
     if (child) return child;
   }
   return null;
