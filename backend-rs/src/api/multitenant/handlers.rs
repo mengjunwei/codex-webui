@@ -398,18 +398,19 @@ pub struct MtCreateThreadBody {
     pub extra: std::collections::HashMap<String, serde_json::Value>,
 }
 
-/// 校验 thread 属于某 team 且 user 是该 team 成员,返回 team_id。
+/// 校验 thread 归属 + user 访问权限,返回 (team_id, workspace_type)。
+/// 团队 thread:user 必须是 team 成员。个人 thread:user 必须是 created_by。
 async fn require_thread_team(
     db: &DatabaseConnection,
     thread_id: &str,
     user_id: &str,
-) -> Result<String, AppError> {
+) -> Result<(String, String), AppError> {
     let row = ThreadEntity::find_by_id(thread_id.to_string())
         .one(db)
         .await
         .map_err(|e| AppError::internal(format!("query thread team: {e}")))?;
-    let team_id = match row {
-        Some(t) => t.team_id,
+    let thread = match row {
+        Some(t) => t,
         None => {
             return Err(AppError::business(
                 ErrorCode::HttpNotFound,
@@ -419,8 +420,19 @@ async fn require_thread_team(
             ))
         }
     };
-    teams::require_member(db, &team_id, user_id).await?;
-    Ok(team_id)
+    if thread.workspace_type == "personal" {
+        if thread.created_by_user_id != user_id {
+            return Err(AppError::business(
+                ErrorCode::HttpForbidden,
+                StatusCode::FORBIDDEN,
+                "not your personal thread".into(),
+                None,
+            ));
+        }
+        return Ok((thread.team_id, thread.workspace_type));
+    }
+    teams::require_member(db, &thread.team_id, user_id).await?;
+    Ok((thread.team_id, thread.workspace_type))
 }
 
 /// 创建会话:成员校验 → 主副本分配 → (本地直跑 / 转发主) → thread/start → PG 双写 + 主侧复制 rollout。
@@ -464,7 +476,7 @@ pub async fn mt_create_thread(
         rest.insert("cwd".to_string(), Value::String(personal_cwd.to_string_lossy().to_string()));
     }
 
-    let target = resolve_worker(&state, &team_id, None).await?;
+    let target = resolve_worker(&state, &team_id, None, is_personal).await?;
     let resp = if target == state.node_id {
         let lease = state
             .mt_team_codex
@@ -496,10 +508,12 @@ pub async fn mt_create_thread(
         .or_else(|| resp.get("threadId").and_then(Value::as_str))
         .or_else(|| resp.get("id").and_then(Value::as_str));
     if let Some(tid) = thread_id {
-        // team_id 统一:个人 workspace 为 "user:{userId}",团队为 team uuid。
-        // workspace_type 显式标记归属类型(供聚合列表分组 + 权限判断)。
+        // PG threads.team_id 对个人 workspace 用纯 user_id(符合 VARCHAR(36));
+        // workspace_type 显式区分 personal/team,路由仍按 "user:{uid}" 走。
+        // 团队 workspace 用 teamId(uuid)。
+        let pg_team_id: String = if is_personal { uid.0.clone() } else { team_id.clone() };
         let workspace_type = if is_personal { "personal" } else { "team" };
-        double_write_thread_meta(db, tid, &team_id, &uid.0, workspace_type).await;
+        double_write_thread_meta(db, tid, &pg_team_id, &uid.0, workspace_type).await;
         // 绑定粘性:确保新创建的 thread 后续 turn 路由到同一 worker。
         let _ = state.sticky.bind(tid, &target, 3600).await;
         // PG 缓存 thread/start 响应供后续 thread/resume 复用 —— 跨进程 + 重启都生效,
@@ -573,10 +587,10 @@ pub async fn mt_list_my_threads(
     Extension(uid): Extension<UserId>,
 ) -> Result<Json<Vec<crate::db::entities::thread::Model>>, AppError> {
     let db = require_db(&state);
-    // 用户加入的所有 team_id + 个人 workspace 标识("user:{userId}")。
+    // 用户加入的所有 team_id + 个人 workspace(直接用 user_id 作 team_id 命中)。
     let my_teams = teams::list_my_teams(db, &uid.0).await?;
     let mut scope_ids: Vec<String> = my_teams.iter().map(|t| t.id.clone()).collect();
-    scope_ids.push(format!("user:{}", uid.0));
+    scope_ids.push(uid.0.clone());
     let list = ThreadEntity::find()
         .filter(ThreadColumn::TeamId.is_in(scope_ids))
         .order_by_desc(ThreadColumn::LastActivityAt)
@@ -614,9 +628,10 @@ pub async fn mt_delete_thread(
             "no permission to delete this thread".into(), None));
     }
     let team_id = thread.team_id.clone();
+    let is_personal = thread.workspace_type == "personal";
 
     // 2. 调 codex thread/delete(若 codex 支持);失败不阻塞,继续清 PG/文件。
-    if let Ok(target) = resolve_worker(&state, &team_id, Some(&thread_id)).await {
+    if let Ok(target) = resolve_worker(&state, &team_id, Some(&thread_id), is_personal).await {
         if target == state.node_id {
             if let Ok(lease) = state.mt_team_codex.client_for(&team_id, db, &state.mt_master_key).await {
                 if let Err(e) = lease
@@ -672,11 +687,11 @@ pub async fn mt_start_turn(
     body: axum::Json<Value>,
 ) -> Result<Json<Value>, AppError> {
     let db = require_db(&state);
-    let team_id = require_thread_team(db, &thread_id, &uid.0).await?;
+    let (team_id, workspace_type) = require_thread_team(db, &thread_id, &uid.0).await?;
     // 配额校验(M6):超额返回 429。
     crate::services::multitenant::quota::check_turn_quota(db, &team_id).await?;
     metrics::counter!("mt_turns_total").increment(1);
-    let target = resolve_worker(&state, &team_id, Some(&thread_id)).await?;
+    let target = resolve_worker(&state, &team_id, Some(&thread_id), workspace_type == "personal").await?;
     let mut params = body.0;
     if let Value::Object(ref mut map) = params {
         map.entry("threadId").or_insert(Value::String(thread_id.clone()));
@@ -744,7 +759,12 @@ pub async fn list_audit(
 // ── 多副本路由辅助 ──────────────────────────────────────────────────────
 
 /// 选目标节点:先查粘性绑定(保证会话上下文本地性),未命中再查/分配 session_replicas。
-async fn resolve_worker(state: &AppState, team_id: &str, thread_id: Option<&str>) -> Result<String, AppError> {
+async fn resolve_worker(state: &AppState, team_id: &str, thread_id: Option<&str>, is_personal: bool) -> Result<String, AppError> {
+    // 个人 workspace:不走 session_replica HA 分配(per-team 概念不适用 personal),
+    // 直接路由到本节点;sticky 也不绑(per-user 进程固定本节点)。
+    if is_personal {
+        return Ok(state.cluster.local_node_id().to_string());
+    }
     // 1. 粘性优先:如果 thread 已绑定到某 worker 且该 worker 仍 alive,直接返回。
     if let Some(tid) = thread_id {
         if let Ok(Some(stuck_worker)) = state.sticky.lookup(tid).await {
@@ -827,7 +847,7 @@ pub async fn mt_list_approvals(
     Path((thread_id,)): Path<(String,)>,
 ) -> Result<Json<Vec<crate::db::entity::pending_server_request::Model>>, AppError> {
     let db = require_db(&state);
-    let team_id = require_thread_team(db, &thread_id, &uid.0).await?;
+    let (team_id, _workspace_type) = require_thread_team(db, &thread_id, &uid.0).await?;
     use crate::db::entity::pending_server_request::{Column as PSRColumn, Entity as PSREntity};
     let list = PSREntity::find()
         .filter(PSRColumn::TeamId.eq(team_id))
@@ -855,8 +875,8 @@ pub async fn mt_resolve_approval(
     crate::error::Json(body): crate::error::Json<ResolveApprovalBody>,
 ) -> Result<StatusCode, AppError> {
     let db = require_db(&state);
-    let team_id = require_thread_team(db, &thread_id, &uid.0).await?;
-    let target = resolve_worker(&state, &team_id, Some(&thread_id)).await?;
+    let (team_id, workspace_type) = require_thread_team(db, &thread_id, &uid.0).await?;
+    let target = resolve_worker(&state, &team_id, Some(&thread_id), workspace_type == "personal").await?;
     let id_val = parse_request_id(&body.request_id);
     let ok = if target == state.node_id {
         let lease = state
@@ -1054,8 +1074,8 @@ pub async fn mt_invoke_thread(
     crate::error::Json(body): crate::error::Json<InvokeThreadBody>,
 ) -> Result<Json<Value>, AppError> {
     let db = require_db(&state);
-    let team_id = require_thread_team(db, &thread_id, &uid.0).await?;
-    let target = resolve_worker(&state, &team_id, Some(&thread_id)).await?;
+    let (team_id, workspace_type) = require_thread_team(db, &thread_id, &uid.0).await?;
+    let target = resolve_worker(&state, &team_id, Some(&thread_id), workspace_type == "personal").await?;
     // thread/resume 走 PG 缓存:mt_create_thread 已写入,任意 owner 节点命中可复用,
     // 避免集群下 invoke 落到不同副本时各自走 codex RPC 触发 -32600 race。
     if body.method == "thread/resume" {

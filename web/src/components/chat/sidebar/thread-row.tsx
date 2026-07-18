@@ -11,6 +11,8 @@ import {
   Pencil,
   ShieldAlert,
   Trash2,
+  User,
+  Users,
 } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { Button } from '@/components/ui/button';
@@ -74,6 +76,18 @@ export function ThreadRow({
     <MessageSquare className="h-3 w-3 shrink-0" />
   );
 
+  // Workspace 类型徽章:个人 = User(琥珀色)、团队 = Users(蓝色)。
+  const isPersonal = thread.workspace_type === 'personal';
+  const wsBadge = isPersonal ? (
+    <span title={t('Personal workspace')} aria-label={t('Personal workspace')}>
+      <User className="h-3 w-3 shrink-0 text-amber-500/80" />
+    </span>
+  ) : (
+    <span title={t('Team workspace')} aria-label={t('Team workspace')}>
+      <Users className="h-3 w-3 shrink-0 text-sky-500/70" />
+    </span>
+  );
+
   // Badge text: show count only when > 1 (single approval already indicated by icon)
   const badgeText = pendingApprovalCount > 9 ? '9+' : String(pendingApprovalCount);
 
@@ -92,6 +106,7 @@ export function ThreadRow({
         )}
       >
         {statusIcon}
+        {wsBadge}
         <span className="truncate">{threadLabel(thread)}</span>
         {pendingApprovalCount > 1 && (
           <span className="ml-auto rounded-full bg-yellow-500/15 px-1.5 py-0.5 text-[10px] font-medium leading-none text-yellow-600 dark:text-yellow-400">
