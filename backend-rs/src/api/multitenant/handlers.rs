@@ -616,12 +616,7 @@ pub async fn mt_delete_thread(
         .ok_or_else(|| AppError::business(
             ErrorCode::HttpNotFound, StatusCode::NOT_FOUND,
             "thread not found".into(), None))?;
-    let personal_id = format!("user:{}", uid.0);
-    let allowed = if thread.workspace_type == "personal" {
-        thread.team_id == personal_id
-    } else {
-        thread.created_by_user_id == uid.0
-    };
+    let allowed = thread.created_by_user_id == uid.0;
     if !allowed {
         return Err(AppError::business(
             ErrorCode::HttpForbidden, StatusCode::FORBIDDEN,
