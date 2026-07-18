@@ -59,27 +59,40 @@ interface ConfirmDialogProps {
   onClose: () => void;
 }
 
-/** Dialog for confirming archive or compact actions. */
+/** Dialog for confirming archive / compact / delete actions. */
 export function ConfirmDialog({ action, pending, onConfirm, onClose }: ConfirmDialogProps) {
   const { t } = useTranslation();
+  const title =
+    action?.type === 'compact' ? t('Compact this thread?')
+    : action?.type === 'delete' ? t('Delete this thread?')
+    : t('Archive this thread?');
+  const desc =
+    action?.type === 'compact'
+      ? t('Compaction permanently compresses context and cannot be undone.')
+      : action?.type === 'delete'
+        ? t('Deletion permanently removes the thread and all its turns. This cannot be undone.')
+        : t('Archived threads move to the read-only archive group.');
+  const confirmLabel =
+    action?.type === 'compact' ? t('Compact')
+    : action?.type === 'delete' ? t('Delete')
+    : t('Archive');
+  const isDestructive = action?.type === 'delete';
   return (
     <AlertDialog open={action !== null} onOpenChange={(o) => !o && !pending && onClose()}>
       <AlertDialogContent>
         <AlertDialogHeader>
-          <AlertDialogTitle>
-            {action?.type === 'compact' ? t('Compact this thread?') : t('Archive this thread?')}
-          </AlertDialogTitle>
-          <AlertDialogDescription>
-            {action?.type === 'compact'
-              ? t('Compaction permanently compresses context and cannot be undone.')
-              : t('Archived threads move to the read-only archive group.')}
-          </AlertDialogDescription>
+          <AlertDialogTitle>{title}</AlertDialogTitle>
+          <AlertDialogDescription>{desc}</AlertDialogDescription>
         </AlertDialogHeader>
         <AlertDialogFooter>
           <AlertDialogCancel disabled={pending}>{t('Cancel')}</AlertDialogCancel>
-          <AlertDialogAction disabled={pending} onClick={onConfirm}>
+          <AlertDialogAction
+            disabled={pending}
+            onClick={onConfirm}
+            className={isDestructive ? 'bg-destructive text-destructive-foreground hover:bg-destructive/90' : undefined}
+          >
             {pending ? <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" /> : null}
-            {action?.type === 'compact' ? t('Compact') : t('Archive')}
+            {confirmLabel}
           </AlertDialogAction>
         </AlertDialogFooter>
       </AlertDialogContent>

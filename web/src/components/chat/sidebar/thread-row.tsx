@@ -10,6 +10,7 @@ import {
   MoreHorizontal,
   Pencil,
   ShieldAlert,
+  Trash2,
 } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { Button } from '@/components/ui/button';
@@ -39,6 +40,7 @@ interface Props {
   onUnarchive: () => void;
   onCompact: () => void;
   onFork: () => void;
+  onDelete: () => void;
 }
 
 export function ThreadRow({
@@ -57,6 +59,7 @@ export function ThreadRow({
   onUnarchive,
   onCompact,
   onFork,
+  onDelete,
 }: Props) {
   const { t } = useTranslation();
 
@@ -148,6 +151,17 @@ export function ThreadRow({
             {actionPending ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <GitFork className="h-3.5 w-3.5" />}
             {t('Fork')}
           </Button>
+          {archived && (
+            <Button
+              variant="ghost"
+              className="h-7 w-full justify-start gap-2 px-2 text-xs text-destructive hover:bg-destructive/10 hover:text-destructive"
+              disabled={actionPending}
+              onClick={onDelete}
+            >
+              {actionPending ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Trash2 className="h-3.5 w-3.5" />}
+              {t('Delete')}
+            </Button>
+          )}
         </PopoverContent>
       </Popover>
     </div>

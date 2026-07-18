@@ -496,9 +496,10 @@ pub async fn mt_create_thread(
         .or_else(|| resp.get("threadId").and_then(Value::as_str))
         .or_else(|| resp.get("id").and_then(Value::as_str));
     if let Some(tid) = thread_id {
-        // 个人 workspace 记录到 user_id 下
-        let meta_team_id = if is_personal { &uid.0 } else { &team_id };
-        double_write_thread_meta(db, tid, meta_team_id, &uid.0).await;
+        // team_id 统一:个人 workspace 为 "user:{userId}",团队为 team uuid。
+        // workspace_type 显式标记归属类型(供聚合列表分组 + 权限判断)。
+        let workspace_type = if is_personal { "personal" } else { "team" };
+        double_write_thread_meta(db, tid, &team_id, &uid.0, workspace_type).await;
         // 绑定粘性:确保新创建的 thread 后续 turn 路由到同一 worker。
         let _ = state.sticky.bind(tid, &target, 3600).await;
         // PG 缓存 thread/start 响应供后续 thread/resume 复用 —— 跨进程 + 重启都生效,
@@ -562,6 +563,105 @@ pub async fn mt_list_threads(
         .await
         .map_err(|e| AppError::internal(format!("list threads: {e}")))?;
     Ok(Json(list))
+}
+
+/// 列出当前用户能看到的全部会话:所有团队 workspace + 个人 workspace。
+/// 前端侧边栏聚合视图用(按 workspace_type 分个人/团队,再按 team_id 分组)。
+/// 返回 thread model(含 workspace_type / team_id / status,前端据此分组渲染)。
+pub async fn mt_list_my_threads(
+    State(state): State<AppState>,
+    Extension(uid): Extension<UserId>,
+) -> Result<Json<Vec<crate::db::entities::thread::Model>>, AppError> {
+    let db = require_db(&state);
+    // 用户加入的所有 team_id + 个人 workspace 标识("user:{userId}")。
+    let my_teams = teams::list_my_teams(db, &uid.0).await?;
+    let mut scope_ids: Vec<String> = my_teams.iter().map(|t| t.id.clone()).collect();
+    scope_ids.push(format!("user:{}", uid.0));
+    let list = ThreadEntity::find()
+        .filter(ThreadColumn::TeamId.is_in(scope_ids))
+        .order_by_desc(ThreadColumn::LastActivityAt)
+        .all(db)
+        .await
+        .map_err(|e| AppError::internal(format!("list my threads: {e}")))?;
+    Ok(Json(list))
+}
+
+/// 删除会话(含归档):权限校验 → codex thread/delete → 清 PG(threads/resume_cache/业务表)
+/// + 删 rollout 文件 + 清 sticky。权限:个人 workspace 仅本人可删;团队 workspace 仅创建者可删。
+pub async fn mt_delete_thread(
+    State(state): State<AppState>,
+    Extension(uid): Extension<UserId>,
+    Path((thread_id,)): Path<(String,)>,
+) -> Result<StatusCode, AppError> {
+    let db = require_db(&state);
+    // 1. 查 thread + 权限校验。
+    let thread = ThreadEntity::find_by_id(thread_id.clone())
+        .one(db)
+        .await
+        .map_err(|e| AppError::internal(format!("query thread: {e}")))?
+        .ok_or_else(|| AppError::business(
+            ErrorCode::HttpNotFound, StatusCode::NOT_FOUND,
+            "thread not found".into(), None))?;
+    let personal_id = format!("user:{}", uid.0);
+    let allowed = if thread.workspace_type == "personal" {
+        thread.team_id == personal_id
+    } else {
+        thread.created_by_user_id == uid.0
+    };
+    if !allowed {
+        return Err(AppError::business(
+            ErrorCode::HttpForbidden, StatusCode::FORBIDDEN,
+            "no permission to delete this thread".into(), None));
+    }
+    let team_id = thread.team_id.clone();
+
+    // 2. 调 codex thread/delete(若 codex 支持);失败不阻塞,继续清 PG/文件。
+    if let Ok(target) = resolve_worker(&state, &team_id, Some(&thread_id)).await {
+        if target == state.node_id {
+            if let Ok(lease) = state.mt_team_codex.client_for(&team_id, db, &state.mt_master_key).await {
+                if let Err(e) = lease
+                    .client()
+                    .request("thread/delete", Some(serde_json::json!({ "threadId": thread_id })))
+                    .await
+                {
+                    tracing::warn!(error = %e, thread_id = %thread_id, "codex thread/delete failed (non-fatal, cleanup PG+file anyway)");
+                }
+            }
+        } else if let Ok(rpc_url) = worker_rpc_url(&state, &target).await {
+            let _ = state
+                .worker_rpc
+                .thread_invoke(&rpc_url, &team_id, &thread_id, "thread/delete", serde_json::json!({}))
+                .await;
+        }
+    }
+
+    // 3. 删 rollout 文件(codex home sessions/.../{thread_id}*.jsonl)。
+    if let Some(p) = crate::services::multitenant::replication::find_rollout_for_thread(&state.codex_home, &thread_id).await {
+        if let Err(e) = tokio::fs::remove_file(&p).await {
+            tracing::warn!(error = %e, path = %p.display(), "remove rollout file failed (non-fatal)");
+        }
+    }
+
+    // 4. 清 PG:threads + thread_resume_cache + 业务表(by thread_id)。非阻塞,失败仅 warn。
+    use crate::db::entity::{pending_server_request, token_usage_snapshot, turn_diff, turn_error};
+    use crate::db::entities::thread_resume_cache;
+    let _ = ThreadEntity::delete_by_id(thread_id.clone()).exec(db).await;
+    let _ = thread_resume_cache::Entity::delete_by_id(thread_id.clone()).exec(db).await;
+    let _ = token_usage_snapshot::Entity::delete_many()
+        .filter(token_usage_snapshot::Column::ThreadId.eq(thread_id.clone())).exec(db).await;
+    let _ = turn_diff::Entity::delete_many()
+        .filter(turn_diff::Column::ThreadId.eq(thread_id.clone())).exec(db).await;
+    let _ = turn_error::Entity::delete_many()
+        .filter(turn_error::Column::ThreadId.eq(thread_id.clone())).exec(db).await;
+    let _ = pending_server_request::Entity::delete_many()
+        .filter(pending_server_request::Column::ThreadId.eq(thread_id.clone())).exec(db).await;
+
+    // 5. 清 sticky 绑定 + 本地 active_rollout 记录。
+    let _ = state.sticky.clear(&thread_id).await;
+    state.active_rollout.lock().await.remove(&thread_id);
+
+    tracing::info!(thread_id = %thread_id, team_id = %team_id, "thread deleted");
+    Ok(StatusCode::NO_CONTENT)
 }
 
 /// 对会话发起 turn:校验 thread 所属 team + 成员 → 配额 → 主副本选主节点 → (本地/转发) → 复制 rollout。
@@ -681,7 +781,7 @@ async fn worker_rpc_url(state: &AppState, node_id: &str) -> Result<String, AppEr
 }
 
 /// threads 元数据双写:不存在则 insert(主键冲突等价跳过)。非阻塞。
-async fn double_write_thread_meta(db: &DatabaseConnection, tid: &str, team_id: &str, created_by: &str) {
+async fn double_write_thread_meta(db: &DatabaseConnection, tid: &str, team_id: &str, created_by: &str, workspace_type: &str) {
     match ThreadEntity::find_by_id(tid.to_string()).one(db).await {
         Ok(Some(_)) => { /* 已存在,跳过 */ }
         Ok(None) => {
@@ -692,6 +792,7 @@ async fn double_write_thread_meta(db: &DatabaseConnection, tid: &str, team_id: &
                 created_by_user_id: Set(created_by.to_string()),
                 title: Set(None),
                 status: Set("active".to_string()),
+                workspace_type: Set(workspace_type.to_string()),
                 created_at: Set(now),
                 updated_at: Set(now),
                 last_activity_at: Set(now),

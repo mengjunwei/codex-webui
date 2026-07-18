@@ -122,6 +122,9 @@ pub mod thread {
         pub title: Option<String>,
         #[sea_orm(column_type = "String(StringLen::N(16))")]
         pub status: String,
+        /// workspace 归属类型:"personal"(个人 workspace) / "team"(团队 workspace)。
+        #[sea_orm(column_type = "String(StringLen::N(8))")]
+        pub workspace_type: String,
         pub created_at: i64,
         pub updated_at: i64,
         pub last_activity_at: i64,

@@ -18,6 +18,7 @@ mod m20260716_0008_session_replicas;
 mod m20260718_000001_workspace_audit;
 mod m20260718_000002_user_api_keys;
 mod m20260718_000003_thread_resume_cache;
+mod m20260718_000004_thread_workspace_type;
 
 pub struct Migrator;
 
@@ -35,6 +36,7 @@ impl MigratorTrait for Migrator {
             Box::new(m20260718_000001_workspace_audit::Migration),
             Box::new(m20260718_000002_user_api_keys::Migration),
             Box::new(m20260718_000003_thread_resume_cache::Migration),
+            Box::new(m20260718_000004_thread_workspace_type::Migration),
         ]
     }
 }

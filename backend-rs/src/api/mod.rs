@@ -218,6 +218,8 @@ pub async fn build_router(state: AppState) -> Router {
         )
         .route("/teams/{teamId}/audit", get(mt::list_audit))
         .route("/threads", post(mt::mt_create_thread).get(mt::mt_list_threads))
+        .route("/threads/me", get(mt::mt_list_my_threads))
+        .route("/threads/{threadId}", axum::routing::delete(mt::mt_delete_thread))
         .route("/threads/{threadId}/turns", post(mt::mt_start_turn))
         .route("/threads/{threadId}/invoke", post(mt::mt_invoke_thread))
         .route("/threads/{threadId}/token-usage", get(mt::mt_token_usage))

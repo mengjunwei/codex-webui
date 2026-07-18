@@ -136,8 +136,11 @@ export interface ThreadDto {
   title: string | null;
   cwd?: string;
   status: string;
+  /** workspace 归属:"personal"(个人 workspace) / "team"(团队 workspace)。 */
+  workspace_type: 'personal' | 'team';
   created_at: number;
   updated_at: number;
+  last_activity_at: number;
 }
 
 /** 后端 token_usage_snapshot::Model */
@@ -257,8 +260,11 @@ export const teamsApi = {
 export const threadsApi = {
   create: (body: CreateThreadBody) =>
     mtFetch<unknown>('/threads', 'POST', body),
+  /** 单 team 列表(按 teamId 过滤)。 */
   list: (teamId: string) =>
     mtFetch<ThreadDto[]>(`/threads?teamId=${encodeURIComponent(teamId)}`),
+  /** 聚合列表:当前用户所有团队 workspace + 个人 workspace 的全部会话。 */
+  listMine: () => mtFetch<ThreadDto[]>('/threads/me'),
   startTurn: (threadId: string, body: Record<string, unknown>) =>
     mtFetch<unknown>(`/threads/${threadId}/turns`, 'POST', body),
   invoke: (threadId: string, body: InvokeThreadBody) =>
@@ -267,6 +273,9 @@ export const threadsApi = {
     mtFetch<void>(`/threads/${threadId}/archive`, 'POST'),
   rename: (threadId: string, body: RenameThreadBody) =>
     mtFetch<void>(`/threads/${threadId}/name`, 'PATCH', body),
+  /** 删除会话(含归档):codex thread/delete + 清 PG + 删 rollout。 */
+  remove: (threadId: string) =>
+    mtFetch<void>(`/threads/${threadId}`, 'DELETE'),
 };
 
 // ── Approvals API ─────────────────────────────────────────────

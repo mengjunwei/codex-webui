@@ -25,7 +25,6 @@ import type { ConfirmAction } from './sidebar/sidebar-types';
 import { threadLabel, groupByWorkspace } from './sidebar/sidebar-types';
 import { ThreadRow } from './sidebar/thread-row';
 import { WorkspaceOverview } from './sidebar/workspace-overview';
-import { WorkspaceDetail } from './sidebar/workspace-detail';
 import { RenameDialog, ConfirmDialog } from './sidebar/sidebar-dialogs';
 import { WorkspaceSelectorDialog } from './sidebar/workspace-selector-dialog';
 
@@ -64,11 +63,9 @@ export function ThreadSidebar() {
   const setActiveTurnIdForThread = useTimelineStore((s) => s.setActiveTurnIdForThread);
   const addSystemError = useTimelineStore((s) => s.addSystemError);
   const queryClient = useQueryClient();
-  const currentTeamId = useTeamStore((s) => s.currentTeamId);
+  const teams = useTeamStore((s) => s.teams);
 
   // ── Layout store (sidebar view + collapsed groups + collapse) ────────
-  const sidebarView = useLayoutStore((s) => s.sidebarView);
-  const setSidebarView = useLayoutStore((s) => s.setSidebarView);
   const collapsedGroupKeys = useLayoutStore((s) => s.collapsedGroupKeys);
   const toggleCollapsedGroup = useLayoutStore((s) => s.toggleCollapsedGroup);
   const toggleDesktopSidebarCollapsed = useLayoutStore((s) => s.toggleDesktopSidebarCollapsed);
@@ -76,8 +73,6 @@ export function ThreadSidebar() {
   const collapsedGroups = useMemo(() => new Set(collapsedGroupKeys), [collapsedGroupKeys]);
 
   // ── Local UI state (ephemeral) ─────────────────────────────────────
-  const [cursor, setCursor] = useState<string | null>(null);
-  const [cursorStack, setCursorStack] = useState<Array<string | null>>([]);
   const [renameThread, setRenameThread] = useState<ThreadDto | null>(null);
   const [renameValue, setRenameValue] = useState('');
   const [confirmAction, setConfirmAction] = useState<ConfirmAction>(null);
@@ -86,29 +81,18 @@ export function ThreadSidebar() {
   const [settingsOpen, setSettingsOpen] = useState(false);
 
   // ── Queries ─────────────────────────────────────────────────────────
-  const overviewThreadsQuery = useQuery({
-    queryKey: ['threads', 'list', currentTeamId, { archived: false }],
-    queryFn: () => threadsApi.list(currentTeamId!),
-    enabled: !!currentTeamId,
-  });
-  const overviewArchivedQuery = useQuery({
-    queryKey: ['threads', 'list', currentTeamId, { archived: true }],
-    queryFn: () => threadsApi.list(currentTeamId!),
-    enabled: !!currentTeamId,
-  });
-  const detailQuery = useQuery({
-    queryKey: ['threads', 'list', currentTeamId, sidebarView.type, sidebarView, cursor],
-    queryFn: () => threadsApi.list(currentTeamId!),
-    enabled: !!currentTeamId && sidebarView.type !== 'overview',
+  // 聚合列表:当前用户所有团队 workspace + 个人 workspace 的全部会话(一次拉取)。
+  const myThreadsQuery = useQuery({
+    queryKey: ['threads', 'mine'],
+    queryFn: () => threadsApi.listMine(),
   });
 
-  const activeThreads = useMemo(() => overviewThreadsQuery.data ?? [], [overviewThreadsQuery.data]);
-  const archivedThreads = useMemo(() => overviewArchivedQuery.data ?? [], [overviewArchivedQuery.data]);
-  const workspaceGroups = useMemo(() => groupByWorkspace(activeThreads), [activeThreads]);
-  const detailThreads = detailQuery.data ?? [];
+  const allThreads = useMemo(() => myThreadsQuery.data ?? [], [myThreadsQuery.data]);
+  // 按 workspace 分组(个人/各 team),组内再分 active/archived。
+  const workspaceGroups = useMemo(() => groupByWorkspace(allThreads, teams), [allThreads, teams]);
 
   const invalidateThreads = () => {
-    void queryClient.invalidateQueries({ queryKey: ['threads', 'list', currentTeamId] });
+    void queryClient.invalidateQueries({ queryKey: ['threads', 'mine'] });
   };
 
   // ── Thread open helpers ─────────────────────────────────────────────
@@ -161,24 +145,39 @@ export function ThreadSidebar() {
   const switchAfterArchive = (archivedId: string) => {
     const current = useTimelineStore.getState();
     if (current.threadId !== archivedId || current.threadMode !== 'live') return;
-    const idx = activeThreads.findIndex((th) => th.id === archivedId);
-    const next =
-      activeThreads.slice(idx + 1).find((th) => th.id !== archivedId) ??
-      activeThreads.slice(0, idx).find((th) => th.id !== archivedId);
+    const live = allThreads.filter((th) => th.status !== 'archived' && th.id !== archivedId);
+    const next = live[0];
     if (next) openLiveThread(next);
     else { clearThread(); void navigate({ to: '/' }); }
   };
 
   // ── Mutations ───────────────────────────────────────────────────────
+  // 创建会话:teamId 缺省 → 个人 workspace(后端 is_personal=true);否则团队 workspace。
   const createThread = useMutation({
-    mutationFn: (vars: { body: { cwd: string } }) =>
-      threadsApi.create({ teamId: currentTeamId!, cwd: vars.body.cwd }),
+    mutationFn: (vars: { body: { teamId?: string; cwd?: string } }) =>
+      threadsApi.create(vars.body),
     onSuccess: (res: any) => {
       const tid = res.thread?.thread?.id || res.id || res.thread?.id;
       const cwd = res.cwd || res.thread?.cwd || '';
       setActiveThread(tid, cwd, threadLabel(res.thread?.thread || res.thread || res));
       invalidateThreads();
       void navigate({ to: '/t/$threadId', params: { threadId: tid } });
+    },
+    onError: (err) => addSystemError(getApiErrorMessage(err)),
+  });
+
+  // 删除会话(含归档):后端校验权限(个人自删/团队仅创建者) + 清 PG + 删 rollout。
+  const deleteThread = useMutation({
+    mutationFn: (vars: { path: { threadId: string } }) =>
+      threadsApi.remove(vars.path.threadId),
+    onSuccess: (_res, vars) => {
+      useTimelineStore.getState().unsubscribeThread(vars.path.threadId);
+      // 删除的是当前会话 → 切回首页。
+      if (useTimelineStore.getState().threadId === vars.path.threadId) {
+        clearThread();
+        void navigate({ to: '/' });
+      }
+      invalidateThreads();
     },
     onError: (err) => addSystemError(getApiErrorMessage(err)),
   });
@@ -252,19 +251,6 @@ export function ThreadSidebar() {
 
   // ── View navigation helpers ─────────────────────────────────────────
 
-  const resetDetailPagination = () => { setCursor(null); setCursorStack([]); };
-
-  const openWorkspaceDetail = (cwd: string) => { resetDetailPagination(); setSidebarView({ type: 'workspaceDetail', cwd }); };
-  const openArchivedDetail = () => { resetDetailPagination(); setSidebarView({ type: 'archivedDetail' }); };
-
-  const goNext = () => {
-    // TODO: 旧 SDK 提供 nextCursor,mt-client 当前返回数组,游标分页暂未支持
-    void detailQuery;
-  };
-  const goPrevious = () => {
-    setCursorStack((s) => { const ns = s.slice(0, -1); setCursor(s.at(-1) ?? null); return ns; });
-  };
-
   // ── Rename / Confirm ────────────────────────────────────────────────
   const startRename = (thread: ThreadDto) => { setRenameThread(thread); setRenameValue(threadLabel(thread)); };
   const saveRename = () => {
@@ -277,6 +263,7 @@ export function ThreadSidebar() {
     if (!confirmAction) return;
     if (confirmAction.type === 'archive') archiveThread.mutate({ path: { threadId: confirmAction.thread.id } });
     if (confirmAction.type === 'compact') compactThread.mutate({ path: { threadId: confirmAction.thread.id } });
+    if (confirmAction.type === 'delete') deleteThread.mutate({ path: { threadId: confirmAction.thread.id } });
     setConfirmAction(null);
   };
 
@@ -309,7 +296,7 @@ export function ThreadSidebar() {
         archived={archived}
         isActive={thread.id === threadId && activeView === 'chat'}
         destructiveDisabled={isRunning}
-        actionPending={forkThread.isPending || unarchiveThread.isPending}
+        actionPending={forkThread.isPending || unarchiveThread.isPending || deleteThread.isPending}
         running={generating || isRunning}
         pendingApproval={waitingOnApproval}
         pendingApprovalCount={pendingApprovalCount}
@@ -320,6 +307,7 @@ export function ThreadSidebar() {
         onUnarchive={() => unarchiveThread.mutate({ path: { threadId: thread.id } })}
         onCompact={() => setConfirmAction({ type: 'compact', thread })}
         onFork={() => forkThread.mutate({ path: { threadId: thread.id } })}
+        onDelete={() => setConfirmAction({ type: 'delete', thread })}
       />
     );
   };
@@ -416,31 +404,18 @@ export function ThreadSidebar() {
       </div>
 
       <ScrollArea className="min-h-0 flex-1 px-2 [&_[data-slot=scroll-area-viewport]>div]:block!">
-        {sidebarView.type === 'overview' ? (
-          <WorkspaceOverview
-            archivedThreads={archivedThreads}
-            workspaceGroups={workspaceGroups}
-            collapsedGroups={collapsedGroups}
-            isLoading={overviewThreadsQuery.isLoading || overviewArchivedQuery.isLoading}
-            onToggleCollapse={toggleCollapsedGroup}
-            onOpenArchivedDetail={openArchivedDetail}
-            onOpenWorkspaceDetail={openWorkspaceDetail}
-            onCreateInWorkspace={(cwd) => createThread.mutate({ body: { cwd } })}
-            renderThreadRow={renderThreadRow}
-          />
-        ) : (
-          <WorkspaceDetail
-            sidebarView={sidebarView}
-            threads={detailThreads}
-            isLoading={detailQuery.isLoading}
-            hasPrevious={cursorStack.length > 0}
-            hasNext={false}
-            onBack={() => setSidebarView({ type: 'overview' })}
-            onPrevious={goPrevious}
-            onNext={goNext}
-            renderThreadRow={renderThreadRow}
-          />
-        )}
+        <WorkspaceOverview
+          workspaceGroups={workspaceGroups}
+          collapsedGroups={collapsedGroups}
+          isLoading={myThreadsQuery.isLoading}
+          onToggleCollapse={toggleCollapsedGroup}
+          onCreateInWorkspace={(group) =>
+            createThread.mutate({
+              body: { teamId: group.workspace_type === 'team' ? group.key : undefined },
+            })
+          }
+          renderThreadRow={renderThreadRow}
+        />
       </ScrollArea>
 
       {/* Desktop collapse toggle (hidden in mobile Sheet) */}
@@ -465,17 +440,19 @@ export function ThreadSidebar() {
       />
       <ConfirmDialog
         action={confirmAction}
-        pending={archiveThread.isPending || compactThread.isPending}
+        pending={archiveThread.isPending || compactThread.isPending || deleteThread.isPending}
         onConfirm={confirmCurrentAction}
         onClose={() => setConfirmAction(null)}
       />
       <WorkspaceSelectorDialog
         open={wsSelectorOpen}
         onClose={() => setWsSelectorOpen(false)}
-        onSelect={(ws: any) => {
-          // 个人 workspace: 不传 cwd(后端用默认 codex_home)
-          // 团队 workspace: 传 teamId 作为 cwd
-          createThread.mutate({ body: { cwd: ws.cwd || '' } });
+        onSelect={(ws) => {
+          // 个人 workspace:不传 teamId(后端 is_personal=true);团队:传 teamId。
+          createThread.mutate({
+            body: { teamId: ws.type === 'team' ? ws.teamId : undefined },
+          });
+          setWsSelectorOpen(false);
         }}
       />
       <TeamMembersDialog open={membersOpen} onClose={() => setMembersOpen(false)} />
