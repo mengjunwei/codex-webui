@@ -3,7 +3,7 @@
  * Delegates attachment management to useChatAttachments and @ mention to useChatMention.
  */
 import { forwardRef, useCallback, useEffect, useImperativeHandle, useRef, useState } from 'react';
-import { Send, Square, TerminalSquare } from 'lucide-react';
+import { Send, Square } from 'lucide-react';
 import { useMutation } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 import { Button } from '@/components/ui/button';
@@ -34,7 +34,7 @@ interface Props {
 }
 
 export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput(
-  { panelOpen, onTogglePanel },
+  { panelOpen: _panelOpen, onTogglePanel: _onTogglePanel },
   ref,
 ) {
   const [value, setValue] = useState('');
@@ -245,17 +245,10 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput(
               <SecurityPolicyBadge />
               {/* McpStatusBadge 已下线 */}
               {/* SkillSelector 已下线:skills 由服务器配置管理 */}
-              <Button
-                size="sm"
-                variant={panelOpen ? 'secondary' : 'ghost'}
-                className="h-7 gap-1.5 rounded-lg px-2.5 text-xs"
-                onClick={onTogglePanel}
-                disabled={!threadId || readOnly}
-                title={t('Terminal')}
-              >
-                <TerminalSquare className="h-3.5 w-3.5" />
-                <span className="hidden sm:inline">{t('Terminal')}</span>
-              </Button>
+              {/* Terminal 按钮临时下线:多租户迁移后终端 cwd 校验/per-thread 隔离/
+                  socket 重连等问题未完全解决,切会话时终端报错。后端 TerminalService
+                  保留,后续修复后恢复此处按钮。 */}
+              {/* <Button size="sm" variant={panelOpen ? 'secondary' : 'ghost'} ... /> */}
             </div>
 
             <div className="flex items-center gap-2">
