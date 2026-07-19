@@ -163,7 +163,10 @@ export function ThreadView() {
   };
 
   // Load or select thread when URL param changes. Backend ensures resume is deduped.
+  // 关闭终端面板:切会话后旧 contextKey 的终端内容残留,且新 thread 的 cwd 可能
+  // 还没从 resume 加载完(terminal cwd 沙箱校验失败)。用户重新点开即用正确 context。
   useEffect(() => {
+    setSessionPanelOpen(false);
     setActiveThread(threadId);
     setLoadingForThread(threadId, true);
     resumeThread.mutate(threadId);

@@ -245,6 +245,8 @@ function selectedFields(runtime: ThreadRuntimeState | null): Partial<TimelineSta
       tokenUsageByTurn: {},
       latestTokenUsage: null,
       threadStatus: null,
+      approvalPolicy: null,
+      sandboxMode: null,
       activeTurnId: null,
       pendingResolvedRequestIds: new Set<string>(),
       lastActivityAt: 0,
@@ -263,6 +265,8 @@ function selectedFields(runtime: ThreadRuntimeState | null): Partial<TimelineSta
     tokenUsageByTurn: runtime.tokenUsageByTurn,
     latestTokenUsage: runtime.latestTokenUsage,
     threadStatus: runtime.threadStatus,
+    approvalPolicy: runtime.approvalPolicy,
+    sandboxMode: runtime.sandboxMode,
     activeTurnId: runtime.activeTurnId,
     pendingResolvedRequestIds: runtime.pendingResolvedRequestIds,
     lastActivityAt: runtime.lastActivityAt,
@@ -436,6 +440,8 @@ interface TimelineState {
   tokenUsageByTurn: Record<string, ThreadTokenUsage>;
   latestTokenUsage: ThreadTokenUsage | null;
   threadStatus: ThreadStatusType | null;
+  approvalPolicy: string | null;
+  sandboxMode: string | null;
   activeTurnId: string | null;
   pendingResolvedRequestIds: Set<string>;
   lastActivityAt: number;
@@ -566,6 +572,8 @@ export const useTimelineStore = create<TimelineState>((set, get) => {
     tokenUsageByTurn: {},
     latestTokenUsage: null,
     threadStatus: null,
+    approvalPolicy: null,
+    sandboxMode: null,
     activeTurnId: null,
     pendingResolvedRequestIds: new Set(),
     lastActivityAt: 0,
