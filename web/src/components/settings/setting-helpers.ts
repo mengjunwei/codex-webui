@@ -66,6 +66,7 @@ export function sectionLabel(section: string): string {
     terminal: 'Terminal',
     files: 'Files',
     security: 'Security',
+    team: 'Team',
   };
   return labels[section] ?? section;
 }
