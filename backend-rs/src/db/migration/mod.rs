@@ -7,38 +7,14 @@
 pub use sea_orm_migration::prelude::*;
 use sea_orm::DatabaseBackend;
 
-mod m20260716_0001_initial;
-mod m20260716_0002_api_keys;
-mod m20260716_0003_audit;
-mod m20260716_0004_business;
-mod m20260716_0005_business_team_id;
-mod m20260716_0006_quota;
-mod m20260716_0007_team_routes;
-mod m20260716_0008_session_replicas;
-mod m20260718_000001_workspace_audit;
-mod m20260718_000002_user_api_keys;
-mod m20260718_000003_thread_resume_cache;
-mod m20260718_000004_thread_workspace_type;
-mod m20260718_000005_threads_team_id_no_fk;
+mod m20260719_000001_combined_schema;
 
 pub struct Migrator;
 
 impl MigratorTrait for Migrator {
     fn migrations() -> Vec<Box<dyn MigrationTrait>> {
         vec![
-            Box::new(m20260716_0001_initial::Migration),
-            Box::new(m20260716_0002_api_keys::Migration),
-            Box::new(m20260716_0003_audit::Migration),
-            Box::new(m20260716_0004_business::Migration),
-            Box::new(m20260716_0005_business_team_id::Migration),
-            Box::new(m20260716_0006_quota::Migration),
-            Box::new(m20260716_0007_team_routes::Migration),
-            Box::new(m20260716_0008_session_replicas::Migration),
-            Box::new(m20260718_000001_workspace_audit::Migration),
-            Box::new(m20260718_000002_user_api_keys::Migration),
-            Box::new(m20260718_000003_thread_resume_cache::Migration),
-            Box::new(m20260718_000004_thread_workspace_type::Migration),
-            Box::new(m20260718_000005_threads_team_id_no_fk::Migration),
+            Box::new(m20260719_000001_combined_schema::Migration),
         ]
     }
 }
