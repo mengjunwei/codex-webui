@@ -4,7 +4,7 @@
  * state, queries, mutations, and view routing.
  */
 import { useMemo, useState } from 'react';
-import { FolderOpen, PanelLeftClose, Puzzle, Plus, Settings, Terminal, Users } from 'lucide-react';
+import { FolderOpen, PanelLeftClose, Plus, Settings, Terminal } from 'lucide-react';
 import { useNavigate, useRouterState } from '@tanstack/react-router';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
@@ -14,8 +14,6 @@ import { Separator } from '@/components/ui/separator';
 import { threadsApi, tokenUsageApi, turnDiffApi, turnErrorApi } from '@/lib/mt-client';
 import { useTeamStore } from '@/stores/team-store';
 import { TeamSelector } from './team-selector';
-import { TeamMembersDialog } from '../team/team-members';
-import { TeamSettingsDialog } from '../team/team-settings';
 import type { ThreadDto } from '@/lib/mt-client';
 import { useTimelineStore } from '@/stores/timeline-store';
 import { useLayoutStore } from '@/stores/layout-store';
@@ -77,9 +75,6 @@ export function ThreadSidebar() {
   const [renameValue, setRenameValue] = useState('');
   const [confirmAction, setConfirmAction] = useState<ConfirmAction>(null);
   const [wsSelectorOpen, setWsSelectorOpen] = useState(false);
-  const [membersOpen, setMembersOpen] = useState(false);
-  const [settingsOpen, setSettingsOpen] = useState(false);
-
   // ── Queries ─────────────────────────────────────────────────────────
   // 聚合列表:当前用户所有团队 workspace + 个人 workspace 的全部会话(一次拉取)。
   const myThreadsQuery = useQuery({
@@ -318,16 +313,6 @@ export function ThreadSidebar() {
       {/* Team selector + management */}
       <div className="px-2 py-2 space-y-1">
         <TeamSelector />
-        <div className="flex gap-1 px-1">
-          <Button size="sm" variant="ghost" className="flex-1 text-xs" onClick={() => setMembersOpen(true)}>
-            <Users className="mr-1 h-3 w-3" />
-            {t('成员')}
-          </Button>
-          <Button size="sm" variant="ghost" className="flex-1 text-xs" onClick={() => setSettingsOpen(true)}>
-            <Settings className="mr-1 h-3 w-3" />
-            {t('团队设置')}
-          </Button>
-        </div>
       </div>
       <Separator />
       {/* Global actions */}
@@ -358,19 +343,8 @@ export function ThreadSidebar() {
           <Terminal className="h-4 w-4 shrink-0" />
           {t('Terminal')}
         </button>
-        <button
-          type="button"
-          onClick={() => void navigate({ to: '/integrations', search: { tab: 'apps' } })}
-          className={cn(
-            'flex w-full cursor-pointer items-center gap-2 rounded-lg px-2.5 py-2 text-left text-sm transition-colors',
-            activeView === 'integrations'
-              ? 'bg-accent text-accent-foreground'
-              : 'text-muted-foreground hover:bg-accent/50 hover:text-foreground',
-          )}
-        >
-          <Puzzle className="h-4 w-4 shrink-0" />
-          {t('Integrations')}
-        </button>
+        {/* 集成菜单临时下线:多租户迁移后集成配置是全局的,显示会误导用户。
+              per-team 集成配置接口待后续实现后再恢复。 */}
         <button
           type="button"
           onClick={() => void navigate({ to: '/settings' })}
@@ -455,8 +429,6 @@ export function ThreadSidebar() {
           setWsSelectorOpen(false);
         }}
       />
-      <TeamMembersDialog open={membersOpen} onClose={() => setMembersOpen(false)} />
-      <TeamSettingsDialog open={settingsOpen} onClose={() => setSettingsOpen(false)} />
     </div>
   );
 }

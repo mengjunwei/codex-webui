@@ -17,6 +17,8 @@ import { AccountSettings } from './account/account-settings';
 import { TerminalSettings } from './terminal-settings';
 import { FilesSettings } from './files-settings';
 import { SecuritySettings } from './security-settings';
+import { TeamMembersDialog } from '../team/team-members';
+import { TeamSettingsDialog } from '../team/team-settings';
 
 const SECTIONS = [
   'general',
@@ -24,6 +26,7 @@ const SECTIONS = [
   'terminal',
   'files',
   'security',
+  'team',
 ] as const;
 
 type SettingsSection = (typeof SECTIONS)[number];
@@ -35,6 +38,8 @@ export function SettingsPage() {
   const toggleDark = useThemeStore((s) => s.toggleDark);
   const threadId = useTimelineStore((s) => s.threadId);
   const [section, setSection] = useState<SettingsSection>('general');
+  const [membersOpen, setMembersOpen] = useState(false);
+  const [teamSettingsOpen, setTeamSettingsOpen] = useState(false);
 
   const navigateBack = () => {
     if (threadId) {
@@ -96,6 +101,24 @@ export function SettingsPage() {
         {section === 'terminal' && <TerminalSettings />}
         {section === 'files' && <FilesSettings />}
         {section === 'security' && <SecuritySettings />}
+        {section === 'team' && (
+          <div className="space-y-4">
+            <h2 className="text-lg font-semibold">{t('团队管理')}</h2>
+            <p className="text-sm text-muted-foreground">
+              {t('管理团队成员、邀请和团队设置。')}
+            </p>
+            <div className="flex gap-3">
+              <Button size="sm" onClick={() => setMembersOpen(true)}>
+                {t('成员管理')}
+              </Button>
+              <Button size="sm" variant="outline" onClick={() => setTeamSettingsOpen(true)}>
+                {t('团队设置')}
+              </Button>
+            </div>
+            <TeamMembersDialog open={membersOpen} onClose={() => setMembersOpen(false)} />
+            <TeamSettingsDialog open={teamSettingsOpen} onClose={() => setTeamSettingsOpen(false)} />
+          </div>
+        )}
       </div>
     </div>
   );
