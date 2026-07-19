@@ -14,7 +14,6 @@ import { resetSocket } from '@/socket';
 import { sectionLabel } from './setting-helpers';
 import { GeneralSettings } from './general-settings';
 import { AccountSettings } from './account/account-settings';
-import { CodexSettings } from './codex-settings';
 import { TerminalSettings } from './terminal-settings';
 import { FilesSettings } from './files-settings';
 import { SecuritySettings } from './security-settings';
@@ -22,7 +21,6 @@ import { SecuritySettings } from './security-settings';
 const SECTIONS = [
   'general',
   'account',
-  'codex',
   'terminal',
   'files',
   'security',
@@ -93,7 +91,8 @@ export function SettingsPage() {
           />
         )}
         {section === 'account' && <AccountSettings />}
-        {section === 'codex' && <CodexSettings />}
+        {/* Codex tab 临时下线:多租户迁移后 codex 配置是全局的,显示会误导用户以为可 per-team 配置。
+              per-team codex 配置接口待后续实现后再恢复。 */}
         {section === 'terminal' && <TerminalSettings />}
         {section === 'files' && <FilesSettings />}
         {section === 'security' && <SecuritySettings />}
