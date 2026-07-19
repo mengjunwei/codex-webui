@@ -6,7 +6,7 @@
 #   1. 创建 master 用户（如不存在）
 #   2. 配置 master 免密 sudo
 #   3. 部署二进制 + 前端 + 脚本到 /home/master/MNet/
-#   4. 生成默认 .env 配置文件
+#   4. 生成默认 config.toml 配置文件
 #   5. 设置文件权限
 #
 # 用法：
@@ -139,60 +139,98 @@ deploy_files() {
     ok "  bin/start.sh"
   fi
 
+  # 部署 config.toml.example（完整字段参考；打包未带则跳过）
+  if [[ -f "$SCRIPT_DIR/config.toml.example" ]]; then
+    cp "$SCRIPT_DIR/config.toml.example" "$INSTALL_PREFIX/config.toml.example"
+    ok "  config.toml.example"
+  fi
+
   # 创建便捷符号链接
   ln -sf "$INSTALL_PREFIX/bin/start.sh" "$INSTALL_HOME/start.sh" 2>/dev/null || true
 }
 
-# ── 生成 .env ────────────────────────────────────────────────────────────────
-generate_env() {
-  local env_file="$INSTALL_PREFIX/.env"
-  if [[ -f "$env_file" ]]; then
-    warn ".env 已存在，跳过生成（保留现有配置）"
+# ── 生成 config.toml ───────────────────────────────────────────────────────
+generate_config() {
+  local cfg_file="$INSTALL_PREFIX/config.toml"
+  if [[ -f "$cfg_file" ]]; then
+    warn "config.toml 已存在，跳过生成（保留现有配置）"
     return 0
   fi
 
-  log "生成默认 .env"
+  log "生成默认 config.toml"
 
-  # 生成随机 WEBUI_API_KEY（32 字符）
-  local api_key
+  # 随机密钥 / token（满足后端长度校验：webui_api_key≥16 / rpc_token≥32 / hook_token≥32）
+  local api_key rpc_token hook_token
   if command -v openssl >/dev/null 2>&1; then
     api_key="$(openssl rand -hex 16)"
+    rpc_token="$(openssl rand -hex 32)"
+    hook_token="$(openssl rand -hex 32)"
   else
     api_key="$(head -c 32 /dev/urandom | base64 | tr -dc 'a-zA-Z0-9' | head -c 32)"
+    rpc_token="$(head -c 64 /dev/urandom | base64 | tr -dc 'a-zA-Z0-9' | head -c 64)"
+    hook_token="$(head -c 64 /dev/urandom | base64 | tr -dc 'a-zA-Z0-9' | head -c 64)"
   fi
 
-  cat > "$env_file" <<EOF
-# Codex WebUI 配置文件
+  # worker_id：主机名（≥16 字节，不足补齐；多机部署每节点必须唯一）
+  local worker_id
+  worker_id="$(hostname 2>/dev/null || echo codex-webui)"
+  while [[ ${#worker_id} -lt 16 ]]; do worker_id="${worker_id}-"; done
+
+  cat > "$cfg_file" <<EOF
+# Codex WebUI 配置（后端只读此 TOML，不读业务环境变量）
 # 生成时间: $(date '+%Y-%m-%d %H:%M:%S')
+# ⚠️ 启动前请修改下方 [database] 为你的外部 PostgreSQL 连接信息。
+#    完整字段参考同目录 config.toml.example（若已部署）。
 
-# 必填：WebUI API 认证密钥（≥ 16 字符）
-WEBUI_API_KEY=$api_key
+[server]
+host = "0.0.0.0"
+port = 8172
+log_level = "info"
 
-# 可选：后端监听端口（默认 8172）
-PORT=8172
+[server.api]
+webui_api_key = "$api_key"
 
-# 可选：日志级别（debug/info/warn/error，默认 info）
-LOG_LEVEL=info
+[cluster]
+worker_id = "$worker_id"
 
-# 可选：Codex home 目录（默认 ~/.codex）
-# CODEX_HOME=
+# ⚠️ 改为你的外部 PostgreSQL 连接（部署脚本不代管 PG/Redis）
+[database]
+host = "127.0.0.1"
+port = 5432
+user = "codex"
+password = "CHANGE_ME"
+name = "codex"
 
-# 可选：SQLite 数据库路径（默认 CODEX_HOME/codex-webui.sqlite）
-# WEBUI_DB_PATH=
+# Redis（可选；单机可不启用。集群部署需 enable=true 并指向外部 Redis）
+# [redis]
+# enable = true
+# host = "127.0.0.1"
+# port = 6379
+# password = "CHANGE_ME"
 
-# 终端/codex 命令默认工作目录（须位于 WORKSPACE_ROOTS 内且为已存在目录）
-DEFAULT_TERMINAL_CWD=$INSTALL_PREFIX/data/codex/cwd
+[codex]
+bin = "$INSTALL_PREFIX/target/codex"
 
-# workspace 根目录（逗号分隔，家目录恒包含）
-WORKSPACE_ROOTS=$INSTALL_PREFIX/data/codex/workspace,$INSTALL_PREFIX/data/codex/cwd
+[security]
+internal_rpc_token = "$rpc_token"
+internal_hook_token = "$hook_token"
 
-# Codex 启动默认配置（仅当 codex config 缺失对应键时写入，不覆盖已有值）
-CODEX_DEFAULT_SANDBOX_MODE=danger-full-access
-CODEX_DEFAULT_APPROVAL_POLICY=never
+[process_pool]
+max_processes_per_team = 4
+max_global_processes = 25
+idle_evict_secs = 900
+max_concurrent_per_process = 20
+process_scale_threshold = 8
+
+[snapshot]
+interval_secs = 300
+
+[quota]
+default_turn_quota_hourly = 0
 EOF
 
-  chmod 600 "$env_file"
-  ok ".env 已生成"
+  chmod 600 "$cfg_file"
+  ok "config.toml 已生成"
   # 将 key 保存到全局变量供 print_summary 使用
   GENERATED_API_KEY="$api_key"
 }
@@ -210,7 +248,7 @@ print_summary() {
   if [[ -n "${GENERATED_API_KEY:-}" ]]; then
     key_hint="$GENERATED_API_KEY"
   else
-    key_hint="（已存在，运行 grep WEBUI_API_KEY $INSTALL_PREFIX/.env 查看）"
+    key_hint="（config.toml 已存在，grep webui_api_key $INSTALL_PREFIX/config.toml 查看）"
   fi
 
   cat <<EOF
@@ -222,20 +260,19 @@ print_summary() {
 │  用户     : $INSTALL_USER                                                │
 │  二进制   : $INSTALL_PREFIX/target/{codex-webui,codex,cc-switch}         │
 │  脚本     : $INSTALL_PREFIX/bin/start.sh                                 │
-│  配置     : $INSTALL_PREFIX/.env                                         │
+│  配置     : $INSTALL_PREFIX/config.toml                                  │
 │  日志     : $INSTALL_PREFIX/logs/                                        │
 │                                                                          │
-│  WEBUI_API_KEY:                                                          │
-│  $key_hint                                                               │
+│  ⚠️ 启动前必做：编辑 [database] 为你的外部 PostgreSQL 连接              │
+│     vi $INSTALL_PREFIX/config.toml                                       │
+│                                                                          │
+│  webui_api_key: $key_hint                                                │
 │                                                                          │
 │  下一步:                                                                 │
-│    1. 编辑配置:  vi $INSTALL_PREFIX/.env                                 │
+│    1. 改数据库:  vi $INSTALL_PREFIX/config.toml   （[database] 段）      │
 │    2. 切换用户:  su - $INSTALL_USER                                      │
 │    3. 启动服务:  bash ~/MNet/bin/start.sh                                │
 │    4. 查看状态:  bash ~/MNet/bin/start.sh status                         │
-│                                                                          │
-│  后续查看 key:                                                            │
-│    grep WEBUI_API_KEY $INSTALL_PREFIX/.env                               │
 └──────────────────────────────────────────────────────────────────────────┘
 EOF
 }
@@ -247,7 +284,7 @@ main() {
   ensure_user
   setup_sudo
   deploy_files
-  generate_env
+  generate_config
   fix_permissions
   print_summary
   ok "安装完成！"

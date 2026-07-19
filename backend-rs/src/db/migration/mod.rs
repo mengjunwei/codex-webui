@@ -19,7 +19,7 @@ impl MigratorTrait for Migrator {
     }
 }
 
-/// 多方言索引创建:PG/SQLite 用 `IF NOT EXISTS`;MySQL 不支持该语法,用普通 `CREATE INDEX`
+/// 多方言索引创建:PostgreSQL 用 `IF NOT EXISTS`;MySQL 不支持该语法,用普通 `CREATE INDEX`
 /// (sea-orm-migration 保证每个迁移只执行一次,首次执行索引不存在,幂等)。
 pub(crate) async fn create_index(
     manager: &SchemaManager<'_>,

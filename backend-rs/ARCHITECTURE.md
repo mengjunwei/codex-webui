@@ -96,7 +96,6 @@ backend-rs/src/
 │   ├── threads.rs             # REST 代理 → codex JSON-RPC
 │   ├── settings.rs            # 运行时设置 CRUD
 │   ├── files.rs               # 文件操作（路径安全边界）
-│   ├── sqlite.rs              # token-usage / turn-diff / turn-errors / pending-approvals
 │   ├── logs.rs                # 日志读取 + 脱敏
 │   ├── chat.rs                # 聊天附件上传
 │   ├── realtime.rs            # Socket.IO WebSocket 网关

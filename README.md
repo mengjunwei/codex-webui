@@ -3,9 +3,9 @@
 [![GHCR](https://img.shields.io/badge/GHCR-codex--webui-blue?logo=github)](https://github.com/LimLLL/codex-webui/pkgs/container/codex-webui)
 [![Docker](https://img.shields.io/badge/docker-multi--arch-brightgreen?logo=docker)](./Dockerfile)
 
-给 [OpenAI Codex CLI](https://github.com/openai/codex) 做的 Web 前端。把命令行交互搬到浏览器里，支持多线程并发、文件管理、终端、插件市场等。
+给 [OpenAI Codex CLI](https://github.com/openai/codex) 做的 Web 前端。把命令行交互搬到浏览器里，支持多线程并发、文件管理、终端、多租户 SaaS 等。
 
-**后端已用 Rust(axum + SeaORM)重写**,并支持**多租户 SaaS**(team 隔离、BYOK、多机横向扩展):通过 stdio JSON-RPC 与 `codex app-server` 通信,前端 React + Vite,Socket.IO 实时推送;多租户元数据落 PostgreSQL,分布式协调(路由/粘性/事件总线/限流)用 Redis。设计详见 [`docs/superpowers/specs/2026-07-16-multitenant-platform-design.md`](./docs/superpowers/specs/2026-07-16-multitenant-platform-design.md),快速上手见 [`docs/superpowers/specs/multitenant-quickstart.md`](./docs/superpowers/specs/multitenant-quickstart.md)。
+**后端已用 Rust（axum + SeaORM）重写**，支持**多租户 SaaS**（team 隔离、BYOK、多机横向扩展）：通过 stdio JSON-RPC 与 `codex app-server` 通信，前端 React + Vite，Socket.IO 实时推送；多租户元数据落 PostgreSQL/MySQL，分布式协调（路由/粘性/事件总线/限流）用 Redis。架构详见 [`backend-rs/ARCHITECTURE.md`](./backend-rs/ARCHITECTURE.md)，后端快速上手见 [`backend-rs/README.md`](./backend-rs/README.md)。
 
 [English](./README.en.md)
 
@@ -40,7 +40,7 @@
 
 ![终端](./images/sidebar-terminal.png)
 
-- 多 tab 共享终端（node-pty + xterm.js）
+- 多 tab 共享终端（portable-pty + xterm.js）
 - 断线重连，输出不丢失
 - headless VT 回放
 
@@ -63,9 +63,10 @@
   Zustand · Socket.IO Client · Monaco Editor · xterm.js
   Tailwind CSS 4 · shadcn/ui · Framer Motion · dnd-kit
      ↕  REST + WebSocket
-后端
-  NestJS 11 · Fastify 5 · Socket.IO · node-pty
-  SQLite (better-sqlite3 + Drizzle ORM) · Pino
+后端（Rust）
+  axum 0.8 · SeaORM 1.1（PostgreSQL/MySQL）· Redis · tokio
+  socketioxide（Socket.IO）· portable-pty + wezterm-term（终端）
+  memberlist 0.8.5（多节点 gossip 探活）· argon2 · AES-256-GCM
      ↕  stdio JSON-RPC
   codex app-server（子进程）
 ```
@@ -74,110 +75,90 @@
 
 ### 前置条件
 
-- Node.js >= 20
-- pnpm >= 9
+- Rust ≥ 1.85（edition 2024）
+- Node.js ≥ 20 + pnpm ≥ 9（前端 + codex CLI）
+- PostgreSQL 16+（多租户元数据）
+- Redis 7+（可选；不配则单节点模式，无副本/failover）
 - [Codex CLI](https://github.com/openai/codex) 已安装并可用
 
 ### Docker 部署（推荐）
 
-直接从 GHCR 拉取镜像，无需本地构建：
+`docker-compose.yml` 自带 PostgreSQL + Redis。后端从 `config.toml` 读取所有配置，需准备一份并挂载进容器：
 
 ```bash
-# 创建 .env
-cat <<EOF > .env
-WEBUI_API_KEY=your-secret-key
-OPENAI_API_KEY=sk-xxx
-EOF
+# 1. 准备配置（[database] 指向 postgres 服务、[redis] 指向 redis 服务，填 webui_api_key / worker_id / token）
+cp backend-rs/config.toml.example config.toml
+vi config.toml
 
-# 启动（自动拉取多架构镜像）
-docker compose up -d
+# 2. 启动（自动构建多阶段镜像：前端 + Rust 后端 + codex CLI）
+docker compose up -d --build
 ```
 
-或者手动运行：
-
-```bash
-docker run -d --name codex-webui \
-  -p 8172:8172 \
-  -e WEBUI_API_KEY=your-secret-key \
-  -e OPENAI_API_KEY=sk-xxx \
-  -v codex_root:/root \
-  -v codex_workspaces:/workspaces \
-  ghcr.io/limlll/codex-webui:latest
-```
-
-服务运行在 `http://localhost:8172`。
-
-> `/root` 卷持久化 codex/claude/MCP 配置及运行时工具链。首次启动自动释放内置 seed。
+服务运行在 `http://localhost:8172`。多机横向扩展、副本 HA 见 [`docs/cluster-deploy.md`](./docs/cluster-deploy.md)。
 
 ### 本地开发
 
 ```bash
 git clone https://github.com/LimLLL/codex-webui.git
 cd codex-webui
+
+# 1. 准备 PostgreSQL（必需；Redis 可选）。本地可临时用 docker 起：
+docker run -d --name codex-pg -p 5432:5432 \
+  -e POSTGRES_USER=codex -e POSTGRES_PASSWORD=codex -e POSTGRES_DB=codex postgres:16-alpine
+
+# 2. 后端
+cd backend-rs
+cp config.toml.example config.toml   # 编辑 [database] / [redis] 段
+cargo run --release
+
+# 3. 前端（另开终端，端口 5173，自动代理到后端）
+cd web
 pnpm install
-
-cp .env.example .env
-# 编辑 .env，至少设置 WEBUI_API_KEY
-
-# 启动后端（默认端口 8172）
-pnpm start:dev
-
-# 另一个终端，启动前端（端口 5173，自动代理到后端）
-cd web && pnpm dev
+pnpm dev
 ```
 
 打开 `http://localhost:5173` 即可使用。
 
-## 环境变量
+## 配置
 
-| 变量 | 必填 | 默认值 | 说明 |
-|------|:----:|--------|------|
-| `WEBUI_API_KEY` | 是 | — | 登录密钥，同时用于派生 JWT 签名 |
-| `PORT` | 否 | `8172` | 后端监听端口 |
-| `OPENAI_API_KEY` | 否 | — | Codex 使用 OpenAI API 时的密钥 |
-| `CODEX_BIN` | 否 | `codex` | codex CLI 可执行文件路径 |
-| `CODEX_HOME` | 否 | `~/.codex` | Codex 主目录 |
-| `LOG_LEVEL` | 否 | `info` | Pino 日志级别 |
-| `WEBUI_DB_PATH` | 否 | `CODEX_HOME/codex-webui.sqlite` | SQLite 数据库路径 |
+后端采用**纯 TOML 配置（无环境变量回退）**，模板见 [`backend-rs/config.toml.example`](./backend-rs/config.toml.example)。查找顺序：
 
-### Runtime Settings
+1. `$CODEX_WEBUI_CONFIG`（精确路径）
+2. `$CODEX_HOME/config.toml`
+3. `./config.toml`
+4. `$HOME/.codex-webui/config.toml`
 
-`security.workspaceRoots`、`files.uploadMaxBytes`、`terminal.defaultCwd`、`terminal.maxSessions`、`terminal.graceMs`、`terminal.scrollback` 已迁入 SQLite runtime settings，可在 Settings 页面或 `/api/settings` 修改；同名历史环境变量仍作为 DB 未设置时的 fallback 生效。
-Docker Compose 保留 `WORKSPACE_ROOTS=/workspaces`，用于首次启动时为挂载的 `/workspaces` 提供 bootstrap fallback。
+> ⚠️ 后端**不读** `DATABASE_URL` / `WEBUI_API_KEY` / `WORKER_ID` 等业务环境变量——这些是旧架构残留，全部业务参数只从 TOML 读取。Docker 部署时需把 `config.toml` 挂载进容器（见下文 Docker 章节）。
 
 ## 项目结构
 
 ```
-├── src/                  # NestJS 后端
-│   ├── codex/            # 进程管理、JSON-RPC 客户端
-│   ├── threads/          # 线程 CRUD、WebSocket 网关
-│   ├── files/            # 文件操作、路径安全校验
-│   ├── terminal/         # 多 tab 终端（node-pty）
-│   ├── auth/             # JWT + API Key 认证
-│   ├── database/         # SQLite + Drizzle ORM
-│   └── ...               # 其他模块
-├── web/                  # React 前端
-│   └── src/
-│       ├── routes/       # TanStack Router 页面
-│       ├── components/   # UI 组件
-│       ├── stores/       # Zustand 状态管理
-│       ├── hooks/        # 自定义 hooks
-│       └── generated/    # Hey API SDK（自动生成）
-├── Dockerfile            # 多阶段构建 + seed root
-└── docker-compose.yml
+├── backend-rs/           # Rust 后端（axum + SeaORM）
+│   ├── src/
+│   │   ├── api/          # HTTP handler + Socket.IO 网关
+│   │   ├── codex/        # codex 进程管理 + JSON-RPC 客户端
+│   │   ├── db/           # SeaORM 实体 + 多方言迁移（PG/MySQL）
+│   │   └── services/     # 多租户 / 进程池 / 集群 / workspace
+│   ├── config.toml.example
+│   └── ARCHITECTURE.md   # 完整架构文档
+├── web/                  # React 前端（Vite）
+├── Dockerfile            # 多阶段构建（前端 + Rust 后端 + codex CLI）
+└── docker-compose.yml    # PostgreSQL + Redis + codex-webui
 ```
 
 ## 常用命令
 
 ```bash
-pnpm start:dev          # 后端开发模式
-pnpm build              # 编译后端
-pnpm test               # 运行测试
-pnpm lint               # ESLint 检查
-pnpm db:generate        # 生成数据库迁移
-pnpm db:migrate         # 执行迁移
-cd web && pnpm dev      # 前端开发模式
-cd web && pnpm build    # 前端构建（输出到 public/）
+# 后端（backend-rs/）
+cargo run --release                            # 运行
+cargo build --release                          # 编译
+cargo test --lib                               # 单元测试
+cargo test --features memberlist-backend       # 带 gossip 探活
+
+# 前端（web/）
+pnpm install
+pnpm dev                                       # 开发模式（端口 5173）
+pnpm build                                     # 构建（输出到 backend-rs/public，由 rust-embed 嵌入二进制）
 ```
 
 ## HTTPS / 反向代理

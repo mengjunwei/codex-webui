@@ -3,9 +3,9 @@
 [![GHCR](https://img.shields.io/badge/GHCR-codex--webui-blue?logo=github)](https://github.com/LimLLL/codex-webui/pkgs/container/codex-webui)
 [![Docker](https://img.shields.io/badge/docker-multi--arch-brightgreen?logo=docker)](./Dockerfile)
 
-A web frontend for [OpenAI Codex CLI](https://github.com/openai/codex). It brings the CLI experience into the browser with multi-thread concurrency, a file manager, a shared terminal, and plugin management.
+A web frontend for [OpenAI Codex CLI](https://github.com/openai/codex). It brings the CLI experience into the browser with multi-thread concurrency, a file manager, a shared terminal, and multi-tenant SaaS support.
 
-The backend (NestJS) talks to `codex app-server` over stdio JSON-RPC and pushes real-time events to a React frontend via Socket.IO.
+**The backend has been rewritten in Rust (axum + SeaORM)** with **multi-tenant SaaS** support (team isolation, BYOK, horizontal scaling): it talks to `codex app-server` over stdio JSON-RPC and pushes real-time events to a React frontend via Socket.IO. Multi-tenant metadata lives in PostgreSQL/MySQL; distributed coordination (routing / stickiness / event bus / rate limiting) uses Redis. See [`backend-rs/ARCHITECTURE.md`](./backend-rs/ARCHITECTURE.md) for the design and [`backend-rs/README.md`](./backend-rs/README.md) to get started.
 
 [简体中文](./README.md)
 
@@ -40,7 +40,7 @@ The backend (NestJS) talks to `codex app-server` over stdio JSON-RPC and pushes 
 
 ![Terminal](./images/sidebar-terminal-en.png)
 
-- Multi-tab shared terminal (node-pty + xterm.js)
+- Multi-tab shared terminal (portable-pty + xterm.js)
 - Reconnect with no output loss
 - Headless VT replay
 
@@ -63,9 +63,10 @@ Browser
   Zustand · Socket.IO Client · Monaco Editor · xterm.js
   Tailwind CSS 4 · shadcn/ui · Framer Motion · dnd-kit
      ↕  REST + WebSocket
-Server
-  NestJS 11 · Fastify 5 · Socket.IO · node-pty
-  SQLite (better-sqlite3 + Drizzle ORM) · Pino
+Backend (Rust)
+  axum 0.8 · SeaORM 1.1 (PostgreSQL/MySQL) · Redis · tokio
+  socketioxide (Socket.IO) · portable-pty + wezterm-term (terminal)
+  memberlist 0.8.5 (multi-node gossip) · argon2 · AES-256-GCM
      ↕  stdio JSON-RPC
   codex app-server (child process)
 ```
@@ -74,110 +75,90 @@ Server
 
 ### Prerequisites
 
-- Node.js >= 20
-- pnpm >= 9
+- Rust ≥ 1.85 (edition 2024)
+- Node.js ≥ 20 + pnpm ≥ 9 (frontend + codex CLI)
+- PostgreSQL 16+ (multi-tenant metadata)
+- Redis 7+ (optional; without it the server runs in single-node mode — no replicas/failover)
 - [Codex CLI](https://github.com/openai/codex) installed and available in PATH
 
 ### Docker Deployment (Recommended)
 
-Pull the pre-built multi-arch image from GHCR:
+`docker-compose.yml` ships PostgreSQL + Redis. The backend reads all config from `config.toml`, so prepare one and mount it into the container:
 
 ```bash
-# Create .env
-cat <<EOF > .env
-WEBUI_API_KEY=your-secret-key
-OPENAI_API_KEY=sk-xxx
-EOF
+# 1. Prepare config ([database] → postgres service, [redis] → redis service; fill webui_api_key / worker_id / tokens)
+cp backend-rs/config.toml.example config.toml
+vi config.toml
 
-# Start (auto-pulls multi-arch image)
-docker compose up -d
+# 2. Start (builds the multi-stage image: frontend + Rust backend + codex CLI)
+docker compose up -d --build
 ```
 
-Or run directly:
-
-```bash
-docker run -d --name codex-webui \
-  -p 8172:8172 \
-  -e WEBUI_API_KEY=your-secret-key \
-  -e OPENAI_API_KEY=sk-xxx \
-  -v codex_root:/root \
-  -v codex_workspaces:/workspaces \
-  ghcr.io/limlll/codex-webui:latest
-```
-
-The app runs at `http://localhost:8172`.
-
-> The `/root` volume persists codex/claude/MCP configs and the runtime toolchain. The built-in seed is automatically extracted on first start.
+The app runs at `http://localhost:8172`. For multi-node horizontal scaling and replica HA, see [`docs/cluster-deploy.md`](./docs/cluster-deploy.md).
 
 ### Local Development
 
 ```bash
 git clone https://github.com/LimLLL/codex-webui.git
 cd codex-webui
+
+# 1. Prepare PostgreSQL (required; Redis optional). Run a throwaway instance locally:
+docker run -d --name codex-pg -p 5432:5432 \
+  -e POSTGRES_USER=codex -e POSTGRES_PASSWORD=codex -e POSTGRES_DB=codex postgres:16-alpine
+
+# 2. Backend
+cd backend-rs
+cp config.toml.example config.toml   # edit [database] / [redis]
+cargo run --release
+
+# 3. Frontend (another terminal, port 5173, proxies to backend)
+cd web
 pnpm install
-
-cp .env.example .env
-# Edit .env — at minimum set WEBUI_API_KEY
-
-# Start the backend (default port 8172)
-pnpm start:dev
-
-# In another terminal, start the frontend (port 5173, proxies to backend)
-cd web && pnpm dev
+pnpm dev
 ```
 
 Open `http://localhost:5173`.
 
-## Environment Variables
+## Configuration
 
-| Variable                       | Required | Default                        | Description                                    |
-| ------------------------------ | :------: | ------------------------------ | ---------------------------------------------- |
-| `WEBUI_API_KEY`                |   Yes    | —                              | Login key; also derives JWT signing secret      |
-| `PORT`                         |    No    | `8172`                         | Backend listen port                            |
-| `OPENAI_API_KEY`               |    No    | —                              | OpenAI API key used by Codex                   |
-| `CODEX_BIN`                    |    No    | `codex`                        | Path to codex CLI binary                       |
-| `CODEX_HOME`                   |    No    | `~/.codex`                     | Codex home directory                           |
-| `LOG_LEVEL`                    |    No    | `info`                         | Pino log level                                 |
-| `WEBUI_DB_PATH`                |    No    | `CODEX_HOME/codex-webui.sqlite`| SQLite database path                           |
+The backend uses **pure TOML config (no env-var fallback)** — see [`backend-rs/config.toml.example`](./backend-rs/config.toml.example). Lookup order:
 
-### Runtime Settings
+1. `$CODEX_WEBUI_CONFIG` (exact path)
+2. `$CODEX_HOME/config.toml`
+3. `./config.toml`
+4. `$HOME/.codex-webui/config.toml`
 
-`security.workspaceRoots`, `files.uploadMaxBytes`, `terminal.defaultCwd`, `terminal.maxSessions`, `terminal.graceMs`, and `terminal.scrollback` now live in SQLite runtime settings and can be changed from Settings or `/api/settings`; the legacy env vars still work as fallbacks when no DB value is set.
-Docker Compose keeps `WORKSPACE_ROOTS=/workspaces` as a bootstrap fallback for the mounted `/workspaces` volume on first startup.
+> ⚠️ The backend **does not read** `DATABASE_URL` / `WEBUI_API_KEY` / `WORKER_ID` or any business env vars — those are legacy leftovers. All business parameters come from TOML only. Under Docker, mount `config.toml` into the container (see Docker section below).
 
 ## Project Structure
 
 ```
-├── src/                  # NestJS backend
-│   ├── codex/            # Process manager, JSON-RPC client
-│   ├── threads/          # Thread CRUD, WebSocket gateway
-│   ├── files/            # File ops, path security
-│   ├── terminal/         # Multi-tab terminal (node-pty)
-│   ├── auth/             # JWT + API Key auth
-│   ├── database/         # SQLite + Drizzle ORM
-│   └── ...               # Other modules
-├── web/                  # React frontend
-│   └── src/
-│       ├── routes/       # TanStack Router pages
-│       ├── components/   # UI components
-│       ├── stores/       # Zustand state management
-│       ├── hooks/        # Custom hooks
-│       └── generated/    # Hey API SDK (auto-generated)
-├── Dockerfile            # Multi-stage build + seed root
-└── docker-compose.yml
+├── backend-rs/           # Rust backend (axum + SeaORM)
+│   ├── src/
+│   │   ├── api/          # HTTP handlers + Socket.IO gateway
+│   │   ├── codex/        # codex process manager + JSON-RPC client
+│   │   ├── db/           # SeaORM entities + multi-dialect migrations (PG/MySQL)
+│   │   └── services/     # multitenant / process pool / cluster / workspace
+│   ├── config.toml.example
+│   └── ARCHITECTURE.md   # full architecture doc
+├── web/                  # React frontend (Vite)
+├── Dockerfile            # multi-stage build (frontend + Rust backend + codex CLI)
+└── docker-compose.yml    # PostgreSQL + Redis + codex-webui
 ```
 
 ## Commands
 
 ```bash
-pnpm start:dev          # Backend dev server
-pnpm build              # Compile backend
-pnpm test               # Run tests
-pnpm lint               # ESLint
-pnpm db:generate        # Generate DB migration
-pnpm db:migrate         # Run migrations
-cd web && pnpm dev      # Frontend dev server
-cd web && pnpm build    # Build frontend (outputs to public/)
+# Backend (backend-rs/)
+cargo run --release                            # run
+cargo build --release                          # build
+cargo test --lib                               # unit tests
+cargo test --features memberlist-backend       # with gossip discovery
+
+# Frontend (web/)
+pnpm install
+pnpm dev                                       # dev server (port 5173)
+pnpm build                                     # build (outputs to backend-rs/public, embedded via rust-embed)
 ```
 
 ## HTTPS / Reverse Proxy
