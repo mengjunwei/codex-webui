@@ -207,6 +207,27 @@ export interface AuditEntry {
   created_at: number;
 }
 
+// ── 权限相关类型（对齐后端 GET /api/mt/me 响应）──────────────────
+
+/** 团队内角色:owner(所有者) / admin(管理员) / member(普通成员)。 */
+export type Role = 'owner' | 'admin' | 'member';
+
+/** 团队权限全集(对齐后端 TeamPermission 枚举)。 */
+export const TEAM_PERMISSIONS = [
+  'team:member:list', 'team:member:invite', 'team:member:remove', 'team:member:role:write',
+  'team:api_key:read', 'team:api_key:write', 'team:audit:read',
+  'team:thread:create', 'team:thread:read', 'team:turn:write',
+  'team:owner:transfer', 'team:dissolve',
+] as const;
+export type TeamPermission = typeof TEAM_PERMISSIONS[number];
+
+/** 后端 GET /api/mt/me 响应(字段 snake_case,对齐 handlers.rs serde_json::json!)。 */
+export interface MeResponse {
+  user: { id: string; email: string; display_name: string | null };
+  is_platform_admin: boolean;
+  teams: Array<{ team_id: string; role: Role; permissions: TeamPermission[] }>;
+}
+
 // ── 请求 Body 类型 ────────────────────────────────────────────
 
 export interface RegisterBody { email: string; password: string; }
@@ -230,6 +251,8 @@ export const authApi = {
     mtFetch<AuthResponse>('/auth/login', 'POST', body),
   refresh: (body: { refreshToken: string }) =>
     mtFetch<AuthResponse>('/auth/refresh', 'POST', body),
+  /** 当前登录用户身份(含 is_platform_admin 与各 team 角色/权限)。 */
+  getMe: () => mtFetch<MeResponse>('/me'),
 };
 
 // ── Team API（列表返回直接数组）──────────────────────────────
@@ -253,6 +276,15 @@ export const teamsApi = {
     mtFetch<ApiKeyResp[]>(`/teams/${teamId}/api-key`),
   listAudit: (teamId: string, limit?: number) =>
     mtFetch<AuditEntry[]>(`/teams/${teamId}/audit${limit ? `?limit=${limit}` : ''}`),
+  /** 转移团队所有权给另一成员(仅 owner)。 */
+  transferOwner: (teamId: string, newOwnerUserId: string) =>
+    mtFetch<void>(`/teams/${teamId}/transfer`, 'POST', { newOwnerUserId }),
+  /** 解散团队(仅 owner)。 */
+  dissolve: (teamId: string) =>
+    mtFetch<void>(`/teams/${teamId}`, 'DELETE'),
+  /** 调整成员角色(owner/admin/member)。 */
+  setMemberRole: (teamId: string, userId: string, role: Role) =>
+    mtFetch<void>(`/teams/${teamId}/members/${userId}/role`, 'PATCH', { role }),
 };
 
 // ── Threads API（列表返回直接数组；查询参数 teamId camelCase）──
