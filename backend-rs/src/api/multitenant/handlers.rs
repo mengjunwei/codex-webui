@@ -9,10 +9,12 @@
 
 use crate::error::{AppError, ErrorCode};
 use crate::db::entities::thread::{ActiveModel as ThreadActiveModel, Column as ThreadColumn, Entity as ThreadEntity};
+use crate::db::entities::role_permission::{Column as RolePermissionColumn, Entity as RolePermissionEntity};
 use crate::db::entities::team_api_key::Model as TeamApiKey;
-use crate::db::entities::user::Model as User;
+use crate::db::entities::team_member::{Column as TeamMemberColumn, Entity as TeamMemberEntity};
+use crate::db::entities::user::{Entity as UserEntity, Model as User};
 use crate::multitenant::middleware::UserId;
-use crate::services::multitenant::{api_keys, audit, auth, teams};
+use crate::services::multitenant::{api_keys, audit, auth, permissions, teams};
 use crate::state::AppState;
 use axum::extract::{Extension, Path, Query, State};
 use axum::http::StatusCode;
@@ -606,6 +608,55 @@ pub async fn mt_list_my_threads(
         .await
         .map_err(|e| AppError::internal(format!("list my threads: {e}")))?;
     Ok(Json(list))
+}
+
+/// GET /api/mt/me:当前用户身份 + 平台管理员标记 + 各 team 角色/权限点。
+/// 供前端权限驱动 UI 显隐(导航/按钮/菜单)。
+pub async fn mt_me(
+    State(state): State<AppState>,
+    Extension(uid): Extension<UserId>,
+) -> Result<Json<serde_json::Value>, AppError> {
+    let db = require_db(&state);
+    let user = UserEntity::find_by_id(uid.0.clone())
+        .one(db)
+        .await
+        .map_err(|e| AppError::internal(format!("query user: {e}")))?
+        .ok_or_else(|| {
+            AppError::business(
+                ErrorCode::HttpNotFound,
+                StatusCode::NOT_FOUND,
+                "user not found".into(),
+                None,
+            )
+        })?;
+    let is_admin = permissions::is_platform_admin(db, &uid.0).await?;
+    // 用户的所有 team 成员关系
+    let memberships = TeamMemberEntity::find()
+        .filter(TeamMemberColumn::UserId.eq(uid.0.clone()))
+        .all(db)
+        .await
+        .map_err(|e| AppError::internal(format!("query memberships: {e}")))?;
+    let mut teams = Vec::with_capacity(memberships.len());
+    for m in memberships {
+        let perms = RolePermissionEntity::find()
+            .filter(RolePermissionColumn::Role.eq(m.role.clone()))
+            .all(db)
+            .await
+            .map_err(|e| AppError::internal(format!("query role perms: {e}")))?
+            .into_iter()
+            .map(|r| r.permission)
+            .collect::<Vec<_>>();
+        teams.push(serde_json::json!({
+            "team_id": m.team_id,
+            "role": m.role,
+            "permissions": perms,
+        }));
+    }
+    Ok(Json(serde_json::json!({
+        "user": { "id": user.id, "email": user.email, "display_name": user.display_name },
+        "is_platform_admin": is_admin,
+        "teams": teams,
+    })))
 }
 
 /// 删除会话(含归档):权限校验 → codex thread/delete → 清 PG(threads/resume_cache/业务表)

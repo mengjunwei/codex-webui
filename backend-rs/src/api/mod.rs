@@ -208,6 +208,7 @@ pub async fn build_router(state: AppState) -> Router {
     // 多租户路由(M1):/api/mt/auth/* 公开;/api/mt/teams/* 受 require_user_auth 保护。
     use crate::api::multitenant::handlers as mt;
     let mt_protected: Router<AppState> = Router::new()
+        .route("/me", get(mt::mt_me))
         .route("/teams", post(mt::create_team).get(mt::list_teams))
         .route("/teams/join", post(mt::join_team))
         .route("/teams/{teamId}/members", get(mt::list_members))
