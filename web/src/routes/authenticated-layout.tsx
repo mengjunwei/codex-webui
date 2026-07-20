@@ -15,7 +15,6 @@ import {
 import { ChatHeader } from '@/components/chat/chat-header';
 import { ThreadSidebar } from '@/components/chat/thread-sidebar';
 import { SnackbarContainer } from '@/components/snackbar/snackbar-container';
-import { CodexStatusBanner } from '@/components/codex-status-banner';
 import { useBreakpoint } from '@/hooks/use-breakpoint';
 import { useCodexSocket } from '@/hooks/use-codex-socket';
 import { useFilesStore } from '@/stores/files-store';
@@ -358,7 +357,8 @@ export function AuthenticatedLayout() {
             onToggleDark={toggleDark}
             onToggleDiagnostics={handleToggleDiagnostics}
           />
-          <CodexStatusBanner />
+          {/* CodexStatusBanner 临时下线:codex 状态提示(服务降级/未知的 Provider 环境变量等)
+              在多租户 BYOK 环境下频繁误报,暂不展示。待 status 检查适配 BYOK 后恢复。 */}
           <Outlet />
         </div>
       </div>
