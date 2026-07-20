@@ -43,6 +43,24 @@ fn extract_bearer(req: &Request<Body>) -> Option<String> {
     }
 }
 
+/// 平台管理员 gate:要求 `require_user_auth` 已注入的 `UserId` 是 `is_platform_admin`,否则 403。
+///
+/// 必须挂在 `require_user_auth` 之后(由后者负责注入 `UserId` 扩展)。
+/// 用于收紧全局敏感写操作(全局 settings、全局 logs、公共工作区 files 写)为平台管理员专属。
+pub async fn require_platform_admin_layer(
+    State(state): State<AppState>,
+    req: Request<Body>,
+    next: Next,
+) -> Result<Response, AppError> {
+    let uid = req
+        .extensions()
+        .get::<UserId>()
+        .cloned()
+        .ok_or_else(|| AppError::unauthorized(ErrorCode::AuthMissingHeader, "missing auth"))?;
+    crate::services::multitenant::permissions::require_platform_admin(&state.db, &uid.0).await?;
+    Ok(next.run(req).await)
+}
+
 /// 文件内联预览/OnlyOffice 下载专用鉴权(给 /api/files/serve 与 /api/files/archive/entry)。
 ///
 /// 这两个端点必须支持 `?access_token=` 查询参数:<img>/<video>/<pdf> 标签与 OnlyOffice

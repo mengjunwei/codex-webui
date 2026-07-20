@@ -18,7 +18,7 @@ use axum::{
     http::{header, StatusCode, Uri},
     middleware::{from_fn, Next},
     response::{IntoResponse, Response},
-    routing::{get, post},
+    routing::{delete, get, patch, post},
     Router,
 };
 use crate::error::Json;
@@ -144,6 +144,14 @@ pub async fn build_router(state: AppState) -> Router {
     // 会让 /chat/upload 与 /files/upload 任何 >2 MB 的上传都被拒绝；这里显式覆盖。
     let upload_limit = state.settings_reader().get_upload_max_bytes().await as usize;
 
+    // 平台管理员 gate layer(挂在 require_user_auth 之内,收紧全局敏感操作)。
+    // Clone:axum 的 FromFnLayer 在 F: Clone + S: Clone 时派生 Clone,
+    // 这里 F 是 fn 指针、S 是 AppState(均 Clone),可安全复用。
+    let admin_layer = axum::middleware::from_fn_with_state(
+        state.clone(),
+        crate::multitenant::middleware::require_platform_admin_layer,
+    );
+
     // 受保护的 API 子路由（统一使用多租户认证）。
     let api = Router::new()
         // ── Phase 0 探针(同时作为 GET /api/status,与 AppController 对齐)──
@@ -152,17 +160,35 @@ pub async fn build_router(state: AppState) -> Router {
         // ── chat 上传(受保护;multipart)──
         .route("/chat/upload", post(chat_mod::upload_attachment).layer(axum::extract::DefaultBodyLimit::disable()))
         // ── settings 增删改查(CRUD)──
-        .route("/settings", get(s::list).patch(s::update_batch))
-        .route("/settings/{key}", get(s::get_one).patch(s::update_one).delete(s::delete_one))
+        // 收紧:GET(list/get_one)保持登录可读;PATCH/DELETE(写)收紧为平台管理员专属。
+        // 通过 MethodRouter::merge 把 admin_layer 只套在写方法上,GET 不受影响。
+        .route(
+            "/settings",
+            get(s::list).merge(patch(s::update_batch).layer(admin_layer.clone())),
+        )
+        .route(
+            "/settings/{key}",
+            get(s::get_one).merge(
+                patch(s::update_one)
+                    .merge(delete(s::delete_one))
+                    .layer(admin_layer.clone()),
+            ),
+        )
         // ── 线程维度读取 ──
         // 注:threads 维度的 token-usage / turn-diffs / turn-errors / pending-approvals
         // 老路由已下线 —— 它们的 handler(sqlite.rs)不校验 thread→team 归属、不过滤 team_id,
         // 在统一多租户认证下构成跨租户越权(IDOR)。多租户安全版本位于 /api/mt/threads/*
         // (mt_token_usage / mt_turn_diffs / mt_turn_errors / mt_list_approvals / mt_resolve_approval),
         // 经 require_thread_team + team_id 过滤。前端请改用 /api/mt/* 路径。
-        // ── 日志 ──
-        .route("/logs", get(crate::api::logs::list_logs))
-        .route("/logs/export", get(crate::api::logs::export_diagnostics))
+        // ── 日志(全局敏感读:收紧为平台管理员专属)──
+        .route(
+            "/logs",
+            get(crate::api::logs::list_logs).layer(admin_layer.clone()),
+        )
+        .route(
+            "/logs/export",
+            get(crate::api::logs::export_diagnostics).layer(admin_layer.clone()),
+        )
         // 注:单租户 /api/account* /apps /models /mcp-servers* /skills* /plugins* 老路由已下线 ——
         // handler(api/proxies.rs)用全局 codex、不校验归属,统一多租户认证下任意普通 member 可
         // 改全局账号(account/login、logout)、改全局 MCP/skills/plugins 配置、读全局账号 email/plan
@@ -181,21 +207,50 @@ pub async fn build_router(state: AppState) -> Router {
         // root 会被所有用户共享 → 文件 IDOR。files 操作改用管理员配置的公共工作区
         // (HOME + security.workspaceRoots)。多租户 per-user/team 文件操作走 workspace
         // (codex_home/users/{uid} + teams/{tid},经 hooks 决策隔离)。GET 保留(列出公共 roots)。
+        //
+        // 收紧:公共工作区写操作(create/delete/write/rename/copy/move/upload)收紧为平台管理员专属。
+        // GET 读路由(roots/tree/read/metadata/download/archive)保持登录可读。
         .route("/files/roots", get(fl::get_roots))
         .route("/files/tree", get(fl::read_tree))
         .route("/files/read", get(fl::read_file))
         .route("/files/metadata", get(fl::get_metadata))
-        .route("/files/delete", axum::routing::delete(fl::delete_path))
-        .route("/files/create-file", post(fl::create_file))
-        .route("/files/create-directory", post(fl::create_directory))
-        .route("/files/write", post(fl::write_file))
+        .route(
+            "/files/delete",
+            delete(fl::delete_path).layer(admin_layer.clone()),
+        )
+        .route(
+            "/files/create-file",
+            post(fl::create_file).layer(admin_layer.clone()),
+        )
+        .route(
+            "/files/create-directory",
+            post(fl::create_directory).layer(admin_layer.clone()),
+        )
+        .route(
+            "/files/write",
+            post(fl::write_file).layer(admin_layer.clone()),
+        )
         // 注:/files/serve 与 /files/archive/entry 移到 require_file_access(支持 ?access_token=
         // download token,供 OnlyOffice/内联预览加载),不在此 require_user_auth 层(只读头会 401)。
         .route("/files/download", get(fl::download_file))
-        .route("/files/rename", post(fl::rename_path))
-        .route("/files/copy", post(fl::copy_path))
-        .route("/files/move", post(fl::move_path))
-        .route("/files/upload", post(fl::upload_files).layer(axum::extract::DefaultBodyLimit::disable()))
+        .route(
+            "/files/rename",
+            post(fl::rename_path).layer(admin_layer.clone()),
+        )
+        .route(
+            "/files/copy",
+            post(fl::copy_path).layer(admin_layer.clone()),
+        )
+        .route(
+            "/files/move",
+            post(fl::move_path).layer(admin_layer.clone()),
+        )
+        .route(
+            "/files/upload",
+            post(fl::upload_files)
+                .layer(axum::extract::DefaultBodyLimit::disable())
+                .layer(admin_layer.clone()),
+        )
         .route("/files/archive/list", get(fl::archive_list))
         // ── onlyoffice 配置(受保护)──
         .route("/onlyoffice/config", get(oo::get_config))
