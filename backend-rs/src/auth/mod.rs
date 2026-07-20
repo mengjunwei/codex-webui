@@ -9,8 +9,6 @@
 //!
 //! `LoginResponse` / `LoginRequest` 也定义于此（DTO 与 `auth/dto/auth.dto.ts` 对齐）。
 
-pub mod middleware;
-
 use crate::error::AppError;
 use hmac::{Hmac, Mac};
 use jsonwebtoken::{decode, encode, Algorithm, DecodingKey, EncodingKey, Header, Validation};
