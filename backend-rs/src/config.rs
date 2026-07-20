@@ -247,6 +247,10 @@ pub struct AuthConfig {
 pub struct SecurityConfig {
     pub internal_rpc_token: String,
     pub internal_hook_token: String,
+    /// 平台超级管理员邮箱列表(启动期 bootstrap:把这些已存在用户置 is_platform_admin=true)。
+    /// 仅用于初始化首个管理员;之后以 DB 为准(不在列表里的不会被撤销)。
+    #[serde(default)]
+    pub admin_emails: Vec<String>,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -1222,6 +1226,50 @@ internal_hook_token = "0123456789abcdef0123456789abcdef"
         let c = Config::load_from(&path).unwrap();
         assert!(c.snapshot.root.enable);
         assert_eq!(c.snapshot.root.path.as_deref(), Some("/var/snapshots"));
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn security_admin_emails_default_empty_and_explicit() {
+        // 默认:[security] 段不写 admin_emails → 反序列化为空 Vec。
+        let base = r#"
+[server.api]
+webui_api_key = "0123456789abcdef"
+[cluster]
+worker_id = "node-a-staaaaaaaaable"
+[database]
+host = "h"
+user = "u"
+name = "n"
+[codex]
+[security]
+internal_rpc_token = "0123456789abcdef0123456789abcdef"
+internal_hook_token = "0123456789abcdef0123456789abcdef"
+"#;
+        let path = write_cfg(base);
+        let c = Config::load_from(&path).unwrap();
+        assert!(c.security.admin_emails.is_empty(), "default should be empty");
+        std::fs::remove_file(&path).ok();
+
+        // 显式:admin_emails 放进 [security] 段内 → 解析为非空 Vec。
+        let with_admins = r#"
+[server.api]
+webui_api_key = "0123456789abcdef"
+[cluster]
+worker_id = "node-a-staaaaaaaaable"
+[database]
+host = "h"
+user = "u"
+name = "n"
+[codex]
+[security]
+internal_rpc_token = "0123456789abcdef0123456789abcdef"
+internal_hook_token = "0123456789abcdef0123456789abcdef"
+admin_emails = ["a@example.com", "b@example.com"]
+"#;
+        let path = write_cfg(with_admins);
+        let c = Config::load_from(&path).unwrap();
+        assert_eq!(c.security.admin_emails, vec!["a@example.com", "b@example.com"]);
         std::fs::remove_file(&path).ok();
     }
 }

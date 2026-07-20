@@ -58,6 +58,16 @@ async fn main() -> anyhow::Result<()> {
     Migrator::up(&db, None)
         .await
         .map_err(|e| anyhow::anyhow!("run migrations: {e}"))?;
+    // 平台管理员 bootstrap:把 config [security] admin_emails 里的用户置 admin。
+    let bootstrapped = codex_webui::services::multitenant::permissions::bootstrap_platform_admins(
+        &db,
+        &cfg.security.admin_emails,
+    )
+    .await
+    .map_err(|e| anyhow::anyhow!("bootstrap platform admins: {e}"))?;
+    if bootstrapped > 0 {
+        tracing::info!(count = bootstrapped, "bootstrapped platform admin(s)");
+    }
     reconcile_settings(&db).await?;
     // 后端重启 = 所有 codex 子进程随之退出,thread_resume_cache 全部陈旧(指向已死进程的
     // 内存 thread 状态)。清空,使首次 resume 走真实 codex 从 rollout 重新加载 thread。
