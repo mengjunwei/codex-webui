@@ -14,7 +14,7 @@
 //! 所有子结构 `#[derive(serde::Deserialize)]`,直接 `toml::from_str` 反序列化;
 //! 字段长度校验、端口范围、必填检查在 `validate()` 里集中做,不再写手写 helper。
 
-use anyhow::{anyhow, Result};
+use anyhow::{Result, anyhow};
 use serde::Deserialize;
 use std::path::{Path, PathBuf};
 
@@ -186,7 +186,10 @@ impl RedisConfig {
             Some(d) => format!("/{}", d),
             None => String::new(),
         };
-        Some(format!("redis://{}{}:{}{}", auth, host, self.port, db_suffix))
+        Some(format!(
+            "redis://{}{}:{}{}",
+            auth, host, self.port, db_suffix
+        ))
     }
 }
 
@@ -405,11 +408,10 @@ impl Config {
                 path.display()
             ));
         }
-        let raw = std::fs::read_to_string(path)
-            .map_err(|e| anyhow!("read {}: {e}", path.display()))?;
-        let cfg: Config = toml::from_str(&raw).map_err(|e| {
-            anyhow!("config file {} parse error: {e}", path.display())
-        })?;
+        let raw =
+            std::fs::read_to_string(path).map_err(|e| anyhow!("read {}: {e}", path.display()))?;
+        let cfg: Config = toml::from_str(&raw)
+            .map_err(|e| anyhow!("config file {} parse error: {e}", path.display()))?;
         cfg.validate()?;
         Ok(cfg)
     }
@@ -418,31 +420,6 @@ impl Config {
         if let Ok(p) = std::env::var("CODEX_WEBUI_CONFIG") {
             let path = PathBuf::from(p.trim());
             if !path.as_os_str().is_empty() && path.exists() {
-                return Some(path);
-            }
-        }
-        if let Ok(codex_home) = std::env::var("CODEX_HOME") {
-            let codex_home = codex_home.trim();
-            if !codex_home.is_empty() {
-                let path = PathBuf::from(codex_home).join("config.toml");
-                if path.exists() {
-                    return Some(path);
-                }
-            }
-        }
-        let cwd_cfg = PathBuf::from("config.toml");
-        if cwd_cfg.exists() {
-            return Some(cwd_cfg);
-        }
-        if let Some(home) = std::env::var("HOME")
-            .ok()
-            .or_else(|| std::env::var("USERPROFILE").ok())
-            .filter(|s| !s.trim().is_empty())
-        {
-            let path = PathBuf::from(home.trim())
-                .join(".codex-webui")
-                .join("config.toml");
-            if path.exists() {
                 return Some(path);
             }
         }
@@ -491,29 +468,85 @@ impl Config {
         }
         // memberlist enable=true 但 seeds 为空 → 仍然 ok(可能用户故意空 seeds 走 fallback)
         // redis enable=true 但 host 缺失
-        if self.redis.enable && self.redis.host.as_deref().map(str::trim).unwrap_or("").is_empty() {
+        if self.redis.enable
+            && self
+                .redis
+                .host
+                .as_deref()
+                .map(str::trim)
+                .unwrap_or("")
+                .is_empty()
+        {
             return Err(anyhow!(
                 "redis.enable = true but `host` is empty (omit the [redis] section entirely or set enable = false)"
             ));
         }
         // otel enable=true 但 endpoint 缺失
-        if self.otel.enable && self.otel.endpoint.as_deref().map(str::trim).unwrap_or("").is_empty() {
-            return Err(anyhow!(
-                "otel.enable = true but `endpoint` is empty"
-            ));
+        if self.otel.enable
+            && self
+                .otel
+                .endpoint
+                .as_deref()
+                .map(str::trim)
+                .unwrap_or("")
+                .is_empty()
+        {
+            return Err(anyhow!("otel.enable = true but `endpoint` is empty"));
         }
         // codex.home / openai_api_key / auth.master_key 启用但 value 缺失
-        if self.codex.home.enable && self.codex.home.path.as_deref().map(str::trim).unwrap_or("").is_empty() {
+        if self.codex.home.enable
+            && self
+                .codex
+                .home
+                .path
+                .as_deref()
+                .map(str::trim)
+                .unwrap_or("")
+                .is_empty()
+        {
             return Err(anyhow!("codex.home.enable = true but `path` is empty"));
         }
-        if self.codex.openai_api_key.enable && self.codex.openai_api_key.key.as_deref().map(str::trim).unwrap_or("").is_empty() {
-            return Err(anyhow!("codex.openai_api_key.enable = true but `key` is empty"));
+        if self.codex.openai_api_key.enable
+            && self
+                .codex
+                .openai_api_key
+                .key
+                .as_deref()
+                .map(str::trim)
+                .unwrap_or("")
+                .is_empty()
+        {
+            return Err(anyhow!(
+                "codex.openai_api_key.enable = true but `key` is empty"
+            ));
         }
-        if self.auth.master_key.enable && self.auth.master_key.value.as_deref().map(str::trim).unwrap_or("").is_empty() {
-            return Err(anyhow!("auth.master_key.enable = true but `value` is empty"));
+        if self.auth.master_key.enable
+            && self
+                .auth
+                .master_key
+                .value
+                .as_deref()
+                .map(str::trim)
+                .unwrap_or("")
+                .is_empty()
+        {
+            return Err(anyhow!(
+                "auth.master_key.enable = true but `value` is empty"
+            ));
         }
-        if self.auth.master_key_previous.enable && self.auth.master_key_previous.value.as_deref().map(str::trim).unwrap_or("").is_empty() {
-            return Err(anyhow!("auth.master_key_previous.enable = true but `value` is empty"));
+        if self.auth.master_key_previous.enable
+            && self
+                .auth
+                .master_key_previous
+                .value
+                .as_deref()
+                .map(str::trim)
+                .unwrap_or("")
+                .is_empty()
+        {
+            return Err(anyhow!(
+                "auth.master_key_previous.enable = true but `value` is empty"
+            ));
         }
         Ok(())
     }
@@ -600,10 +633,8 @@ mod tests {
 
     /// 测试间无需并发锁:每次用 `temp_dir + uuid` 唯一路径,不冲突。
     fn write_cfg(content: &str) -> std::path::PathBuf {
-        let tmp = std::env::temp_dir().join(format!(
-            "codex-webui-cfg-{}.toml",
-            uuid::Uuid::new_v4()
-        ));
+        let tmp =
+            std::env::temp_dir().join(format!("codex-webui-cfg-{}.toml", uuid::Uuid::new_v4()));
         std::fs::write(&tmp, content).unwrap();
         tmp
     }
@@ -645,7 +676,10 @@ internal_hook_token = "0123456789abcdef0123456789abcdef"
         assert_eq!(c.cluster.worker_id, "node-a-staaaaaaaaable");
         assert_eq!(c.internal_rpc_port(), 8183); // port+1 兜底
         assert_eq!(c.database.host, "127.0.0.1");
-        assert_eq!(c.database_url(), "postgres://codex:codex@127.0.0.1:5432/codex");
+        assert_eq!(
+            c.database_url(),
+            "postgres://codex:codex@127.0.0.1:5432/codex"
+        );
         // 默认值
         assert_eq!(c.process_pool.max_processes_per_team, 4);
         assert_eq!(c.snapshot.interval_secs, 300);
@@ -761,7 +795,10 @@ internal_hook_token = "0123456789abcdef0123456789abcdef"
         let r = Config::load_from(&path);
         assert!(r.is_err());
         let msg = format!("{:?}", r.unwrap_err());
-        assert!(msg.contains("redis.enable = true but `host` is empty"), "msg={msg}");
+        assert!(
+            msg.contains("redis.enable = true but `host` is empty"),
+            "msg={msg}"
+        );
         std::fs::remove_file(&path).ok();
     }
 
@@ -894,10 +931,7 @@ internal_hook_token = "0123456789abcdef0123456789abcdef"
         let path = write_cfg(toml);
         let c = Config::load_from(&path).unwrap();
         assert!(c.codex.openai_api_key.enable);
-        assert_eq!(
-            c.codex.openai_api_key.key.as_deref(),
-            Some("sk-global")
-        );
+        assert_eq!(c.codex.openai_api_key.key.as_deref(), Some("sk-global"));
         std::fs::remove_file(&path).ok();
     }
 
