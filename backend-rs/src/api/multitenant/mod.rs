@@ -2,3 +2,5 @@
 
 pub mod handlers;
 pub mod internal_rpc;
+
+pub use handlers::require_thread_team;

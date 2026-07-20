@@ -187,6 +187,7 @@ async fn main() -> anyhow::Result<()> {
         dynamic_files_roots: dynamic_files_roots.clone(),
         codex_home: codex_home.clone(),
         active_threads: active_threads.clone(),
+        socket_users: Arc::new(Mutex::new(HashMap::new())),
     };
     let (ws_layer, io) = codex_webui::api::realtime::build(rt_state);
     codex_webui::api::realtime::spawn_emit_tasks(

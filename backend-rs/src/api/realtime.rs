@@ -114,6 +114,8 @@ pub struct RealtimeState {
     pub codex_home: std::path::PathBuf,
     /// socket↔thread 订阅(用于 codex 重启后 auto-resume)。
     pub active_threads: Arc<ActiveThreadRegistry>,
+    /// socket_id → user_id(多租户 access JWT 提取)。API key 客户端无 user_id,无法订阅 thread。
+    pub socket_users: Arc<Mutex<HashMap<String, String>>>,
 }
 
 /// 构建 Socket.IO 层与句柄,挂接 `/ws` 命名空间。
@@ -162,13 +164,24 @@ fn on_connect(
                 .map(|h| strip_bearer(h).trim().to_string())
                 .filter(|t| !t.is_empty())
         });
+    // 优先用多租户 access JWT 提取 user_id(WS 订阅 thread 的身份依据)。
+    // 失败则置 None(API key / 旧 webui JWT 客户端:可连接,但不能订阅 thread)。
+    let user_id = token.as_deref().and_then(|t| {
+        crate::services::multitenant::auth::verify_access(t, state.auth.jwt_secret()).ok()
+    });
+
+    // 连接鉴权仍用 authenticate_token(兼容 API key 与多租户 JWT)。
     let result = state.auth.authenticate_token(token.as_deref(), Some(s.id.as_str()));
     if !result.ok {
         tracing::warn!(socket = %s.id, "rejected unauthenticated socket");
         let _ = s.disconnect();
         return;
     }
-    tracing::debug!(socket = %s.id, "client connected");
+    tracing::debug!(socket = %s.id, has_user_id = user_id.is_some(), "client connected");
+
+    if let Some(uid) = &user_id {
+        state.socket_users.lock().unwrap().insert(s.id.to_string(), uid.clone());
+    }
 
     // 关键修复:socketioxide 0.15 不会自动把 socket 加入到以自身 SID 命名的房间
     // (与 JS socket.io 不同)。否则针对单 socket 的 emit(终端输出/退出/关闭)
@@ -191,17 +204,23 @@ fn on_connect(
     s.on("terminal.detach", on_term_detach);
     s.on("terminal.download", on_term_download);
     s.on("terminal.close", on_term_close);
-    // 断开连接时从所有终端分离 + 清理线程订阅。
+    // 断开连接时从所有终端分离 + 清理线程订阅 + 清理 user_id。
     let term = state.terminal.clone();
     let active = state.active_threads.clone();
+    let users = state.socket_users.clone();
     let sid = s.id.clone();
     s.on_disconnect(move || {
         active.remove_socket(sid.as_str());
+        users.lock().unwrap().remove(sid.as_str());
         term.detach(sid.as_str(), None);
     });
 }
 
-fn on_thread_subscribe(s: SocketRef, State(state): State<RealtimeState>, SocketData(data): SocketData<Value>) {
+async fn on_thread_subscribe(
+    s: SocketRef,
+    State(state): State<RealtimeState>,
+    SocketData(data): SocketData<Value>,
+) {
     let thread_id = data
         .get("threadId")
         .and_then(Value::as_str)
@@ -209,6 +228,21 @@ fn on_thread_subscribe(s: SocketRef, State(state): State<RealtimeState>, SocketD
         .trim()
         .to_string();
     if thread_id.is_empty() {
+        return;
+    }
+    // 必须有 user_id(多租户 access JWT);API key 客户端无身份 → 静默拒绝。
+    let user_id = match state.socket_users.lock().unwrap().get(s.id.as_str()).cloned() {
+        Some(u) => u,
+        None => {
+            tracing::warn!(socket = %s.id, "thread.subscribe denied: no user identity");
+            return;
+        }
+    };
+    // 校验 thread 归属(personal=创建者本人;team=成员)。失败静默不 join,不泄露存在性。
+    if let Err(e) =
+        crate::api::multitenant::handlers::require_thread_team(&state.db, &thread_id, &user_id).await
+    {
+        tracing::warn!(socket = %s.id, thread = %thread_id, "thread.subscribe denied: {e}");
         return;
     }
     let room = format!("thread:{thread_id}");

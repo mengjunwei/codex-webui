@@ -400,7 +400,7 @@ pub struct MtCreateThreadBody {
 
 /// 校验 thread 归属 + user 访问权限,返回 (team_id, workspace_type)。
 /// 团队 thread:user 必须是 team 成员。个人 thread:user 必须是 created_by。
-async fn require_thread_team(
+pub async fn require_thread_team(
     db: &DatabaseConnection,
     thread_id: &str,
     user_id: &str,
