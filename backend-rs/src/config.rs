@@ -200,6 +200,15 @@ pub struct CodexHomeConfig {
     pub path: Option<String>,
 }
 
+/// webui 文件工作区根(users/ teams/ 的父目录)。
+/// 默认回落 codex_home(向后兼容);显式 [workspace] enable=true 才独立。
+#[derive(Clone, Debug, Deserialize, Default)]
+pub struct WorkspaceRootConfig {
+    #[serde(default)]
+    pub enable: bool,
+    pub path: Option<String>,
+}
+
 #[derive(Clone, Debug, Deserialize, Default)]
 pub struct CodexOpenaiConfig {
     #[serde(default)]
@@ -359,6 +368,9 @@ pub struct Config {
     #[serde(default)]
     pub redis: RedisConfig,
     pub codex: CodexConfig,
+    /// webui 文件工作区根(顶层,与 [codex] 平级;默认回落 codex_home)。
+    #[serde(default)]
+    pub workspace: WorkspaceRootConfig,
     #[serde(default)]
     pub auth: AuthConfig,
     pub security: SecurityConfig,
@@ -382,6 +394,7 @@ impl std::fmt::Debug for Config {
             .field("database", &self.database)
             .field("redis", &self.redis)
             .field("codex", &self.codex)
+            .field("workspace", &self.workspace)
             .field("auth", &"<redacted>")
             .field("security", &"<redacted>")
             .field("process_pool", &self.process_pool)
@@ -510,6 +523,18 @@ impl Config {
         {
             return Err(anyhow!("codex.home.enable = true but `path` is empty"));
         }
+        // workspace.enable=true 但 path 缺失
+        if self.workspace.enable
+            && self
+                .workspace
+                .path
+                .as_deref()
+                .map(str::trim)
+                .unwrap_or("")
+                .is_empty()
+        {
+            return Err(anyhow!("workspace.enable = true but `path` is empty"));
+        }
         if self.codex.openai_api_key.enable
             && self
                 .codex
@@ -591,6 +616,16 @@ impl Config {
             self.codex.home.path.as_deref()
         } else {
             None
+        }
+    }
+
+    /// webui 文件工作区根(users/ teams/ 的父目录)。
+    /// 默认回落 codex_home(向后兼容);显式 [workspace] enable=true 才独立。
+    pub fn workspace_root(&self) -> Option<&str> {
+        if self.workspace.enable {
+            self.workspace.path.as_deref()
+        } else {
+            self.codex_home()
         }
     }
 

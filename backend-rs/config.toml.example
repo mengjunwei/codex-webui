@@ -77,6 +77,12 @@ bin = "codex"
 # enable = true
 # key = "sk-..."
 
+# webui 文件工作区根(users/ teams/ 的父目录;files 浏览/终端 cwd/chat 上传的根)。
+# 可选;enable=true 才生效;默认与 [codex.home] 相同(向后兼容,无需显式配置)。
+# [workspace]
+# enable = true
+# path = "/var/lib/codex-webui/workspace"
+
 # 主密钥(可选;enable=true 才用,否则回退用 server.api.webui_api_key)
 # [auth.master_key]
 # enable = true
