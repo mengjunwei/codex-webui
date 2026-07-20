@@ -31,6 +31,7 @@ import {
 } from '@/generated/api/sdk.gen';
 import { listQueryKey as settingsListSettingsQueryKey } from '@/generated/api/@tanstack/react-query.gen';
 import { useTeamStore } from '@/stores/team-store';
+import { useUserStore } from '@/stores/user-store';
 import { approvalsApi, threadsApi, type PendingApproval } from '@/lib/mt-client';
 import type { ApprovalRequest, NetworkPolicyAmendment, RawCommandDecision } from '@/types/approval';
 
@@ -161,6 +162,13 @@ export function AuthenticatedLayout() {
 
   useCodexSocket(true);
 
+  // 挂载时若尚未拉取当前用户身份(/me),则补拉一次。
+  useEffect(() => {
+    if (!useUserStore.getState().me) {
+      void useUserStore.getState().loadMe();
+    }
+  }, []);
+
   useEffect(() => {
     setMaxIdleSubscriptions(maxIdleSubscriptions);
   }, [maxIdleSubscriptions, setMaxIdleSubscriptions]);
@@ -278,6 +286,7 @@ export function AuthenticatedLayout() {
     const handleAuthExpired = () => {
       clearApiToken();
       resetSocket();
+      useUserStore.getState().clearMe();
       void navigate({ to: '/login', search: { redirect: '/' } });
     };
     window.addEventListener('codex-webui:auth-expired', handleAuthExpired);

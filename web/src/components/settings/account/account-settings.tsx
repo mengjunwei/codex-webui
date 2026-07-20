@@ -1,8 +1,8 @@
 /**
  * Account 设置页 — 显示当前用户信息 + 个人 API key 管理 + 登出按钮。
- * 多租户模式下,账号信息通过 /api/mt/auth/* 获取。
+ * 多租户模式下,账号信息来自全局 user-store(GET /api/mt/me),不再解码 JWT。
  */
-import { useState, useEffect } from 'react';
+import { useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { Button } from '@/components/ui/button';
@@ -11,6 +11,7 @@ import { Badge } from '@/components/ui/badge';
 import { User, Loader2, Key, Eye, EyeOff } from 'lucide-react';
 import { clearApiToken, clearRefreshToken } from '@/auth-token';
 import { showSnackbar } from '@/stores/snackbar-store';
+import { useUserStore } from '@/stores/user-store';
 import { useNavigate } from '@tanstack/react-router';
 import { mtFetch } from '@/lib/mt-client';
 
@@ -32,25 +33,20 @@ export function AccountSettings() {
   const { t } = useTranslation();
   const navigate = useNavigate();
   const queryClient = useQueryClient();
-  const [user, setUser] = useState<UserInfo | null>(null);
-  const [loading, setLoading] = useState(true);
+  const me = useUserStore((s) => s.me);
+  const meLoading = useUserStore((s) => s.loading);
+  // 用户身份直接来自全局 user-store(/me),不再解码 JWT。
+  const user: UserInfo | null = me
+    ? {
+        id: me.user.id,
+        email: me.user.email,
+        display_name: me.user.display_name ?? undefined,
+      }
+    : null;
+  const loading = meLoading && !me;
   const [apiKey, setApiKey] = useState('');
   const [showKey, setShowKey] = useState(false);
   const [provider, setProvider] = useState('openai');
-
-  useEffect(() => {
-    try {
-      const token = sessionStorage.getItem('codex.webui.jwt');
-      if (token) {
-        const payload = JSON.parse(atob(token.split('.')[1]));
-        setUser({ id: payload.sub, email: payload.email || 'unknown' });
-      }
-    } catch {
-      setUser(null);
-    } finally {
-      setLoading(false);
-    }
-  }, []);
 
   // 获取用户个人 API key 列表
   const keysQuery = useQuery({

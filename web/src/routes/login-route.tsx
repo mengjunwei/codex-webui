@@ -9,6 +9,7 @@ import { SnackbarContainer } from '@/components/snackbar/snackbar-container';
 import { setApiToken, setRefreshToken, clearApiToken, clearRefreshToken } from '@/auth-token';
 import { authApi } from '@/lib/mt-client';
 import { resetSocket } from '@/socket';
+import { useUserStore } from '@/stores/user-store';
 
 export function LoginRoute() {
   const navigate = useNavigate();
@@ -20,11 +21,13 @@ export function LoginRoute() {
       setApiToken(data.accessToken);
       setRefreshToken(data.refreshToken);
       resetSocket();
+      void useUserStore.getState().loadMe();
       void navigate({ to: redirect });
       return true;
     } catch {
       clearApiToken();
       clearRefreshToken();
+      useUserStore.getState().clearMe();
       return false;
     }
   }, [navigate, redirect]);
