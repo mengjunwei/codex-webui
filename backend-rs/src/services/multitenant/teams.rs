@@ -316,16 +316,42 @@ pub async fn transfer_owner(
     Ok(())
 }
 
-/// 解散 team:依赖 DB 外键 `ON DELETE CASCADE` 级联清理 members / threads / keys / audit。
+/// 解散 team:同一事务内显式删除该 team 的全部 threads,再删 team。
+///
+/// 为什么不依赖 CASCADE:`threads.team_id` 外键已在早期 migration(m20260718_000005)
+/// 中移除(用于支持 personal workspace 用 user_id 占位 team_id),因此删 team 不会
+/// 级联到 threads,必须显式 DELETE。team_members / invitations / team_api_keys /
+/// audit_log 等表仍保留对 teams(id) 的 FK CASCADE,由 DB 自动清理。
 pub async fn dissolve_team(db: &DatabaseConnection, team_id: &str) -> Result<(), AppError> {
+    use crate::db::entities::thread::{
+        Column as ThreadColumn, Entity as ThreadEntity,
+    };
+    let txn = db
+        .begin()
+        .await
+        .map_err(|e| AppError::internal(format!("begin txn: {e}")))?;
+    // 先删该 team 的全部 threads(team_id 无 FK,不会随 team CASCADE)。
+    ThreadEntity::delete_many()
+        .filter(ThreadColumn::TeamId.eq(team_id.to_string()))
+        .exec(&txn)
+        .await
+        .map_err(|e| AppError::internal(format!("delete team threads: {e}")))?;
+    // 再删 team 本身;team_members / invitations / team_api_keys / audit_log 走 CASCADE。
     TeamEntity::delete_by_id(team_id.to_string())
-        .exec(db)
+        .exec(&txn)
         .await
         .map_err(|e| AppError::internal(format!("dissolve team: {e}")))?;
+    txn.commit()
+        .await
+        .map_err(|e| AppError::internal(format!("commit txn: {e}")))?;
     Ok(())
 }
 
 /// 改成员角色(仅 member↔admin)。禁止改成 owner(owner 变更走 transfer_owner)。
+///
+/// 防孤儿团队:禁止修改 teams.owner_id 指向的用户(即当前 owner)的角色 —— 否则
+/// owner 被降级后 teams.owner_id 仍指向他,但没有任何成员 role='owner',team 无法
+/// 再转让/解散。引导走 `transfer_owner`。目标不是成员则 404。
 pub async fn set_member_role(
     db: &DatabaseConnection,
     team_id: &str,
@@ -340,13 +366,36 @@ pub async fn set_member_role(
             None,
         ));
     }
-    TeamMemberEntity::update_many()
+    // 取 team,核对目标 user 是否为当前 owner。
+    let team = TeamEntity::find_by_id(team_id.to_string())
+        .one(db)
+        .await
+        .map_err(|e| AppError::internal(format!("query team for role guard: {e}")))?;
+    if let Some(t) = team.as_ref() {
+        if t.owner_id == user_id {
+            return Err(AppError::business(
+                ErrorCode::HttpBadRequest,
+                StatusCode::BAD_REQUEST,
+                "cannot change owner's role; use transfer instead".into(),
+                None,
+            ));
+        }
+    }
+    let res = TeamMemberEntity::update_many()
         .col_expr(TeamMemberColumn::Role, Expr::value(new_role.to_string()))
         .filter(TeamMemberColumn::TeamId.eq(team_id.to_string()))
         .filter(TeamMemberColumn::UserId.eq(user_id.to_string()))
         .exec(db)
         .await
         .map_err(|e| AppError::internal(format!("set member role: {e}")))?;
+    if res.rows_affected == 0 {
+        return Err(AppError::business(
+            ErrorCode::HttpNotFound,
+            StatusCode::NOT_FOUND,
+            "member not found".into(),
+            None,
+        ));
+    }
     Ok(())
 }
 
