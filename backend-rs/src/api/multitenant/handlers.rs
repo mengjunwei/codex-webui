@@ -270,6 +270,76 @@ pub async fn remove_member(
     Ok(StatusCode::NO_CONTENT)
 }
 
+// ── 生命周期 API(owner 转让 / team 解散 / 成员角色变更)──────────────────────
+
+#[derive(Deserialize)]
+pub struct TransferOwnerBody {
+    #[serde(rename = "newOwnerUserId")]
+    pub new_owner_user_id: String,
+}
+
+#[derive(Deserialize)]
+pub struct SetRoleBody {
+    pub role: String,
+}
+
+/// 转让 team owner 给已有成员(owner→admin, member→owner)。
+pub async fn transfer_team_owner(
+    State(state): State<AppState>,
+    Extension(uid): Extension<UserId>,
+    Path((team_id,)): Path<(String,)>,
+    crate::error::Json(body): crate::error::Json<TransferOwnerBody>,
+) -> Result<StatusCode, AppError> {
+    let db = require_db(&state);
+    permissions::require_permission(db, &team_id, &uid.0, TeamPermission::OwnerTransfer).await?;
+    teams::transfer_owner(db, &team_id, &uid.0, &body.new_owner_user_id).await?;
+    audit::record(
+        db,
+        &team_id,
+        &uid.0,
+        "owner_transferred",
+        Some(&body.new_owner_user_id),
+    )
+    .await;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+/// 解散 team(CASCADE 删 members / threads / keys / audit)。
+/// audit 先于解散写入(team 仍存在,满足 FK),随后被 CASCADE 清理 —— 记录主要用于
+/// 触发审计 side-effect(如外部监控),解散本身不可追溯属预期行为。
+pub async fn dissolve_team_handler(
+    State(state): State<AppState>,
+    Extension(uid): Extension<UserId>,
+    Path((team_id,)): Path<(String,)>,
+) -> Result<StatusCode, AppError> {
+    let db = require_db(&state);
+    permissions::require_permission(db, &team_id, &uid.0, TeamPermission::TeamDissolve).await?;
+    audit::record(db, &team_id, &uid.0, "team_dissolved", None).await;
+    teams::dissolve_team(db, &team_id).await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+/// 修改成员角色(仅 member↔admin;owner 变更走 transfer_team_owner)。
+pub async fn set_member_role_handler(
+    State(state): State<AppState>,
+    Extension(uid): Extension<UserId>,
+    Path((team_id, user_id)): Path<(String, String)>,
+    crate::error::Json(body): crate::error::Json<SetRoleBody>,
+) -> Result<StatusCode, AppError> {
+    let db = require_db(&state);
+    permissions::require_permission(db, &team_id, &uid.0, TeamPermission::MemberRoleWrite).await?;
+    teams::set_member_role(db, &team_id, &user_id, &body.role).await?;
+    audit::record(
+        db,
+        &team_id,
+        &uid.0,
+        "member_role_changed",
+        Some(&format!("{}:{}", user_id, body.role)),
+    )
+    .await;
+    Ok(StatusCode::NO_CONTENT)
+}
+
 // ── team API key(BYOK,owner only)─────────────────────────────────────────
 
 #[derive(Deserialize)]

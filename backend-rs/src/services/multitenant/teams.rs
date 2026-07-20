@@ -22,6 +22,7 @@ use crate::db::entities::team_member::{
 use crate::db::entities::user::{
     Column as UserColumn, Entity as UserEntity, Model as UserModel,
 };
+use crate::services::multitenant::permissions::ROLE_ADMIN;
 use crate::services::multitenant::{new_id, now_ms};
 use axum::http::StatusCode;
 use sea_orm::entity::prelude::*;
@@ -246,6 +247,106 @@ pub async fn remove_member(
             None,
         ));
     }
+    Ok(())
+}
+
+// ── 生命周期 API(owner 转让 / team 解散 / 成员角色变更)──────────────────────
+
+/// 转让队长:当前 owner 降为 admin,new_owner 升 owner,同步更新 teams.owner_id。事务。
+/// `new_owner_user_id` 必须是当前成员(否则 404);禁止转让给自己(否则 400)。
+pub async fn transfer_owner(
+    db: &DatabaseConnection,
+    team_id: &str,
+    current_owner: &str,
+    new_owner_user_id: &str,
+) -> Result<(), AppError> {
+    if current_owner == new_owner_user_id {
+        return Err(AppError::business(
+            ErrorCode::HttpBadRequest,
+            StatusCode::BAD_REQUEST,
+            "cannot transfer to self".into(),
+            None,
+        ));
+    }
+    let txn = db
+        .begin()
+        .await
+        .map_err(|e| AppError::internal(format!("begin txn: {e}")))?;
+    // new_owner 必须是当前成员(同时取行,后续 update_many 会命中)。
+    let _new_member = TeamMemberEntity::find()
+        .filter(TeamMemberColumn::TeamId.eq(team_id.to_string()))
+        .filter(TeamMemberColumn::UserId.eq(new_owner_user_id.to_string()))
+        .one(&txn)
+        .await
+        .map_err(|e| AppError::internal(format!("query new owner: {e}")))?
+        .ok_or_else(|| {
+            AppError::business(
+                ErrorCode::HttpNotFound,
+                StatusCode::NOT_FOUND,
+                "new owner not a member".into(),
+                None,
+            )
+        })?;
+    // 当前 owner → admin
+    TeamMemberEntity::update_many()
+        .col_expr(TeamMemberColumn::Role, Expr::value(ROLE_ADMIN.to_string()))
+        .filter(TeamMemberColumn::TeamId.eq(team_id.to_string()))
+        .filter(TeamMemberColumn::UserId.eq(current_owner.to_string()))
+        .exec(&txn)
+        .await
+        .map_err(|e| AppError::internal(format!("demote owner: {e}")))?;
+    // new owner → owner
+    TeamMemberEntity::update_many()
+        .col_expr(TeamMemberColumn::Role, Expr::value(ROLE_OWNER.to_string()))
+        .filter(TeamMemberColumn::TeamId.eq(team_id.to_string()))
+        .filter(TeamMemberColumn::UserId.eq(new_owner_user_id.to_string()))
+        .exec(&txn)
+        .await
+        .map_err(|e| AppError::internal(format!("promote owner: {e}")))?;
+    // teams.owner_id 同步更新,保持与 team_members 一致。
+    TeamEntity::update_many()
+        .col_expr(TeamColumn::OwnerId, Expr::value(new_owner_user_id.to_string()))
+        .filter(TeamColumn::Id.eq(team_id.to_string()))
+        .exec(&txn)
+        .await
+        .map_err(|e| AppError::internal(format!("update team owner_id: {e}")))?;
+    txn.commit()
+        .await
+        .map_err(|e| AppError::internal(format!("commit txn: {e}")))?;
+    Ok(())
+}
+
+/// 解散 team:依赖 DB 外键 `ON DELETE CASCADE` 级联清理 members / threads / keys / audit。
+pub async fn dissolve_team(db: &DatabaseConnection, team_id: &str) -> Result<(), AppError> {
+    TeamEntity::delete_by_id(team_id.to_string())
+        .exec(db)
+        .await
+        .map_err(|e| AppError::internal(format!("dissolve team: {e}")))?;
+    Ok(())
+}
+
+/// 改成员角色(仅 member↔admin)。禁止改成 owner(owner 变更走 transfer_owner)。
+pub async fn set_member_role(
+    db: &DatabaseConnection,
+    team_id: &str,
+    user_id: &str,
+    new_role: &str,
+) -> Result<(), AppError> {
+    if new_role != ROLE_ADMIN && new_role != ROLE_MEMBER {
+        return Err(AppError::business(
+            ErrorCode::HttpBadRequest,
+            StatusCode::BAD_REQUEST,
+            "role must be admin or member".into(),
+            None,
+        ));
+    }
+    TeamMemberEntity::update_many()
+        .col_expr(TeamMemberColumn::Role, Expr::value(new_role.to_string()))
+        .filter(TeamMemberColumn::TeamId.eq(team_id.to_string()))
+        .filter(TeamMemberColumn::UserId.eq(user_id.to_string()))
+        .exec(db)
+        .await
+        .map_err(|e| AppError::internal(format!("set member role: {e}")))?;
     Ok(())
 }
 

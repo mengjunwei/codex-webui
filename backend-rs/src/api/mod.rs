@@ -291,6 +291,13 @@ pub async fn build_router(state: AppState) -> Router {
             get(mt::mt_list_approvals).post(mt::mt_resolve_approval),
         )
         .route("/teams/{teamId}/members/{userId}",            axum::routing::delete(mt::remove_member),        )
+        // ── 生命周期 API(owner 转让 / team 解散 / 成员角色变更)──
+        .route("/teams/{teamId}/transfer", post(mt::transfer_team_owner))
+        .route("/teams/{teamId}", axum::routing::delete(mt::dissolve_team_handler))
+        .route(
+            "/teams/{teamId}/members/{userId}/role",
+            axum::routing::patch(mt::set_member_role_handler),
+        )
         .route("/user/api-key", post(mt::set_user_api_key).get(mt::list_user_api_keys))
         .layer(axum::middleware::from_fn_with_state(
             state.clone(),
