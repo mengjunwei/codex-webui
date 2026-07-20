@@ -7,6 +7,7 @@ pub mod cluster;
 pub mod codex_pool;
 pub mod event_bus;
 pub mod event_persist;
+pub mod permissions;
 pub mod pool_policy;
 pub mod quota;
 pub mod rate_limit;

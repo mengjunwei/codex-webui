@@ -17,6 +17,8 @@ pub mod user {
         pub display_name: Option<String>,
         pub created_at: i64,
         pub updated_at: i64,
+        /// 平台超级管理员标记(可改全局配置/读全局日志)。默认 false。
+        pub is_platform_admin: bool,
     }
     #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]
     pub enum Relation {}
@@ -285,6 +287,22 @@ pub mod session_replica {
         pub status: String,
         pub primary_lease_until: i64,
         pub updated_at: i64,
+    }
+    #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]
+    pub enum Relation {}
+    impl ActiveModelBehavior for ActiveModel {}
+}
+
+/// 角色权限映射(全局,无 team_id)。seed 由 migration 写入(spec §4.1 矩阵)。
+pub mod role_permission {
+    use sea_orm::entity::prelude::*;
+    #[derive(Clone, Debug, PartialEq, DeriveEntityModel)]
+    #[sea_orm(table_name = "role_permissions")]
+    pub struct Model {
+        #[sea_orm(primary_key, column_type = "String(StringLen::N(16))")]
+        pub role: String,
+        #[sea_orm(primary_key, column_type = "String(StringLen::N(48))")]
+        pub permission: String,
     }
     #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]
     pub enum Relation {}

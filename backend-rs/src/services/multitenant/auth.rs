@@ -189,6 +189,7 @@ pub async fn register_user(
         display_name: Set(None),
         created_at: Set(now),
         updated_at: Set(now),
+        is_platform_admin: Set(false),
     };
     if let Err(e) = am.insert(db).await {
         // 并发同邮箱注册:find-then-insert 竞态下第二个 insert 撞 email 唯一约束。
