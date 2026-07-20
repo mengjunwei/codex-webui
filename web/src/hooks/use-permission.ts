@@ -18,7 +18,9 @@ export function usePermission(perm: TeamPermission): boolean {
   }, [me, currentTeamId, perm]);
 }
 
-/** 当前用户是否为平台超级管理员(绕过所有团队权限检查)。 */
+/** 当前用户是否为平台超级管理员。
+ *  注意:仅对 require_platform_admin_layer 守护的全局路由生效(全局配置/全局日志/公共工作区写);
+ *  team 级 require_permission 不绕过——平台管理员若非该 team 成员,team 操作仍 403。 */
 export function useIsPlatformAdmin(): boolean {
   return useUserStore((s) => s.me?.is_platform_admin ?? false);
 }
