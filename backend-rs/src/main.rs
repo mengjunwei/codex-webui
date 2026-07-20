@@ -98,7 +98,7 @@ async fn main() -> anyhow::Result<()> {
         ) as Arc<dyn EventBus>,
     });
 
-    // 全局 CODEX_HOME(所有 team 共用;team 仅前端 UI 隔离)。
+    // codex CLI 的 CODEX_HOME(所有 team codex 子进程共用;rollout/sessions 写入位置)。
     let codex_home: PathBuf = cfg.codex_home().map(PathBuf::from).unwrap_or_else(|| {
         let base = std::env::var("USERPROFILE")
             .or_else(|_| std::env::var("HOME"))
@@ -106,9 +106,17 @@ async fn main() -> anyhow::Result<()> {
             .unwrap_or_else(|_| PathBuf::from("."));
         base.join(".codex-webui").join("home")
     });
+    // webui 文件工作区根(users/ teams/ 父目录);默认 = codex_home(向后兼容)。
+    let workspace_root: PathBuf = cfg
+        .workspace_root()
+        .map(PathBuf::from)
+        .unwrap_or_else(|| codex_home.clone());
     tokio::fs::create_dir_all(&codex_home)
         .await
         .map_err(|e| anyhow::anyhow!("create codex_home: {e}"))?;
+    tokio::fs::create_dir_all(&workspace_root)
+        .await
+        .map_err(|e| anyhow::anyhow!("create workspace_root: {e}"))?;
 
     // 节点 id + 内网 RPC(均由 Config 必填校验,此处直接 clone)。
     let node_id = cfg.cluster.worker_id.clone();
@@ -195,7 +203,7 @@ async fn main() -> anyhow::Result<()> {
         terminal: terminal.clone(),
         db: db.clone(),
         dynamic_files_roots: dynamic_files_roots.clone(),
-        codex_home: codex_home.clone(),
+        workspace_root: workspace_root.clone(),
         active_threads: active_threads.clone(),
         socket_users: Arc::new(Mutex::new(HashMap::new())),
     };
@@ -245,6 +253,7 @@ async fn main() -> anyhow::Result<()> {
         dynamic_files_roots: dynamic_files_roots.clone(),
         settings_cache: Arc::new(Mutex::new(HashMap::new())),
         codex_home: codex_home.clone(),
+        workspace_root: workspace_root.clone(),
         node_id: node_id.clone(),
         cluster: cluster.clone(),
         worker_rpc: worker_rpc.clone(),

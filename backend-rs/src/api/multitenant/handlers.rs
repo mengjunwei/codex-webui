@@ -548,9 +548,9 @@ pub async fn mt_create_thread(
     // 设置 cwd 到对应 workspace(personal→users/{uid}/personal;team→teams/{tid}/shared),
     // 确保 codex 会话工作目录落在 workspace 根内(文件树/终端沙箱校验才能通过)。
     let ws_cwd = if is_personal {
-        crate::services::workspace::personal_path(&state.codex_home, &uid.0)
+        crate::services::workspace::personal_path(&state.workspace_root, &uid.0)
     } else {
-        crate::services::workspace::team_shared_path(&state.codex_home, &team_id)
+        crate::services::workspace::team_shared_path(&state.workspace_root, &team_id)
     };
     rest.insert("cwd".to_string(), Value::String(ws_cwd.to_string_lossy().to_string()));
 

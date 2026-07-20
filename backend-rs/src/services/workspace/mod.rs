@@ -1,6 +1,6 @@
 //! workspace 物理目录 + hook 审计(per-user workspace 实施步骤 2+5)。
 //!
-//! 物理布局(均在 `state.codex_home` 下):
+//! 物理布局(均在 `state.workspace_root` 下):
 //! - `users/{user_id}/personal/`         个人 workspace(永久可写)
 //! - `teams/{team_id}/shared/`            team 共享 workspace(owner/admin 可写,member 只读)
 //! - `teams/{team_id}/members/{user_id}/` 该成员视图目录(物理独立,UI 聚合)
@@ -24,18 +24,18 @@ const SHARED_SUBDIR: &str = "shared";
 const MEMBERS_SUBDIR: &str = "members";
 
 /// 个人 workspace 绝对路径。
-pub fn personal_path(codex_home: &Path, user_id: &str) -> PathBuf {
-    codex_home.join(PERSONAL_DIR).join(user_id).join("personal")
+pub fn personal_path(workspace_root: &Path, user_id: &str) -> PathBuf {
+    workspace_root.join(PERSONAL_DIR).join(user_id).join("personal")
 }
 
 /// team 共享 workspace 绝对路径。
-pub fn team_shared_path(codex_home: &Path, team_id: &str) -> PathBuf {
-    codex_home.join(TEAMS_DIR).join(team_id).join(SHARED_SUBDIR)
+pub fn team_shared_path(workspace_root: &Path, team_id: &str) -> PathBuf {
+    workspace_root.join(TEAMS_DIR).join(team_id).join(SHARED_SUBDIR)
 }
 
 /// team 成员视图绝对路径。
-pub fn team_member_path(codex_home: &Path, team_id: &str, user_id: &str) -> PathBuf {
-    codex_home
+pub fn team_member_path(workspace_root: &Path, team_id: &str, user_id: &str) -> PathBuf {
+    workspace_root
         .join(TEAMS_DIR)
         .join(team_id)
         .join(MEMBERS_SUBDIR)
@@ -50,7 +50,7 @@ fn shared_permissions() -> std::fs::Permissions {
 
 /// 确保个人 workspace 目录存在。
 pub async fn ensure_user_personal(state: &AppState, user_id: &str) -> Result<(), AppError> {
-    let path = personal_path(&state.codex_home, user_id);
+    let path = personal_path(&state.workspace_root, user_id);
     tokio::fs::create_dir_all(&path)
         .await
         .map_err(|e| AppError::internal(format!("create {}: {e}", path.display())))?;
@@ -59,7 +59,7 @@ pub async fn ensure_user_personal(state: &AppState, user_id: &str) -> Result<(),
 
 /// 确保 team 共享 workspace 目录存在(权限 0o775)。
 pub async fn ensure_team_shared(state: &AppState, team_id: &str) -> Result<(), AppError> {
-    let path = team_shared_path(&state.codex_home, team_id);
+    let path = team_shared_path(&state.workspace_root, team_id);
     tokio::fs::create_dir_all(&path)
         .await
         .map_err(|e| AppError::internal(format!("create {}: {e}", path.display())))?;
@@ -76,7 +76,7 @@ pub async fn ensure_team_member_view(
     team_id: &str,
     user_id: &str,
 ) -> Result<(), AppError> {
-    let path = team_member_path(&state.codex_home, team_id, user_id);
+    let path = team_member_path(&state.workspace_root, team_id, user_id);
     tokio::fs::create_dir_all(&path)
         .await
         .map_err(|e| AppError::internal(format!("create {}: {e}", path.display())))?;

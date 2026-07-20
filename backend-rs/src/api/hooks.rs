@@ -129,7 +129,7 @@ async fn handle_inner(state: &AppState, payload: HookPayload) -> Result<HookResp
             raw_target
         };
 
-        let decision = decide_pre_tool_use(&role, &tool_name, &target, &state.codex_home);
+        let decision = decide_pre_tool_use(&role, &tool_name, &target, &state.workspace_root);
         let perm = match decision {
             Decision::Allow => "allow",
             Decision::Deny => "deny",

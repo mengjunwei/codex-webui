@@ -44,8 +44,14 @@ pub struct AppState {
     /// settings 内存缓存（对齐 TS SettingsService.cache）。
     pub settings_cache: SettingsCache,
     // ── 多副本 HA(全局 CODEX_HOME + session 复制)─────────────────────────
-    /// 全局 CODEX_HOME(所有 team 共用)。
+    /// codex CLI 的 CODEX_HOME(sessions/ config.toml auth.json 写入位置)。
+    /// 只用于:spawn codex 子进程 env、rollout 读写、hooks config 写入、
+    /// user config 路径校验、snapshot。所有 team codex 子进程共用同一目录。
     pub codex_home: PathBuf,
+    /// webui 文件工作区根(users/ teams/ 的父目录)。
+    /// 只用于:files 浏览根、终端 cwd 沙箱、workspace 路径拼接、
+    /// hook decision 边界、chat 上传根。默认 = codex_home(向后兼容)。
+    pub workspace_root: PathBuf,
     /// 本节点 id。
     pub node_id: String,
     /// 集群成员 + 探活(选主副本/反亲和/晋升判定/解析节点 RPC 地址)。

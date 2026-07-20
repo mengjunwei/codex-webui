@@ -1,7 +1,7 @@
 //! 聊天附件上传 —— 将浏览器上传的图片保存到一个 Codex 可读取的
 //! 暂存目录中。与 `src/chat/chat-upload.service.ts` 对齐。
 //!
-//! 文件保存到 `{CODEX_HOME}/webui-uploads/{uuid}.{ext}`，
+//! 文件保存到 `{workspace_root}/webui-uploads/{uuid}.{ext}`，
 //! 大小上限取自 `files.uploadMaxBytes`。返回 `{ path, size, mimeType }`。
 
 use crate::error::{AppError, ErrorCode};
@@ -50,7 +50,7 @@ pub async fn upload_attachment(
     mut multipart: axum::extract::Multipart,
 ) -> Result<Json<Value>, AppError> {
     let max_bytes = state.settings_reader().get_upload_max_bytes().await;
-    let upload_root = ensure_upload_root()?;
+    let upload_root = ensure_upload_root(&state.workspace_root)?;
     // 周期性清理超过 TTL 的陈旧上传（对齐 TS，节流到每小时一次）。
     // 用 spawn_blocking 包裹同步目录遍历，避免阻塞 tokio worker。
     {
@@ -149,21 +149,12 @@ pub async fn upload_attachment(
     Err(bad_request(ErrorCode::ChatFileRequired, "Uploaded file is required"))
 }
 
-/// 解析上传根目录：`{CODEX_HOME}/webui-uploads/`。
-fn ensure_upload_root() -> Result<PathBuf, AppError> {
-    let codex_home = std::env::var("CODEX_HOME").ok()
-        .map(|s| s.trim().to_string())
-        .filter(|s| !s.is_empty());
-    let base = codex_home
-        .map(PathBuf::from)
-        .unwrap_or_else(|| {
-            std::env::var("USERPROFILE")
-                .or_else(|_| std::env::var("HOME"))
-                .map(PathBuf::from)
-                .unwrap_or_else(|_| PathBuf::from("."))
-                .join(".codex")
-        });
-    let upload_root = base.join(CHAT_UPLOAD_DIR_NAME);
+/// 解析上传根目录:`{workspace_root}/webui-uploads/`。
+///
+/// 与 files/terminal 的 workspace 边界一致(都用 AppState.workspace_root),
+/// 避免老实现读 `CODEX_HOME` env 在 TOML 配置走 [codex].home 时与 AppState 分叉。
+fn ensure_upload_root(workspace_root: &std::path::Path) -> Result<PathBuf, AppError> {
+    let upload_root = workspace_root.join(CHAT_UPLOAD_DIR_NAME);
     // unix 下以 0o700 创建上传目录（对齐 TS mode:0o700）。
     #[cfg(unix)]
     {
@@ -182,13 +173,16 @@ fn ensure_upload_root() -> Result<PathBuf, AppError> {
     Ok(upload_root)
 }
 
-/// 校验 localImage 路径必须位于 chat 上传根目录 `{CODEX_HOME}/webui-uploads/` 之内
+/// 校验 localImage 路径必须位于 chat 上传根目录 `{workspace_root}/webui-uploads/` 之内
 /// （对齐 TS `ChatUploadService.resolveStoredUploadPath`）：解析符号链接逃逸，
 /// 确保真实路径在上传根内、且为普通文件。返回规范化后的路径。
 /// 失败映射到 chat.* 错误码（image_path_absolute / upload_not_found /
 /// image_outside_root / image_not_file）。
 #[allow(dead_code)]
-pub(crate) async fn resolve_stored_upload_path(path: &str) -> Result<PathBuf, AppError> {
+pub(crate) async fn resolve_stored_upload_path(
+    workspace_root: &std::path::Path,
+    path: &str,
+) -> Result<PathBuf, AppError> {
     let trimmed = path.trim();
     if trimmed.is_empty() {
         return Err(bad_request(ErrorCode::ChatImagePathRequired, "image path is required"));
@@ -208,7 +202,7 @@ pub(crate) async fn resolve_stored_upload_path(path: &str) -> Result<PathBuf, Ap
             ));
         }
     };
-    let upload_root = ensure_upload_root()?;
+    let upload_root = ensure_upload_root(workspace_root)?;
     if !canonical.starts_with(&upload_root) {
         return Err(bad_request(ErrorCode::ChatImageOutsideRoot, "image path is outside the upload root"));
     }

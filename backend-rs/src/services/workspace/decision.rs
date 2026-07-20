@@ -1,7 +1,7 @@
 //! PreToolUse 决策表(per-user workspace 实施步骤 8)。
 //!
 //! 决策矩阵:
-//! - shell/exec_command 越界(写出 CODEX_HOME 外) → Deny
+//! - shell/exec_command 越界(写出 workspace_root 外) → Deny
 //! - 写 teams/{tid}/shared 且 role==member        → Deny(共享盘只读)
 //! - 写已知 workspace 外                          → Ask
 //! - 其他                                          → Allow
@@ -62,19 +62,19 @@ pub fn decide_pre_tool_use(
     role: &str,
     tool_name: &str,
     target: &Path,
-    codex_home: &Path,
+    workspace_root: &Path,
 ) -> Decision {
     let target_str = normalize(target);
-    let home_str = normalize(codex_home);
+    let home_str = normalize(workspace_root);
     let home_clean = home_str.trim_end_matches('/');
 
-    // 1) 越界:写出 CODEX_HOME 外 → Deny
+    // 1) 越界:写出 workspace_root 外 → Deny
     //    - 路径里出现 `..` 即视为不可信
-    //    - 前缀不匹配 codex_home 也视为越界(覆盖 Windows / 与 \\ 差异)
+    //    - 前缀不匹配 workspace_root 也视为越界(覆盖 Windows / 与 \\ 差异)
     if target_str.contains("..") {
         return Decision::Deny;
     }
-    // 路径若为绝对路径(以 / 或盘符起),必须落在 codex_home 内。
+    // 路径若为绝对路径(以 / 或盘符起),必须落在 workspace_root 内。
     // 相对路径(没 / 前缀且没盘符)允许(如 `foo.txt`)— sandbox 阶段已校验 cwd。
     let looks_absolute = target_str.starts_with('/')
         || (target_str.len() >= 2 && target_str.as_bytes()[1] == b':');

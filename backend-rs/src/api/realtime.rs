@@ -110,8 +110,8 @@ pub struct RealtimeState {
     /// 用于终端 cwd 沙箱校验（工作区根目录）。
     pub db: DatabaseConnection,
     pub dynamic_files_roots: Arc<Mutex<HashSet<String>>>,
-    /// codex_home:终端 cwd 沙箱校验时 scan users/ + teams/ workspace 根。
-    pub codex_home: std::path::PathBuf,
+    /// webui 文件工作区根:终端 cwd 沙箱校验时 scan users/ + teams/ workspace 根。
+    pub workspace_root: std::path::PathBuf,
     /// socket↔thread 订阅(用于 codex 重启后 auto-resume)。
     pub active_threads: Arc<ActiveThreadRegistry>,
     /// socket_id → user_id(多租户 access JWT 提取)。API key 客户端无 user_id,无法订阅 thread。
@@ -315,7 +315,7 @@ async fn on_term_open(s: SocketRef, State(state): State<RealtimeState>, SocketDa
     let cwd: String = match crate::services::files::resolve_terminal_cwd(
         &state.db,
         &dyn_roots,
-        &state.codex_home,
+        &state.workspace_root,
         &ctx,
         cwd_in,
         default_cwd.as_deref(),
