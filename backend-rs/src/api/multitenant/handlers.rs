@@ -15,6 +15,7 @@ use crate::db::entities::team_member::{Column as TeamMemberColumn, Entity as Tea
 use crate::db::entities::user::{Entity as UserEntity, Model as User};
 use crate::multitenant::middleware::UserId;
 use crate::services::multitenant::{api_keys, audit, auth, permissions, teams};
+use crate::services::multitenant::permissions::TeamPermission;
 use crate::state::AppState;
 use axum::extract::{Extension, Path, Query, State};
 use axum::http::StatusCode;
@@ -223,7 +224,7 @@ pub async fn list_members(
     Path((team_id,)): Path<(String,)>,
 ) -> Result<Json<Vec<teams::MemberView>>, AppError> {
     let db = require_db(&state);
-    teams::require_member(db, &team_id, &uid.0).await?;
+    permissions::require_permission(db, &team_id, &uid.0, TeamPermission::MemberList).await?;
     Ok(Json(teams::list_members(db, &team_id).await?))
 }
 
@@ -234,7 +235,7 @@ pub async fn create_invitation(
     crate::error::Json(body): crate::error::Json<CreateInvitationBody>,
 ) -> Result<Json<teams::Invitation>, AppError> {
     let db = require_db(&state);
-    teams::require_owner(db, &team_id, &uid.0).await?;
+    permissions::require_permission(db, &team_id, &uid.0, TeamPermission::MemberInvite).await?;
     let inv = teams::create_invitation(db, &team_id, &uid.0, body.expires_at, body.max_uses)
         .await?;
     audit::record(db, &team_id, &uid.0, "invitation_created", None).await;
@@ -263,7 +264,7 @@ pub async fn remove_member(
     Path((team_id, user_id)): Path<(String, String)>,
 ) -> Result<StatusCode, AppError> {
     let db = require_db(&state);
-    teams::require_owner(db, &team_id, &uid.0).await?;
+    permissions::require_permission(db, &team_id, &uid.0, TeamPermission::MemberRemove).await?;
     teams::remove_member(db, &team_id, &user_id).await?;
     audit::record(db, &team_id, &uid.0, "member_removed", Some(&user_id)).await;
     Ok(StatusCode::NO_CONTENT)
@@ -307,7 +308,7 @@ pub async fn set_team_api_key(
     crate::error::Json(body): crate::error::Json<SetKeyBody>,
 ) -> Result<Json<ApiKeyResp>, AppError> {
     let db = require_db(&state);
-    teams::require_owner(db, &team_id, &uid.0).await?;
+    permissions::require_permission(db, &team_id, &uid.0, TeamPermission::ApiKeyWrite).await?;
     let provider = body.provider.unwrap_or_else(|| "openai".into());
     let k = api_keys::set_team_api_key(
         db,
@@ -332,7 +333,7 @@ pub async fn list_team_api_keys(
     Path((team_id,)): Path<(String,)>,
 ) -> Result<Json<Vec<ApiKeyResp>>, AppError> {
     let db = require_db(&state);
-    teams::require_owner(db, &team_id, &uid.0).await?;
+    permissions::require_permission(db, &team_id, &uid.0, TeamPermission::ApiKeyRead).await?;
     let keys = api_keys::list_team_api_keys(db, &team_id).await?;
     Ok(Json(keys.into_iter().map(Into::into).collect()))
 }
@@ -433,7 +434,7 @@ pub async fn require_thread_team(
         }
         return Ok((thread.team_id, thread.workspace_type));
     }
-    teams::require_member(db, &thread.team_id, user_id).await?;
+    permissions::require_permission(db, &thread.team_id, user_id, TeamPermission::ThreadRead).await?;
     Ok((thread.team_id, thread.workspace_type))
 }
 
@@ -460,7 +461,7 @@ pub async fn mt_create_thread(
     // 确定 team_id:个人 workspace 用 "user:{user_id}" 格式标识
     let (team_id, is_personal) = match team_id_raw {
         Some(tid) => {
-            teams::require_member(db, &tid, &uid.0).await?;
+            permissions::require_permission(db, &tid, &uid.0, TeamPermission::ThreadCreate).await?;
             // 确保 team 共享 workspace 目录存在(codex 会话 cwd 落在此处)。
             let _ = crate::services::workspace::ensure_team_shared(&state, &tid).await;
             (tid, false)
@@ -579,7 +580,7 @@ pub async fn mt_list_threads(
     Query(q): Query<TeamIdQuery>,
 ) -> Result<Json<Vec<crate::db::entities::thread::Model>>, AppError> {
     let db = require_db(&state);
-    teams::require_member(db, &q.team_id, &uid.0).await?;
+    permissions::require_permission(db, &q.team_id, &uid.0, TeamPermission::ThreadRead).await?;
     let list = ThreadEntity::find()
         .filter(ThreadColumn::TeamId.eq(q.team_id.clone()))
         .order_by_desc(ThreadColumn::LastActivityAt)
@@ -806,7 +807,7 @@ pub async fn list_audit(
     Path((team_id,)): Path<(String,)>,
 ) -> Result<Json<Vec<crate::db::entities::audit_log::Model>>, AppError> {
     let db = require_db(&state);
-    teams::require_owner(db, &team_id, &uid.0).await?;
+    permissions::require_permission(db, &team_id, &uid.0, TeamPermission::AuditRead).await?;
     Ok(Json(audit::list(db, &team_id, 200).await?))
 }
 
