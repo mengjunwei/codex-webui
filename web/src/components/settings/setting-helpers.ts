@@ -67,6 +67,7 @@ export function sectionLabel(section: string): string {
     files: 'Files',
     security: 'Security',
     team: 'Team',
+    platform: '平台管理',
   };
   return labels[section] ?? section;
 }

@@ -9,6 +9,7 @@ import { Button } from '@/components/ui/button';
 import { Separator } from '@/components/ui/separator';
 import { useThemeStore } from '@/stores/theme-store';
 import { useTimelineStore } from '@/stores/timeline-store';
+import { useIsPlatformAdmin } from '@/hooks/use-permission';
 import { clearApiToken } from '@/auth-token';
 import { resetSocket } from '@/socket';
 import { sectionLabel } from './setting-helpers';
@@ -17,6 +18,7 @@ import { AccountSettings } from './account/account-settings';
 import { TerminalSettings } from './terminal-settings';
 import { FilesSettings } from './files-settings';
 import { SecuritySettings } from './security-settings';
+import { PlatformAdminPanel } from './platform-admin-panel';
 import { TeamMembersDialog } from '../team/team-members';
 import { TeamSettingsDialog } from '../team/team-settings';
 
@@ -27,6 +29,7 @@ const SECTIONS = [
   'files',
   'security',
   'team',
+  'platform',
 ] as const;
 
 type SettingsSection = (typeof SECTIONS)[number];
@@ -37,6 +40,7 @@ export function SettingsPage() {
   const dark = useThemeStore((s) => s.dark);
   const toggleDark = useThemeStore((s) => s.toggleDark);
   const threadId = useTimelineStore((s) => s.threadId);
+  const isPlatformAdmin = useIsPlatformAdmin();
   const [section, setSection] = useState<SettingsSection>('general');
   const [membersOpen, setMembersOpen] = useState(false);
   const [teamSettingsOpen, setTeamSettingsOpen] = useState(false);
@@ -72,16 +76,20 @@ export function SettingsPage() {
         </div>
 
         <div className="flex flex-wrap gap-2">
-          {SECTIONS.map((s) => (
-            <Button
-              key={s}
-              variant={section === s ? 'default' : 'outline'}
-              size="sm"
-              onClick={() => setSection(s)}
-            >
-              {t(sectionLabel(s))}
-            </Button>
-          ))}
+          {SECTIONS.map((s) => {
+            // platform tab 仅平台管理员可见(全局配置/日志/管理员管理入口)。
+            if (s === 'platform' && !isPlatformAdmin) return null;
+            return (
+              <Button
+                key={s}
+                variant={section === s ? 'default' : 'outline'}
+                size="sm"
+                onClick={() => setSection(s)}
+              >
+                {t(sectionLabel(s))}
+              </Button>
+            );
+          })}
         </div>
 
         <Separator />
@@ -119,6 +127,7 @@ export function SettingsPage() {
             <TeamSettingsDialog open={teamSettingsOpen} onClose={() => setTeamSettingsOpen(false)} />
           </div>
         )}
+        {section === 'platform' && isPlatformAdmin && <PlatformAdminPanel />}
       </div>
     </div>
   );

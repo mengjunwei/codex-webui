@@ -3,6 +3,7 @@ import { Globe, LogOut, Moon, Sun } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { Button } from '@/components/ui/button';
 import { Separator } from '@/components/ui/separator';
+import { useIsPlatformAdmin } from '@/hooks/use-permission';
 import { SettingEditor } from './setting-editor';
 import { useCategorySettings } from './use-category-settings';
 
@@ -23,6 +24,9 @@ export function GeneralSettings({
 }: Props) {
   const { t } = useTranslation();
   const runtimeSettings = useCategorySettings('general');
+  // 全局 general 运行时配置写仅平台管理员;非管理员只读(后端 PATCH /api/settings 已守卫)。
+  // appearance/language/logout 是本机用户级,不受此限。
+  const runtimeReadOnly = !useIsPlatformAdmin();
 
   return (
     <>
@@ -101,6 +105,7 @@ export function GeneralSettings({
             setting={setting}
             draft={runtimeSettings.drafts[setting.key] ?? ''}
             disabled={runtimeSettings.isSaving}
+            readOnly={runtimeReadOnly}
             onDraftChange={runtimeSettings.handleDraftChange}
             onSave={runtimeSettings.handleSave}
             onReset={runtimeSettings.handleReset}

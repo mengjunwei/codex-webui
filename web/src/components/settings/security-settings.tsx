@@ -1,11 +1,14 @@
 /** Security category runtime settings. */
 import { useTranslation } from 'react-i18next';
+import { useIsPlatformAdmin } from '@/hooks/use-permission';
 import { SettingEditor } from './setting-editor';
 import { useCategorySettings } from './use-category-settings';
 
 export function SecuritySettings() {
   const { t } = useTranslation();
   const ctx = useCategorySettings('security');
+  // 全局 security 配置写仅平台管理员;非管理员只读(后端 PATCH /api/settings 已守卫)。
+  const readOnly = !useIsPlatformAdmin();
 
   return (
     <section className="space-y-4">
@@ -32,6 +35,7 @@ export function SecuritySettings() {
           setting={setting}
           draft={ctx.drafts[setting.key] ?? ''}
           disabled={ctx.isSaving}
+          readOnly={readOnly}
           onDraftChange={ctx.handleDraftChange}
           onSave={ctx.handleSave}
           onReset={ctx.handleReset}

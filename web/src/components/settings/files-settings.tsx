@@ -1,11 +1,14 @@
 /** Files category runtime settings. */
 import { useTranslation } from 'react-i18next';
+import { useIsPlatformAdmin } from '@/hooks/use-permission';
 import { SettingEditor } from './setting-editor';
 import { useCategorySettings } from './use-category-settings';
 
 export function FilesSettings() {
   const { t } = useTranslation();
   const ctx = useCategorySettings('files');
+  // 全局 files 配置写仅平台管理员;非管理员只读(后端 PATCH /api/settings 已守卫)。
+  const readOnly = !useIsPlatformAdmin();
 
   return (
     <section className="space-y-4">
@@ -30,6 +33,7 @@ export function FilesSettings() {
           setting={setting}
           draft={ctx.drafts[setting.key] ?? ''}
           disabled={ctx.isSaving}
+          readOnly={readOnly}
           onDraftChange={ctx.handleDraftChange}
           onSave={ctx.handleSave}
           onReset={ctx.handleReset}
