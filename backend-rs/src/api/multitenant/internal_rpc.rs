@@ -3,7 +3,7 @@
 //! 每个 backend 节点同时跑内网 RPC server 与 HTTP API(单二进制双角色)。
 //! 独立 axum app,监听 `INTERNAL_RPC_HOST:INTERNAL_RPC_PORT`,路由 `/internal/*`。
 //! 请求头 `x-internal-token` 校验(security.internal_rpc_token;启动期 config 强制 ≥32 字节,
-//! 空值无法启动,故 require_internal_token 内空 token 分支实际不可达)。
+//! 空值无法启动,故 check_internal_token 内空 token 分支实际不可达)。
 //!
 //! 处理来自其它节点的 codex 调用转发(turn/start/approve/fork 等),
 //! threads 元数据双写由主节点在 PG 完成(共享库)。
@@ -45,12 +45,9 @@ struct EvictReq {
     team_id: String,
 }
 
-async fn require_internal_token(
-    state: &AppState,
-    headers: &axum::http::HeaderMap,
-) -> Result<(), AppError> {
-    let tok = state.internal_token.as_bytes();
-    if tok.is_empty() {
+/// 纯函数:校验 x-internal-token(恒定时间比较)。供 layer 与单测复用。
+fn check_internal_token(expected: &[u8], headers: &axum::http::HeaderMap) -> Result<(), AppError> {
+    if expected.is_empty() {
         return Err(AppError::business(
             ErrorCode::HttpForbidden,
             StatusCode::FORBIDDEN,
@@ -63,8 +60,8 @@ async fn require_internal_token(
         .and_then(|v| v.to_str().ok())
         .unwrap_or("")
         .as_bytes();
-    // 恒定时间比较:防止时序攻击(虽然仅限内网,但遵循安全最佳实践)。
-    if got.len() != tok.len() || !bool::from(got.ct_eq(tok)) {
+    // 恒定时间比较:防时序攻击。
+    if got.len() != expected.len() || !bool::from(got.ct_eq(expected)) {
         return Err(AppError::business(
             ErrorCode::HttpForbidden,
             StatusCode::FORBIDDEN,
@@ -75,7 +72,19 @@ async fn require_internal_token(
     Ok(())
 }
 
+/// axum middleware:整层强制 x-internal-token 校验。
+pub async fn require_internal_token_layer(
+    State(state): State<AppState>,
+    headers: axum::http::HeaderMap,
+    req: axum::extract::Request,
+    next: axum::middleware::Next,
+) -> Result<axum::response::Response, AppError> {
+    check_internal_token(state.internal_token.as_bytes(), &headers)?;
+    Ok(next.run(req).await)
+}
+
 /// 构建 worker 内网 RPC router(独立监听端口,与前端 axum 分离)。
+/// 整层挂 require_internal_token_layer,所有 /internal/* 路由强制 token 校验。
 pub fn build_internal_router(state: AppState) -> Router {
     Router::new()
         .route("/internal/thread/start", post(thread_start))
@@ -84,15 +93,17 @@ pub fn build_internal_router(state: AppState) -> Router {
         .route("/internal/evict", post(evict))
         .route("/internal/approval/respond", post(approval_respond))
         .route("/internal/replicate", post(replicate_receive))
+        .layer(axum::middleware::from_fn_with_state(
+            state.clone(),
+            require_internal_token_layer,
+        ))
         .with_state(state)
 }
 
 async fn thread_start(
     State(state): State<AppState>,
-    headers: axum::http::HeaderMap,
     Json(req): Json<ThreadStartReq>,
 ) -> Result<Json<Value>, AppError> {
-    require_internal_token(&state, &headers).await?;
     metrics::counter!("internal_thread_start_total").increment(1);
     let lease = state
         .mt_team_codex
@@ -127,10 +138,8 @@ async fn thread_start(
 
 async fn turn_start(
     State(state): State<AppState>,
-    headers: axum::http::HeaderMap,
     Json(req): Json<TurnStartReq>,
 ) -> Result<Json<Value>, AppError> {
-    require_internal_token(&state, &headers).await?;
     metrics::counter!("internal_turn_start_total").increment(1);
     let lease = state
         .mt_team_codex
@@ -150,10 +159,8 @@ async fn turn_start(
 
 async fn evict(
     State(state): State<AppState>,
-    headers: axum::http::HeaderMap,
     Json(req): Json<EvictReq>,
 ) -> Result<StatusCode, AppError> {
-    require_internal_token(&state, &headers).await?;
     state.mt_team_codex.evict(&req.team_id).await;
     Ok(StatusCode::NO_CONTENT)
 }
@@ -161,10 +168,8 @@ async fn evict(
 /// 副本:接收主节点推送的 rollout 增量,写入本地全局 CODEX_HOME(per-session 文件)。
 async fn replicate_receive(
     State(state): State<AppState>,
-    headers: axum::http::HeaderMap,
     Json(chunk): Json<RolloutChunk>,
 ) -> Result<StatusCode, AppError> {
-    require_internal_token(&state, &headers).await?;
     crate::services::multitenant::replication::receive_rollout(&chunk, &state.codex_home).await?;
     metrics::counter!("replication_received_total").increment(1);
     Ok(StatusCode::NO_CONTENT)
@@ -183,10 +188,8 @@ struct ApprovalRespondReq {
 /// 响应审批(其它节点转发而来):把决定回传到该 team 的 codex 进程。
 async fn approval_respond(
     State(state): State<AppState>,
-    headers: axum::http::HeaderMap,
     Json(req): Json<ApprovalRespondReq>,
 ) -> Result<StatusCode, AppError> {
-    require_internal_token(&state, &headers).await?;
     metrics::counter!("internal_approval_respond_total").increment(1);
     let lease = state
         .mt_team_codex
@@ -238,10 +241,8 @@ struct InvokeReq {
 /// 确保 owner 进程内存持有 thread(进程重启后需重新加载)。
 async fn thread_invoke(
     State(state): State<AppState>,
-    headers: axum::http::HeaderMap,
     Json(req): Json<InvokeReq>,
 ) -> Result<Json<Value>, AppError> {
-    require_internal_token(&state, &headers).await?;
     let cache_fallback: Option<Value> = if req.method == "thread/resume" {
         crate::services::multitenant::resume_cache::get_cached_resume(&state.db, &req.thread_id).await
     } else {
@@ -279,4 +280,45 @@ async fn thread_invoke(
         .await;
     }
     Ok(Json(resp))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use axum::http::HeaderMap;
+
+    fn mk_headers(token: Option<&str>) -> HeaderMap {
+        let mut h = HeaderMap::new();
+        if let Some(t) = token {
+            h.insert("x-internal-token", t.parse().unwrap());
+        }
+        h
+    }
+
+    const EXPECTED: &[u8] = b"0123456789abcdef0123456789abcdef"; // 32 字节
+
+    #[test]
+    fn check_internal_token_correct_passes() {
+        let h = mk_headers(Some(std::str::from_utf8(EXPECTED).unwrap()));
+        assert!(check_internal_token(EXPECTED, &h).is_ok());
+    }
+
+    #[test]
+    fn check_internal_token_wrong_rejected() {
+        // 等长但内容不同,验证不是仅比长度
+        let h = mk_headers(Some("9999456789abcdef0123456789abcdef"));
+        assert!(check_internal_token(EXPECTED, &h).is_err());
+    }
+
+    #[test]
+    fn check_internal_token_missing_header_rejected() {
+        let h = mk_headers(None);
+        assert!(check_internal_token(EXPECTED, &h).is_err());
+    }
+
+    #[test]
+    fn check_internal_token_empty_expected_rejected() {
+        let h = mk_headers(Some("anything"));
+        assert!(check_internal_token(b"", &h).is_err());
+    }
 }
