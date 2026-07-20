@@ -8,6 +8,7 @@ pub use sea_orm_migration::prelude::*;
 use sea_orm::DatabaseBackend;
 
 mod m20260719_000001_combined_schema;
+mod m20260720_000001_rbac_permissions;
 
 pub struct Migrator;
 
@@ -15,6 +16,7 @@ impl MigratorTrait for Migrator {
     fn migrations() -> Vec<Box<dyn MigrationTrait>> {
         vec![
             Box::new(m20260719_000001_combined_schema::Migration),
+            Box::new(m20260720_000001_rbac_permissions::Migration),
         ]
     }
 }
