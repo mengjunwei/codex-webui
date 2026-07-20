@@ -37,14 +37,7 @@
 
 ## 3. 配置系统
 
-**纯 TOML，无环境变量回退**。配置文件查找顺序：
-
-1. `$CODEX_WEBUI_CONFIG` 精确路径
-2. `$CODEX_HOME/config.toml`
-3. `./config.toml`
-4. `$HOME/.codex-webui/config.toml`
-
-全部找不到 → 启动失败。
+**纯 TOML，无环境变量回退**。配置文件通过 `$CODEX_WEBUI_CONFIG` 精确路径查找，未设置则启动失败。
 
 ### 分块结构
 
@@ -108,8 +101,8 @@ backend-rs/src/
 │       └── internal_rpc.rs    # 内网 RPC server（/internal/* 端点）
 │
 ├── auth/                      # 认证
-│   ├── mod.rs                 # AuthService（JWT 签名/校验 + API key 校验）
-│   └── middleware.rs          # require_auth 中间件
+│   └── mod.rs                 # AuthService（JWT 签名/校验 + API key 校验）
+│                              # 注：旧 require_auth 中间件已删除，/api/* 统一走 require_user_auth
 │
 ├── codex/                     # Codex 子系统
 │   ├── jsonrpc.rs             # JSON-RPC over stdio 客户端（有界写队列 + 请求超时）
@@ -199,7 +192,8 @@ listen + graceful shutdown
 | `resume_registry` | `Arc<ThreadResumeRegistry>` | generation 去重 |
 | `dynamic_files_roots` | `Arc<Mutex<HashSet<String>>>` | 动态文件根 |
 | `settings_cache` | `SettingsCache` | 内存缓存 |
-| `codex_home` | `PathBuf` | 全局 CODEX_HOME |
+| `codex_home` | `PathBuf` | codex CLI 的 CODEX_HOME（sessions/rollout/hooks config 写入位置）|
+| `workspace_root` | `PathBuf` | webui 文件工作区根（users/teams/ 的父目录，默认 = codex_home）|
 | `node_id` | `String` | 本节点 id |
 | `cluster` | `Arc<dyn ClusterMembership>` | 集群探活 |
 | `worker_rpc` | `Arc<WorkerRpcClient>` | 节点间 RPC |
@@ -216,7 +210,7 @@ listen + graceful shutdown
 
 ### 单用户模式（/api/*）
 - `POST /api/auth/login` → API key 换 JWT（HS256，24h，sub="webui"）
-- `require_auth` 中间件：Bearer JWT 或 API key（常量时间比较）
+- `require_user_auth` 统一中间件：Bearer JWT 或 API key（常量时间比较）
 - 查询参数 `?access_token=` 仅在 `/api/files/serve` 和 `/api/files/archive/entry` 有效
 
 ### 多租户模式（/api/mt/*）
@@ -228,10 +222,10 @@ listen + graceful shutdown
 
 ## 8. Per-User Workspace
 
-### 目录布局（全局 CODEX_HOME 下）
+### 目录布局（workspace_root 下）
 
 ```
-$CODEX_HOME/
+$workspace_root/
 ├── users/{user_id}/personal/          个人 workspace（永久可写）
 ├── teams/{team_id}/shared/            team 共享盘（owner/admin 可写，member 只读）
 └── teams/{team_id}/members/{user_id}/ 成员视图目录
@@ -266,7 +260,7 @@ $CODEX_HOME/
 | 条件 | 决策 |
 |---|---|
 | 路径含 `..` | Deny |
-| 绝对路径不在 CODEX_HOME 内 | Deny |
+| 绝对路径不在 workspace_root 内 | Deny |
 | 写 `teams/{tid}/shared` + role=member | Deny |
 | 其他 | Allow |
 
@@ -401,7 +395,7 @@ VARCHAR(36) UUIDv7 / BIGINT i64 毫秒 / BOOLEAN / TEXT（不用 JSON/ENUM/ARRAY
 | GET | `/metrics` | Prometheus 指标 |
 | POST | `/hooks/codex` | Hook webhook（X-Hook-Token 鉴权）|
 
-### 受保护路由（require_auth）
+### 受保护路由（require_user_auth）
 
 全部 `/api/*`（除公开路由外）
 
@@ -424,13 +418,12 @@ VARCHAR(36) UUIDv7 / BIGINT i64 毫秒 / BOOLEAN / TEXT（不用 JSON/ENUM/ARRAY
 
 ## 14. 环境变量
 
-启动时仅读取以下环境变量用于**配置文件查找**（不是配置值本身）：
+启动时仅读取以下环境变量：
 
 | 变量 | 说明 |
 |---|---|
-| `CODEX_WEBUI_CONFIG` | 配置文件精确路径（最高优先）|
-| `CODEX_HOME` | 配置文件查找候选 + 默认 codex_home |
-| `HOME` / `USERPROFILE` | 配置文件查找候选 |
+| `CODEX_WEBUI_CONFIG` | 配置文件精确路径（唯一查找方式）|
+| `CODEX_HOME` | 传给 codex 子进程 env（非配置文件查找用途）|
 
 所有业务配置值**只从 TOML 文件读取**。
 

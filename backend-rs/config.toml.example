@@ -9,11 +9,7 @@
 # enable=true  → 才校验该段其他必填字段并启用功能。
 # 这样配置最直观:看一眼 enable 就知道哪些功能开了。
 #
-# 配置文件查找顺序:
-# 1. $CODEX_WEBUI_CONFIG 指定的路径
-# 2. $CODEX_HOME/config.toml
-# 3. ./config.toml
-# 4. ~/.codex-webui/config.toml
+# 配置文件查找:仅通过 $CODEX_WEBUI_CONFIG 精确路径，未设置则启动失败。
 # ─────────────────────────────────────────────────────────────
 
 [server]
