@@ -872,14 +872,26 @@ pub async fn mt_start_turn(
     .unwrap_or_else(|| thread_id.clone());
     if let Value::Object(ref mut map) = params {
         // 强制覆盖:前端 body 可能已带 threadId(系统预生成),codex 忽略外部 threadId 须传 codex_tid
-        map.insert("threadId".to_string(), Value::String(codex_tid));
+        map.insert("threadId".to_string(), Value::String(codex_tid.clone()));
     }
     let mut resp = if target == state.node_id {
-        state
-            .codex
-            .request("turn/start", Some(params))
-            .await
-            .map_err(|e| AppError::internal(format!("codex turn/start: {e}")))?
+        // turn/start -32600(thread not found):codex 内存无会话(failover/进程重启后)→
+        // thread/resume 从 rollout 加载会话 → retry(对齐 mt_invoke_thread resume 兜底)。
+        let mut attempt = 0u32;
+        loop {
+            match state.codex.request("turn/start", Some(params.clone())).await {
+                Ok(v) => break Ok(v),
+                Err(crate::codex::jsonrpc::RpcError::ServerError { code: -32600, .. }) if attempt < 1 => {
+                    tracing::info!(thread_id = %thread_id, "turn/start -32600, resuming thread then retry");
+                    let _ = state.codex.request("thread/resume", Some(serde_json::json!({
+                        "threadId": codex_tid.clone(), "persistExtendedHistory": true,
+                    }))).await;
+                    attempt += 1;
+                    continue;
+                }
+                Err(e) => break Err(AppError::internal(format!("codex turn/start: {e}"))),
+            }
+        }?
     } else {
         let rpc_url = worker_rpc_url(&state, &target).await?;
         state

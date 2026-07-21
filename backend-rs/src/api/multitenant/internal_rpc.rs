@@ -213,11 +213,24 @@ async fn turn_start(
     if let Value::Object(ref mut m) = params {
         m.entry("threadId").or_insert(Value::String(codex_tid.clone()));
     }
-    let resp = state
-        .codex
-        .request("turn/start", Some(params))
-        .await
-        .map_err(|e| AppError::internal(format!("codex turn/start: {e}")))?;
+    // turn/start -32600(thread not found):codex 内存无会话(failover/重启后)→ resume 加载 → retry。
+    let resp = {
+        let mut attempt = 0u32;
+        loop {
+            match state.codex.request("turn/start", Some(params.clone())).await {
+                Ok(v) => break Ok(v),
+                Err(crate::codex::jsonrpc::RpcError::ServerError { code: -32600, .. }) if attempt < 1 => {
+                    tracing::info!(thread_id = %req.thread_id, "turn/start -32600, resuming thread then retry");
+                    let _ = state.codex.request("thread/resume", Some(serde_json::json!({
+                        "threadId": codex_tid.clone(), "persistExtendedHistory": true,
+                    }))).await;
+                    attempt += 1;
+                    continue;
+                }
+                Err(e) => break Err(AppError::internal(format!("codex turn/start: {e}"))),
+            }
+        }?
+    };
     // turn 后 rollout 必有内容:补插 active_rollout(thread_start 时 rollout 可能延迟未插)
     // + 增量复制到副本。转发场景下 target 是 primary,本节点复制最可靠(对齐 mt_start_turn 本地分支)。
     let tid = &req.thread_id;
