@@ -576,6 +576,20 @@ pub async fn mt_create_thread(
     double_write_thread_meta(db, &thread_id, &pg_team_id, &uid.0, workspace_type).await;
     crate::services::multitenant::resume_cache::put_cached_resume(db, &thread_id, &resp).await;
 
+    // 存 codex_tid 映射:codex 0.142.5+ 忽略外部 threadId 自生成 tid,后续 turn/invoke/resume/
+    // delete 传给 codex 的 threadId 须用 codex_tid(否则 codex 报 `thread not found`)。
+    // 本地+远程分支统一存(codex 响应结构一致);codex 尊重 threadId 时 codex_tid==thread_id,
+    // 存了幂等无害。codex_tid 为空(极端)跳过。
+    let codex_tid = extract_codex_tid(&resp);
+    if let Some(ref ctid) = codex_tid {
+        crate::services::multitenant::replication::set_codex_tid(
+            state.mt_redis.as_ref(),
+            &thread_id,
+            ctid,
+        )
+        .await;
+    }
+
     // C1:仅本地分支登记 session_replicas/sticky/active_rollout/复制。
     //     转发场景(target != self)由 target 侧 internal_rpc thread_start 自登记:
     //     入口节点若在此调 get_or_assign 会用 local_node_id()=入口 把 primary_node 登记成入口,
@@ -598,9 +612,9 @@ pub async fn mt_create_thread(
         }
 
         // 主侧:关联 rollout 文件 + 复制增量到副本。
-        // C2:用 codex 响应 tid 查找 rollout 文件名(兼容 codex 忽略外部 threadId 自生成 tid 的场景);
+        // C2:用 codex 响应 tid 查找 rollout 文件名(复用上方已 extract 的 codex_tid;
+        //     兼容 codex 忽略外部 threadId 自生成 tid 的场景);
         //     active_rollout key 仍用系统 thread_id(replicate 按 thread_id 取路径)。
-        let codex_tid = extract_codex_tid(&resp);
         if let Some(p) = crate::services::multitenant::replication::find_rollout_for_thread(
             &state.codex_home,
             codex_tid.as_deref().unwrap_or(&thread_id),
@@ -751,11 +765,19 @@ pub async fn mt_delete_thread(
     let _is_personal = thread.workspace_type == "personal";
 
     // 2. 调 codex thread/delete(若 codex 支持);失败不阻塞,继续清 PG/文件。
+    //    codex 0.142.5+ 忽略外部 threadId,thread/delete 亦须用 codex_tid 才能 hit 会话;
+    //    映射缺失 fallback 系统 thread_id。本地+远程都显式带 codex_tid(不依赖 target 侧映射表)。
     if let Ok(target) = resolve_worker(&state, Some(&thread_id)).await {
+        let codex_tid = crate::services::multitenant::replication::get_codex_tid(
+            state.mt_redis.as_ref(),
+            &thread_id,
+        )
+        .await
+        .unwrap_or_else(|| thread_id.clone());
         if target == state.node_id {
             if let Err(e) = state
                 .codex
-                .request("thread/delete", Some(serde_json::json!({ "threadId": thread_id })))
+                .request("thread/delete", Some(serde_json::json!({ "threadId": codex_tid })))
                 .await
             {
                 tracing::warn!(error = %e, thread_id = %thread_id, "codex thread/delete failed (non-fatal, cleanup PG+file anyway)");
@@ -763,7 +785,7 @@ pub async fn mt_delete_thread(
         } else if let Ok(rpc_url) = worker_rpc_url(&state, &target).await {
             let _ = state
                 .worker_rpc
-                .thread_invoke(&rpc_url, &team_id, &thread_id, "thread/delete", serde_json::json!({}))
+                .thread_invoke(&rpc_url, &team_id, &thread_id, "thread/delete", serde_json::json!({ "threadId": codex_tid }))
                 .await;
         }
     }
@@ -824,8 +846,17 @@ pub async fn mt_start_turn(
     metrics::counter!("mt_turns_total").increment(1);
     let target = resolve_worker(&state, Some(&thread_id)).await?;
     let mut params = body.0;
+    // codex 0.142.5+ 忽略外部 threadId 自生成 tid,须传 codex_tid 才能 hit 已有会话;
+    // 映射缺失(极端)fallback 系统 thread_id(向后兼容,不 panic)。
+    // 仅影响传给 codex 的 threadId 参数;权限/路由/DB 仍用系统 thread_id(见上下文)。
+    let codex_tid = crate::services::multitenant::replication::get_codex_tid(
+        state.mt_redis.as_ref(),
+        &thread_id,
+    )
+    .await
+    .unwrap_or_else(|| thread_id.clone());
     if let Value::Object(ref mut map) = params {
-        map.entry("threadId").or_insert(Value::String(thread_id.clone()));
+        map.entry("threadId").or_insert(Value::String(codex_tid));
     }
     let resp = if target == state.node_id {
         state
@@ -1265,8 +1296,17 @@ pub async fn mt_invoke_thread(
         None
     };
     let mut params = body.params.unwrap_or(Value::Object(Default::default()));
+    // codex 0.142.5+ 忽略外部 threadId 自生成 tid,须传 codex_tid(fork/resume/invoke 等);
+    // 映射缺失 fallback 系统 thread_id。仅改传给 codex 的 threadId 参数;
+    // cache_fallback / put_cached_resume 仍按系统 thread_id 查写 PG。
+    let codex_tid = crate::services::multitenant::replication::get_codex_tid(
+        state.mt_redis.as_ref(),
+        &thread_id,
+    )
+    .await
+    .unwrap_or_else(|| thread_id.clone());
     if let Value::Object(ref mut m) = params {
-        m.entry("threadId").or_insert(Value::String(thread_id.clone()));
+        m.entry("threadId").or_insert(Value::String(codex_tid));
         // 对齐 main 旧实现:resume 也持久化 rollout,前端后续 thread/read 才能命中。
         if body.method == "thread/resume" {
             m.entry("persistExtendedHistory".to_string()).or_insert(Value::Bool(true));

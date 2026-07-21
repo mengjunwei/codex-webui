@@ -162,6 +162,17 @@ async fn thread_start(
             .and_then(Value::as_str)
             .or_else(|| resp.get("threadId").and_then(Value::as_str))
             .or_else(|| resp.get("id").and_then(Value::as_str));
+        // 存 codex_tid 映射:后续本节点 turn/invoke/resume/delete 传 codex_tid 给 codex。
+        // 转发场景下 codex 进程跑在 target(本节点),本节点存映射最可靠;
+        // 入口节点 mt_create_thread 也存了一份(双写幂等)。codex 尊重 threadId 时 codex_tid==tid。
+        if let Some(ctid) = codex_tid {
+            crate::services::multitenant::replication::set_codex_tid(
+                state.mt_redis.as_ref(),
+                tid,
+                ctid,
+            )
+            .await;
+        }
         if let Some(p) = crate::services::multitenant::replication::find_rollout_for_thread(
             &state.codex_home,
             codex_tid.unwrap_or(tid.as_str()),
@@ -192,8 +203,15 @@ async fn turn_start(
 ) -> Result<Json<Value>, AppError> {
     metrics::counter!("internal_turn_start_total").increment(1);
     let mut params = req.params;
+    // codex 0.142.5+ 忽略外部 threadId 自生成 tid,须传 codex_tid;映射缺失 fallback 系统 thread_id。
+    let codex_tid = crate::services::multitenant::replication::get_codex_tid(
+        state.mt_redis.as_ref(),
+        &req.thread_id,
+    )
+    .await
+    .unwrap_or_else(|| req.thread_id.clone());
     if let Value::Object(ref mut m) = params {
-        m.entry("threadId").or_insert(Value::String(req.thread_id.clone()));
+        m.entry("threadId").or_insert(Value::String(codex_tid));
     }
     let resp = state
         .codex
@@ -325,8 +343,18 @@ async fn thread_invoke(
         None
     };
     let mut params = req.params.unwrap_or(Value::Object(Default::default()));
+    // codex 0.142.5+ 忽略外部 threadId 自生成 tid,须传 codex_tid;映射缺失 fallback 系统 thread_id。
+    // 注:转发方 mt_invoke_thread/mt_delete_thread 已在 params 注入 codex_tid(or_insert 不覆盖);
+    //     此处 get_codex_tid 为直接 RPC 调用(未带 params.threadId)兜底。
+    //     resume_cache get/put 仍按系统 thread_id(req.thread_id)不变。
+    let codex_tid = crate::services::multitenant::replication::get_codex_tid(
+        state.mt_redis.as_ref(),
+        &req.thread_id,
+    )
+    .await
+    .unwrap_or_else(|| req.thread_id.clone());
     if let Value::Object(ref mut m) = params {
-        m.entry("threadId").or_insert(Value::String(req.thread_id.clone()));
+        m.entry("threadId").or_insert(Value::String(codex_tid));
         if req.method == "thread/resume" {
             m.entry("persistExtendedHistory".to_string()).or_insert(Value::Bool(true));
         }

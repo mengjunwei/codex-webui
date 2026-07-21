@@ -47,6 +47,67 @@ async fn reap_receive_lock(key: &str) {
     }
 }
 
+// ── codex_tid 映射(系统 thread_id ↔ codex 自生成 tid)──────────────────────
+
+/// 进程内 codex_tid 映射 fallback(无 Redis / Redis miss 时用)。
+/// key = 系统 thread_id(入口预生成),value = codex 自生成的会话 tid。
+///
+/// 背景:codex 0.142.5+ 忽略外部 threadId 参数,thread/start 时自生成 codex_tid,且
+/// 后续 turn/invoke/resume/delete 必须用该 codex_tid 才能 hit 已有会话(传系统 thread_id
+/// 会报 `rpc error -32600: thread not found`)。故创建时记录映射,后续 codex 调用查表改写。
+/// 对齐 file_sync.rs LOCAL_FILESYNC_OFFSETS 的双存储语义:重启进程内丢失 → Redis 兜底。
+static CODEX_TID_MAP: once_cell::sync::Lazy<tokio::sync::Mutex<HashMap<String, String>>> =
+    once_cell::sync::Lazy::new(|| tokio::sync::Mutex::new(HashMap::new()));
+
+/// 存储 codex_tid 映射(thread/start 成功后调)。双写 Redis + 进程内。
+/// codex_tid 为空则跳过(防御:codex 尊重 threadId 时 codex_tid==thread_id,存了幂等无害)。
+pub async fn set_codex_tid(redis: Option<&redis::Client>, thread_id: &str, codex_tid: &str) {
+    if codex_tid.is_empty() {
+        return;
+    }
+    if let Some(c) = redis {
+        if let Ok(mut conn) = c.get_multiplexed_async_connection().await {
+            let _: () = redis::cmd("SET")
+                .arg(format!("codex:tid:{thread_id}"))
+                .arg(codex_tid)
+                .query_async(&mut conn)
+                .await
+                .unwrap_or(());
+        }
+    }
+    CODEX_TID_MAP
+        .lock()
+        .await
+        .insert(thread_id.to_string(), codex_tid.to_string());
+}
+
+/// 读取 codex_tid 映射:进程内优先 → Redis(命中回填进程内加速后续命中)→ None。
+/// 调用方对 None 应 fallback 系统 thread_id(向后兼容,不 panic)。
+pub async fn get_codex_tid(redis: Option<&redis::Client>, thread_id: &str) -> Option<String> {
+    if let Some(v) = CODEX_TID_MAP.lock().await.get(thread_id).cloned() {
+        return Some(v);
+    }
+    if let Some(c) = redis {
+        if let Ok(mut conn) = c.get_multiplexed_async_connection().await {
+            let v: Option<String> = redis::cmd("GET")
+                .arg(format!("codex:tid:{thread_id}"))
+                .query_async(&mut conn)
+                .await
+                .ok()
+                .flatten();
+            if let Some(s) = v {
+                // 回填进程内,加速本节点后续命中(同 thread_id → 同 codex_tid,idempotent)。
+                CODEX_TID_MAP
+                    .lock()
+                    .await
+                    .insert(thread_id.to_string(), s.clone());
+                return Some(s);
+            }
+        }
+    }
+    None
+}
+
 /// 主租约有效期(主须在此周期内续约,否则副本可抢占)。需显著大于维护周期(15s)。
 pub const LEASE_TTL_MS: i64 = 60_000;
 /// Redis 主租约 TTL 秒。
@@ -818,5 +879,24 @@ mod tests {
 
         let _ = tokio::fs::remove_dir_all(&base).await;
         let _ = tokio::fs::remove_dir_all(&outside).await;
+    }
+
+    // codex_tid 映射进程内 fallback(无 Redis 时双存储,对齐 I4 filesync offset 测试)。
+    #[tokio::test]
+    async fn codex_tid_map_local_fallback_roundtrip() {
+        let tid = format!("t-{}", uuid::Uuid::new_v4());
+        // 无 Redis:初始 None。
+        assert!(get_codex_tid(None, &tid).await.is_none());
+        // 空值跳过(防御 codex_tid 为空)。
+        set_codex_tid(None, &tid, "").await;
+        assert!(get_codex_tid(None, &tid).await.is_none());
+        // set 双写进程内(无 Redis 仅写进程内)。
+        let codex_tid = format!("c-{}", uuid::Uuid::new_v4());
+        set_codex_tid(None, &tid, &codex_tid).await;
+        // get 回读进程内值。
+        assert_eq!(
+            get_codex_tid(None, &tid).await.as_deref(),
+            Some(codex_tid.as_str())
+        );
     }
 }
