@@ -571,8 +571,10 @@ pub async fn mt_create_thread(
 
     // PG 共享操作(入口节点写即可,双写幂等):threads 元数据 + resume cache。
     // 跨进程 + 重启都生效,避免前端 create→resume 链路上 race codex 落盘前调 thread/resume 返回 -32600。
+    // I7:codex thread 已成功启动,这些 PG 操作均 best-effort 非阻塞(double_write_thread_meta /
+    //     put_cached_resume 内部失败仅 warn)—— 不 `?` 中断,避免客户端重试生成新 thread_id 残留孤儿。
     double_write_thread_meta(db, &thread_id, &pg_team_id, &uid.0, workspace_type).await;
-    let _ = crate::services::multitenant::resume_cache::put_cached_resume(db, &thread_id, &resp).await;
+    crate::services::multitenant::resume_cache::put_cached_resume(db, &thread_id, &resp).await;
 
     // C1:仅本地分支登记 session_replicas/sticky/active_rollout/复制。
     //     转发场景(target != self)由 target 侧 internal_rpc thread_start 自登记:
@@ -581,13 +583,19 @@ pub async fn mt_create_thread(
     //     sticky.bind 也委托 target 侧(共享 Redis)。
     if target == state.node_id {
         // get_or_assign 在本地分支调 → local_node_id()=本节点=target,primary 登记正确。
-        let _ = crate::services::multitenant::replication::get_or_assign(
+        // I7:best-effort(codex thread 已起,`?` 中断会留孤儿)。
+        if let Err(e) = crate::services::multitenant::replication::get_or_assign(
             &state.db,
             &thread_id,
             state.cluster.as_ref(),
         )
-        .await?;
-        let _ = state.sticky.bind(&thread_id, &target, 3600).await;
+        .await
+        {
+            tracing::error!(error = %e, thread_id = %thread_id, "get_or_assign failed (best-effort, codex thread already started)");
+        }
+        if let Err(e) = state.sticky.bind(&thread_id, &target, 3600).await {
+            tracing::error!(error = %e, thread_id = %thread_id, "sticky.bind failed (best-effort)");
+        }
 
         // 主侧:关联 rollout 文件 + 复制增量到副本。
         // C2:用 codex 响应 tid 查找 rollout 文件名(兼容 codex 忽略外部 threadId 自生成 tid 的场景);
