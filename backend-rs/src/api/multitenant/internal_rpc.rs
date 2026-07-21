@@ -30,6 +30,8 @@ struct ThreadStartReq {
     #[serde(rename = "createdBy")]
     #[allow(dead_code)]
     created_by: String,
+    #[serde(rename = "threadId")]
+    thread_id: String,
     params: Value,
 }
 
@@ -109,12 +111,10 @@ async fn thread_start(
         m.entry("experimentalRawEvents".to_string()).or_insert(Value::Bool(false));
         m.entry("persistExtendedHistory".to_string()).or_insert(Value::Bool(true));
     }
-    // C1:系统 thread_id(入口节点预生成,放 params.threadId)—— 用于 session_replicas /
-    // sticky / active_rollout 的 key(全系统统一用该 id)。
-    let sys_thread_id = params
-        .get("threadId")
-        .and_then(Value::as_str)
-        .map(String::from);
+    // C1:系统 thread_id(入口预生成,经 RPC body threadId 单独传,不进 codex params)——
+    // 用于 session_replicas / sticky / active_rollout / resume_cache 的 key(全系统统一用该 id)。
+    // codex 0.142.5 忽略外部 threadId,params 不含 threadId(否则会话创建异常);sys id 走 body。
+    let sys_thread_id = Some(req.thread_id.clone());
     let resp = state
         .codex
         .request("thread/start", Some(params))

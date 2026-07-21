@@ -567,7 +567,7 @@ pub async fn mt_create_thread(
         let rpc_url = worker_rpc_url(&state, &target).await?;
         state
             .worker_rpc
-            .thread_start(&rpc_url, &pg_team_id, &uid.0, Value::Object(rest))
+            .thread_start(&rpc_url, &pg_team_id, &uid.0, &thread_id, Value::Object(rest))
             .await?
     };
 

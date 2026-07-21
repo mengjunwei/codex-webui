@@ -61,12 +61,15 @@ impl WorkerRpcClient {
         base: &str,
         team_id: &str,
         created_by: &str,
+        thread_id: &str,
         params: Value,
     ) -> Result<Value, AppError> {
+        // thread_id 单独传(不进 params):codex 0.142.5 忽略外部 threadId 且收到会致会话创建异常,
+        // 故 params 不含 threadId;target 侧用 thread_id 作系统 id 登记 session_replicas/sticky/active_rollout。
         self.post(
             base,
             "/internal/thread/start",
-            json!({ "teamId": team_id, "createdBy": created_by, "params": params }),
+            json!({ "teamId": team_id, "createdBy": created_by, "threadId": thread_id, "params": params }),
         )
         .await
     }
