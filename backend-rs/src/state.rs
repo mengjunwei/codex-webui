@@ -71,8 +71,8 @@ pub struct AppState {
     /// 由 mt_create_thread / mt_start_turn 调 codex 后写入;
     /// 复制循环按此表精确读取文件,避免 UUID 子串误匹配。
     pub active_rollout: Arc<tokio::sync::Mutex<HashMap<String, PathBuf>>>,
-    /// 无 Redis 时 offset fallback 存储(进程内);重启归零接受。
-    pub local_offsets: Arc<tokio::sync::Mutex<HashMap<(String, String, String), u64>>>,
+    /// 无 Redis 时 offset fallback 存储(进程内);重启归零接受。key = (thread_id, rel_path)。
+    pub local_offsets: Arc<tokio::sync::Mutex<HashMap<(String, String), u64>>>,
 }
 
 impl AppState {

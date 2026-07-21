@@ -1,12 +1,12 @@
 //! session 副本:主副本分配 + rollout 增量复制 + 副本晋升。
 //!
-//! CODEX_HOME 全局,rollout 按 conv_id(= thread_id)分文件 → **复制单元 per-session**。
-//! 主每 turn 完成后扫描全局 CODEX_HOME/sessions/ 下该 team 各 thread 的 rollout,按 offset
+//! CODEX_HOME 全局,rollout 按 conv_id(= thread_id)分文件 → **复制单元 per-thread**。
+//! 主每 turn 完成后扫描全局 CODEX_HOME/sessions/ 下该 thread 的 rollout,按 offset
 //! 取增量 POST 到副本;副本 append 到本地 CODEX_HOME 对应文件。主失活 → 副本晋升
 //! (起 codex + thread/resume 续接)。
 //!
-//! 防脑裂:Redis 租约 `codex:primary:{team}` —— 主周期续(SETEX),副本晋升须 SET NX 抢占,
-//! 保证同一 team 同一时刻只有一个主。
+//! 防脑裂:Redis 租约 `codex:primary:{thread_id}` —— 主周期续(SETEX),副本晋升须 SET NX 抢占,
+//! 保证同一 thread 同一时刻只有一个主。
 
 use crate::db::entities::session_replica::{ActiveModel, Entity, Model};
 use crate::error::AppError;
@@ -19,8 +19,8 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-/// per-(team,conv) receive 锁表:防止并发 receive 同一 rollout 文件交错损坏(R4)。
-/// key = "{team_id}:{conv_id}",每个 key 一个独立的 tokio Mutex。
+/// per-(thread,conv) receive 锁表:防止并发 receive 同一 rollout 文件交错损坏(R4)。
+/// key = "{thread_id}:{conv_id}",每个 key 一个独立的 tokio Mutex。
 static RECEIVE_LOCKS: once_cell::sync::Lazy<tokio::sync::Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>> =
     once_cell::sync::Lazy::new(|| tokio::sync::Mutex::new(HashMap::new()));
 
@@ -37,7 +37,7 @@ async fn receive_lock(key: &str) -> tokio::sync::OwnedMutexGuard<()> {
 }
 
 /// 回收孤立的 receive 锁槽(仅 strong_count==1,即本表唯一持有时)。调用前须先 drop guard,
-/// 否则计数恒 ≥2。防 RECEIVE_LOCKS 按 {team}:{conv} 无界累积(conv = thread_id 单调增长)。
+/// 否则计数恒 ≥2。防 RECEIVE_LOCKS 按 {thread}:{conv} 无界累积(conv = thread_id 单调增长)。
 async fn reap_receive_lock(key: &str) {
     let mut map = RECEIVE_LOCKS.lock().await;
     if let Some(arc) = map.get(key) {
@@ -55,7 +55,7 @@ const LEASE_TTL_SECS: u64 = 60;
 /// 一段 rollout 增量(主 → 副本)。
 #[derive(Serialize, Deserialize, Clone)]
 pub struct RolloutChunk {
-    pub team_id: String,
+    pub thread_id: String,
     pub conv_id: String,
     /// 相对 CODEX_HOME 的路径,如 `sessions/2026/07/17/rollout-...-<conv>.jsonl`。
     pub rel_path: String,
@@ -72,7 +72,7 @@ pub async fn get(db: &DatabaseConnection, thread_id: &str) -> Result<Option<Mode
         .map_err(|e| AppError::internal(format!("query session_replica: {e}")))
 }
 
-/// 取或分配该 team 的主副本:无则 primary=本节点,replica=另一 alive 节点(反亲和)。
+/// 取或分配该 thread 的主副本:无则 primary=本节点,replica=另一 alive 节点(反亲和)。
 /// insert 主键冲突(并发首请求)→ 重读返回已存在行(原子化)。
 pub async fn get_or_assign(
     db: &DatabaseConnection,
@@ -135,11 +135,11 @@ pub async fn ensure_replica(
 /// 其 renew 会把 DB `primary_node` / Redis 租约覆盖回自己,而副本已抢占成功 → 双主脑裂。
 pub async fn renew_lease(
     db: &DatabaseConnection,
-    team_id: &str,
+    thread_id: &str,
     node_id: &str,
     redis: Option<&redis::Client>,
 ) -> Result<(), AppError> {
-    let Some(row) = get(db, team_id).await? else {
+    let Some(row) = get(db, thread_id).await? else {
         return Ok(());
     };
     if row.primary_node != node_id {
@@ -155,7 +155,7 @@ pub async fn renew_lease(
     let res = Entity::update_many()
         .col_expr(SRColumn::PrimaryLeaseUntil, Expr::value(now + LEASE_TTL_MS))
         .col_expr(SRColumn::UpdatedAt, Expr::value(now))
-        .filter(SRColumn::TeamId.eq(team_id.to_string()))
+        .filter(SRColumn::ThreadId.eq(thread_id.to_string()))
         .filter(SRColumn::PrimaryNode.eq(node_id.to_string()))
         .exec(db)
         .await
@@ -180,7 +180,7 @@ pub async fn renew_lease(
             let _: i64 = redis::cmd("EVAL")
                 .arg(RENEW_LUA)
                 .arg(1)
-                .arg(format!("codex:primary:{team_id}"))
+                .arg(format!("codex:primary:{thread_id}"))
                 .arg(node_id)
                 .arg(LEASE_TTL_SECS)
                 .query_async(&mut conn)
@@ -194,7 +194,7 @@ pub async fn renew_lease(
 /// Redis 主租约抢占(SET NX EX)。返回 true=抢占成功(可晋升);false=主租约仍在(不晋升)。
 pub async fn try_acquire_primary(
     redis: Option<&redis::Client>,
-    team_id: &str,
+    thread_id: &str,
     node_id: &str,
 ) -> bool {
     let Some(c) = redis else {
@@ -204,7 +204,7 @@ pub async fn try_acquire_primary(
         return false;
     };
     let ok: Option<String> = redis::cmd("SET")
-        .arg(format!("codex:primary:{team_id}"))
+        .arg(format!("codex:primary:{thread_id}"))
         .arg(node_id)
         .arg("NX")
         .arg("EX")
@@ -240,12 +240,12 @@ pub async fn set_primary(
 
 // ── rollout 增量复制(主侧)─────────────────────────────────────────────────
 
-/// 主侧:复制该 team 所有 thread 的 rollout 增量到副本节点(spec §2.1.4)。
-/// 复制单元 = active_rollout 里的 thread(thread_id → 路径);
+/// 主侧:复制单个 thread 的 rollout 增量到副本节点。
+/// 复制单元 = active_rollout 里该 thread 的文件路径;
 /// offset 仅在 send 成功后才推进(spec §2.2)。
-pub async fn replicate_team_rollouts(
+pub async fn replicate_thread_rollout(
     db: &DatabaseConnection,
-    team_id: &str,
+    thread_id: &str,
     codex_home: &Path,
     cluster: &dyn ClusterMembership,
     redis: Option<&redis::Client>,
@@ -253,80 +253,61 @@ pub async fn replicate_team_rollouts(
     active_rollout: &ThreadRolloutMap,
     local_offsets: &LocalOffsetMap,
 ) -> Result<(), AppError> {
-    let Some(row) = get(db, team_id).await? else {
-        return Ok(());
-    };
-    let Some(replica_node) = row.replica_node.clone() else {
-        return Ok(());
-    };
-    if replica_node == cluster.local_node_id() {
-        return Ok(());
-    }
-    let Some(rpc_addr) = cluster.node_rpc_addr(&replica_node).await else {
-        return Ok(());
-    };
+    let Some(row) = get(db, thread_id).await? else { return Ok(()); };
+    let Some(replica_node) = row.replica_node.clone() else { return Ok(()); };
+    if replica_node == cluster.local_node_id() { return Ok(()); }
+    let Some(rpc_addr) = cluster.node_rpc_addr(&replica_node).await else { return Ok(()); };
 
-    // 复制单元:遍历 active_rollout(thread_id → 文件路径),不再 walk sessions/。
-    // 重启后 active_rollout 为空 → 本轮跳过(下次 mt_create_thread / mt_start_turn 会写入)。
-    let entries: Vec<(String, PathBuf)> = {
+    // 单 thread:从 active_rollout 取该 thread 的文件路径。
+    let abs_path = {
         let m = active_rollout.lock().await;
-        m.iter()
-            .filter_map(|(tid, p)| p.exists().then(|| (tid.clone(), p.clone())))
-            .collect()
+        match m.get(thread_id) {
+            Some(p) if p.exists() => p.clone(),
+            _ => return Ok(()), // 无活跃 rollout(重启后未重建),本轮跳过。
+        }
     };
-
-    for (conv, abs_path) in entries {
-        let size = match tokio::fs::metadata(&abs_path).await {
-            Ok(m) => m.len(),
-            Err(_) => continue,
-        };
-        // rel_path 必须在 get_offset_dual 之前计算(offset key 绑定文件路径)。
-        let rel_path = match abs_path.strip_prefix(codex_home) {
-            Ok(r) => r.to_string_lossy().replace('\\', "/"),
-            Err(_) => continue,
-        };
-        let offset = get_offset_dual(redis, local_offsets, team_id, &conv, &rel_path).await;
-        if size <= offset {
-            continue;
-        }
-        let bytes = match read_range(&abs_path, offset, size).await {
-            Ok(b) => b,
-            Err(e) => {
-                tracing::warn!(team_id, conv = %conv, error = %e, "read rollout range failed, skip this round");
-                continue;
-            }
-        };
-        let chunk = RolloutChunk {
-            team_id: team_id.to_string(),
-            conv_id: conv.clone(),
-            rel_path: rel_path.clone(),
-            offset,
-            bytes,
-        };
-        if let Err(e) = rpc_client.replicate_rollout(&rpc_addr, &chunk).await {
-            tracing::warn!(team_id, conv = %conv, error = %e, "replicate rollout chunk failed (will retry next round)");
-            // 不推进 offset → 下次重传同一段(spec §2.2)。
-            continue;
-        }
-        set_offset_dual(redis, local_offsets, team_id, &conv, &rel_path, size).await;
-        metrics::counter!("replication_bytes_total").increment(chunk.bytes.len() as u64);
+    let size = match tokio::fs::metadata(&abs_path).await {
+        Ok(m) => m.len(),
+        Err(_) => return Ok(()),
+    };
+    let rel_path = match abs_path.strip_prefix(codex_home) {
+        Ok(r) => r.to_string_lossy().replace('\\', "/"),
+        Err(_) => return Ok(()),
+    };
+    let offset = get_offset_dual(redis, local_offsets, thread_id, &rel_path).await;
+    if size <= offset { return Ok(()); }
+    let bytes = match read_range(&abs_path, offset, size).await {
+        Ok(b) => b,
+        Err(e) => { tracing::warn!(thread_id, error = %e, "read rollout range failed"); return Ok(()); }
+    };
+    let chunk = RolloutChunk {
+        thread_id: thread_id.to_string(),
+        conv_id: thread_id.to_string(),
+        rel_path: rel_path.clone(),
+        offset,
+        bytes,
+    };
+    if let Err(e) = rpc_client.replicate_rollout(&rpc_addr, &chunk).await {
+        tracing::warn!(thread_id, error = %e, "replicate rollout chunk failed");
+        return Ok(()); // 不推进 offset,下轮重传。
     }
+    set_offset_dual(redis, local_offsets, thread_id, &rel_path, size).await;
+    metrics::counter!("replication_bytes_total").increment(chunk.bytes.len() as u64);
     Ok(())
 }
 
 /// offset 双存储读(Redis 优先,失败回退进程内)。spec §2.2 fallback。
 ///
-/// offset key 绑定 rel_path(文件路径),而非仅 (team, conv):同一 thread 跨天/codex 重启
+/// offset key 绑定 rel_path(文件路径),而非仅 (thread_id):同一 thread 跨天/codex 重启
 /// 会产生新 rollout 文件(rel_path 不同),若 offset 仍沿用旧文件遗留的大值,新文件 size 从 0
 /// 起 → `size <= offset` 永久跳过,副本永远收不到新会话。绑定文件后新文件 offset 从 0 开始。
 async fn get_offset_dual(
     redis: Option<&redis::Client>,
     local: &LocalOffsetMap,
-    team_id: &str,
-    conv: &str,
+    thread_id: &str,
     rel_path: &str,
 ) -> u64 {
-    let key = format!("repl:offset:{team_id}:{conv}:{rel_path}");
+    let key = format!("repl:offset:{thread_id}:{rel_path}");
     if let Some(c) = redis {
         if let Ok(mut conn) = c.get_multiplexed_async_connection().await {
             let v: Option<String> = redis::cmd("GET")
@@ -342,8 +323,7 @@ async fn get_offset_dual(
                         tracing::warn!(
                             error = %e,
                             value = %s,
-                            team_id = %team_id,
-                            conv = %conv,
+                            thread_id = %thread_id,
                             "invalid offset in Redis, falling back to local"
                         );
                     }
@@ -352,7 +332,7 @@ async fn get_offset_dual(
         }
     }
     let m = local.lock().await;
-    m.get(&(team_id.to_string(), conv.to_string(), rel_path.to_string()))
+    m.get(&(thread_id.to_string(), rel_path.to_string()))
         .copied()
         .unwrap_or(0)
 }
@@ -361,12 +341,11 @@ async fn get_offset_dual(
 async fn set_offset_dual(
     redis: Option<&redis::Client>,
     local: &LocalOffsetMap,
-    team_id: &str,
-    conv: &str,
+    thread_id: &str,
     rel_path: &str,
     v: u64,
 ) {
-    let key = format!("repl:offset:{team_id}:{conv}:{rel_path}");
+    let key = format!("repl:offset:{thread_id}:{rel_path}");
     if let Some(c) = redis {
         if let Ok(mut conn) = c.get_multiplexed_async_connection().await {
             let _: () = redis::cmd("SET")
@@ -378,33 +357,33 @@ async fn set_offset_dual(
         }
     }
     let mut m = local.lock().await;
-    m.insert((team_id.to_string(), conv.to_string(), rel_path.to_string()), v);
+    m.insert((thread_id.to_string(), rel_path.to_string()), v);
 }
 
 /// 晋升后清空 offset(Redis SCAN + DEL + 进程内 retain)。
-pub async fn delete_all_team_offsets_dual(
+pub async fn delete_all_thread_offsets_dual(
     redis: Option<&redis::Client>,
     local: &LocalOffsetMap,
-    team_id: &str,
+    thread_id: &str,
 ) {
     if let Some(c) = redis {
-        delete_all_team_offsets(c, team_id).await;
+        delete_all_thread_offsets(c, thread_id).await;
     }
     let mut m = local.lock().await;
-    m.retain(|(t, _, _), _| t != team_id);
+    m.retain(|(t, _), _| t != thread_id);
 }
 
 // ── 副本 receive ───────────────────────────────────────────────────────────
 
 /// 副本:把收到的 rollout 增量写入本地 CODEX_HOME(路径穿越校验 + offset 校验防乱序空洞)。
 ///
-/// R4 修复:per-(team,conv) 互斥锁,防止并发 receive 同一文件交错损坏。
+/// R4 修复:per-(thread,conv) 互斥锁,防止并发 receive 同一文件交错损坏。
 /// HTTP handler(mt_start_turn 后的 replicate)与维护循环可能同时向副本 POST 同 conv 的 chunk,
 /// 两个 spawn_blocking 的 seek+offset_check+write 非原子交错会损坏文件。
 pub async fn receive_rollout(chunk: &RolloutChunk, codex_home: &Path) -> Result<(), AppError> {
-    // per-conv 锁:同 team 同 conv 的 receive 串行化(不同 conv 并发不受影响)。
-    // 锁释放后 reap 孤立锁槽(strong_count==1),防 RECEIVE_LOCKS 按 {team}:{conv} 无界累积。
-    let key = format!("{}:{}", chunk.team_id, chunk.conv_id);
+    // per-conv 锁:同 thread 同 conv 的 receive 串行化(不同 conv 并发不受影响)。
+    // 锁释放后 reap 孤立锁槽(strong_count==1),防 RECEIVE_LOCKS 按 {thread}:{conv} 无界累积。
+    let key = format!("{}:{}", chunk.thread_id, chunk.conv_id);
     let guard = receive_lock(&key).await;
     let result = receive_rollout_inner(chunk, codex_home).await;
     drop(guard);
@@ -457,17 +436,17 @@ async fn receive_rollout_inner(chunk: &RolloutChunk, codex_home: &Path) -> Resul
 
 // ── 副本晋升 ─────────────────────────────────────────────────────────────
 
-/// 副本自查:若自己是某 team 的副本、主失活(不在 alive 或租约过期)→ Redis 抢占租约后晋升。
+/// 副本自查:若自己是某 thread 的副本、主失活(不在 alive 或租约过期)→ Redis 抢占租约后晋升。
 /// 返回 true 表示已晋升(调用方应起 codex + thread/resume 续接)。
 pub async fn promote_if_primary_down(
     db: &DatabaseConnection,
-    team_id: &str,
+    thread_id: &str,
     cluster: &dyn ClusterMembership,
     redis: Option<&redis::Client>,
     active_rollout: &ThreadRolloutMap,
     local_offsets: &LocalOffsetMap,
 ) -> Result<bool, AppError> {
-    let Some(row) = get(db, team_id).await? else {
+    let Some(row) = get(db, thread_id).await? else {
         return Ok(false);
     };
     let me = cluster.local_node_id();
@@ -485,25 +464,25 @@ pub async fn promote_if_primary_down(
         return Ok(false);
     }
     // Redis 抢占租约(SET NX):防止多个副本同时晋升。
-    if !try_acquire_primary(redis, team_id, me).await {
-        tracing::info!(team_id, "primary lease still held by another, skip promote");
+    if !try_acquire_primary(redis, thread_id, me).await {
+        tracing::info!(thread_id, "primary lease still held by another, skip promote");
         return Ok(false);
     }
     // 抢占成功 → 晋升:选新副本(反亲和,alive 中 != 自己)。
     let alive = cluster.alive_nodes().await;
     let new_replica = alive.into_iter().find(|n| n != me);
-    set_primary(db, team_id, me, new_replica.as_deref()).await?;
+    set_primary(db, thread_id, me, new_replica.as_deref()).await?;
     // 晋升成功 → 删 Redis + 进程内 offset,触发下次从 0 全量同步(spec §2.3.3)。
-    delete_all_team_offsets_dual(redis, local_offsets, team_id).await;
+    delete_all_thread_offsets_dual(redis, local_offsets, thread_id).await;
     let _ = active_rollout; // 占位:下次 mt_start_turn / mt_create_thread 重新发现文件。
     metrics::counter!("replica_promotions_total").increment(1);
-    tracing::info!(team_id, "replica promoted to primary");
+    tracing::info!(thread_id, "replica promoted to primary");
     Ok(true)
 }
 
-/// 孤儿 team 认领:主节点不 alive(如重启换 id)且无人晋升时,由"最低 alive id"节点认领主。
+/// 孤儿 thread 认领:主节点不 alive(如重启换 id)且无人晋升时,由"最低 alive id"节点认领主。
 /// 确定性认领(只有最低 id 节点执行)→ 无竞争。
-pub async fn reclaim_orphan_teams(
+pub async fn reclaim_orphan_threads(
     db: &DatabaseConnection,
     cluster: &dyn ClusterMembership,
     redis: Option<&redis::Client>,
@@ -528,18 +507,18 @@ pub async fn reclaim_orphan_teams(
             continue; // 主在,不认领。
         }
         // 主失活 → 抢占租约认领。
-        if !try_acquire_primary(redis, &row.team_id, &me).await {
+        if !try_acquire_primary(redis, &row.thread_id, &me).await {
             continue;
         }
         let new_replica = alive.iter().find(|n| n.as_str() != me).cloned();
-        set_primary(db, &row.team_id, &me, new_replica.as_deref()).await?;
-        // R3 修复:认领后清 Redis 残留 offset。认领者不是旧主/副本,本地无该 team 的 rollout,
+        set_primary(db, &row.thread_id, &me, new_replica.as_deref()).await?;
+        // R3 修复:认领后清 Redis 残留 offset。认领者不是旧主/副本,本地无该 thread 的 rollout,
         // 但 Redis 可能残留旧 offset;新副本 receive_rollout 会因 offset>cur_len 拒绝同步,
         // 导致认领后数据永久对不齐。
         if let Some(c) = redis {
-            delete_all_team_offsets(c, &row.team_id).await;
+            delete_all_thread_offsets(c, &row.thread_id).await;
         }
-        tracing::info!(team_id = %row.team_id, "reclaimed orphan team as primary");
+        tracing::info!(thread_id = %row.thread_id, "reclaimed orphan thread as primary");
     }
     Ok(())
 }
@@ -565,7 +544,7 @@ async fn read_range(path: &Path, start: u64, end: u64) -> Result<Vec<u8>, AppErr
 
 /// 复制单元类型别名(spec §2.1 / §2.2)。
 pub type ThreadRolloutMap = Arc<tokio::sync::Mutex<std::collections::HashMap<String, PathBuf>>>;
-pub type LocalOffsetMap = Arc<tokio::sync::Mutex<std::collections::HashMap<(String, String, String), u64>>>;
+pub type LocalOffsetMap = Arc<tokio::sync::Mutex<std::collections::HashMap<(String, String), u64>>>;
 
 /// 给定 thread_id,在 <codex_home>/sessions/ 下递归找其活跃 rollout 文件。
 /// 规则:文件名 stem 包含完整 thread_id 字符串,且 thread_id 前后必须是 `.`/`-`/文件边界
@@ -662,12 +641,12 @@ pub async fn safe_join(codex_home: &Path, rel: &str) -> Result<PathBuf, AppError
     Ok(canon_path)
 }
 
-/// 删除 Redis 中该 team 全部 thread 的 offset key(晋升成功后调,触发副本下次从 0 全量同步)。
-pub async fn delete_all_team_offsets(redis: &redis::Client, team_id: &str) {
+/// 删除 Redis 中该 thread 的 offset key(晋升成功后调,触发副本下次从 0 全量同步)。
+pub async fn delete_all_thread_offsets(redis: &redis::Client, thread_id: &str) {
     let Ok(mut conn) = redis.get_multiplexed_async_connection().await else {
         return;
     };
-    let pattern = format!("repl:offset:{team_id}:*");
+    let pattern = format!("repl:offset:{thread_id}:*");
     let mut cursor: u64 = 0;
     loop {
         let (next, keys): (u64, Vec<String>) = match redis::cmd("SCAN")
@@ -701,7 +680,7 @@ mod tests {
         let tmp = std::env::temp_dir().join(format!("repl-{}", uuid::Uuid::new_v4()));
         let home = tmp.join("home");
         let chunk = RolloutChunk {
-            team_id: "t1".into(),
+            thread_id: "t1".into(),
             conv_id: "c1".into(),
             rel_path: "sessions/2026/07/17/rollout-x-c1.jsonl".into(),
             offset: 0,
@@ -717,7 +696,7 @@ mod tests {
     async fn receive_rollout_rejects_path_traversal() {
         let tmp = std::env::temp_dir().join(format!("repl2-{}", uuid::Uuid::new_v4()));
         let chunk = RolloutChunk {
-            team_id: "t1".into(),
+            thread_id: "t1".into(),
             conv_id: "c1".into(),
             rel_path: "../../../etc/evil".into(),
             offset: 0,
@@ -731,7 +710,7 @@ mod tests {
         let tmp = std::env::temp_dir().join(format!("repl3-{}", uuid::Uuid::new_v4()));
         let home = tmp.join("home");
         let chunk = RolloutChunk {
-            team_id: "t1".into(),
+            thread_id: "t1".into(),
             conv_id: "c1".into(),
             rel_path: "sessions/f.jsonl".into(),
             offset: 100, // 文件不存在(cur_len=0),offset>0 → 拒绝。
