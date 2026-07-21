@@ -1,7 +1,6 @@
 //! API 层：HTTP 路由处理器、WebSocket 网关、请求/响应 DTO。
 
 pub mod chat;
-pub mod event_subscribers;
 pub mod files;
 pub mod health;
 pub mod hooks;

@@ -170,8 +170,6 @@ async fn main() -> anyhow::Result<()> {
     let codex_bg = codex.clone();
     tokio::spawn(async move { codex_bg.start().await; });
 
-    codex_webui::api::event_subscribers::spawn_all(db.clone(), codex.clone());
-
     let reader = settings::SettingsReader::new(&db, None);
     let terminal = TerminalService::new(TerminalConfig::from_settings(&reader).await);
 

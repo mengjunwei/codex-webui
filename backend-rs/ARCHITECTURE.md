@@ -9,7 +9,7 @@
 `backend-rs` 是 Codex WebUI 的 Rust 后端，替代原 NestJS TypeScript 实现。核心职责：
 
 - **多租户 SaaS 平台**：用户注册/登录/团队管理，每人/每团队隔离 workspace
-- **Codex app-server 进程池**：per-team codex 进程，共享全局 `CODEX_HOME`，JSON-RPC over stdio
+- **Codex app-server 单进程多线程**：per-node 全局唯一 codex 进程（codex 原生 threadId 多线程，多 team 共享），共享全局 `CODEX_HOME`，JSON-RPC over stdio
 - **多节点 HA 集群**：Redis/Memberlist 探活 + session 级 rollout 增量复制 + 副本晋升
 - **Hook Webhook**：codex 调用工具/技能/插件/MCP 时通过 HTTP webhook 回调 backend 做权限校验与审计
 
@@ -47,10 +47,9 @@
 [cluster]         # internal_rpc_host / port / worker_id / worker_rpc_url（可选 enable）
 [database]        # driver / host / port / user / password / name / ssl_mode
 [redis]           # enable = true/false + host / port / password / db
-[codex]           # bin / home（可选 enable）/ openai_api_key（可选 enable）
+[codex]           # bin / home（可选 enable）/ max_concurrent（全局并发上限，默认 32）
 [auth]            # master_key（可选 enable）/ master_key_previous（可选 enable）
 [security]        # internal_rpc_token / internal_hook_token（均 ≥32 字节）
-[process_pool]    # max_processes_per_team / max_global / idle_evict_secs / ...
 [memberlist]      # enable + seeds / bind
 [snapshot]        # interval_secs / root（可选 enable）
 [quota]           # default_turn_quota_hourly
@@ -74,7 +73,7 @@ driver = "postgres"  # 或 "mysql" / "pg" / "mariadb"
 
 ```
 backend-rs/src/
-├── main.rs                    # 入口：Config::load → DB → Redis → cluster → codex_pool → HTTP + 内网 RPC
+├── main.rs                    # 入口：Config::load → DB → Redis → cluster → codex 单进程 → HTTP + 内网 RPC
 ├── config.rs                  # TOML-only 配置，serde 反序列化 + validate()
 ├── state.rs                   # AppState（Arc 共享，全部 handler 注入）
 ├── error.rs                   # ErrorCode + AppError + IntoResponse
@@ -94,7 +93,6 @@ backend-rs/src/
 │   ├── realtime.rs            # Socket.IO WebSocket 网关
 │   ├── proxies.rs             # REST → codex JSON-RPC 代理（account/apps/models/mcp/skills/plugins）
 │   ├── onlyoffice.rs          # OnlyOffice Docs 集成
-│   ├── event_subscribers.rs   # 事件驱动 DB 写入（token-usage / turn-diff / turn-error / pending）
 │   └── multitenant/
 │       ├── handlers.rs        # 多租户 HTTP（register/login/refresh + team/thread CRUD）
 │       ├── routing.rs         # team → worker 路由（一致性哈希 + Redis/Local）
@@ -136,10 +134,8 @@ backend-rs/src/
         ├── api_keys.rs        # BYOK（AES-256-GCM 加密存储）
         ├── audit.rs           # 审计日志（team 操作）
         ├── cluster.rs         # ClusterMembership trait + RedisCluster / MemberlistCluster / SingleCluster
-        ├── codex_pool.rs      # TeamCodexManager（per-team 进程池 + LRU 扩缩）
         ├── event_bus.rs       # EventBus trait + InMemoryEventBus / RedisEventBus
-        ├── event_persist.rs   # codex 事件落 PG（审批/错误/token 用量）
-        ├── pool_policy.rs     # 进程池调度策略（纯逻辑）
+        ├── event_persist.rs   # codex 事件落 PG（审批/错误/token 用量/diff，team 维度 + quota + primary 守门）
         ├── quota.rs           # 计费/配额
         ├── rate_limit.rs      # Redis 固定窗口限流
         ├── replication.rs     # session 副本（主副本分配 + rollout 复制 + 晋升）
@@ -161,8 +157,7 @@ Redis connect           ← 可选
 EventBus 构造           ← RedisEventBus / 无
 codex_home 创建         ← ~/.codex-webui/home 或配置值
 cluster 初始化          ← MemberlistCluster / RedisCluster / SingleCluster
-TeamCodexManager        ← 进程池 + 空闲回收
-CodexProcessManager     ← 单进程（全局 codex app-server）
+CodexProcessManager     ← 单进程（全局 codex app-server，threadId 多线程 + Semaphore 并发限流）
 spawn emit tasks        ← codex 通知 → Socket.IO → 前端
 spawn event_persist     ← codex 事件 → PG
 AuditWriter             ← hook 审计批量入库
@@ -182,7 +177,6 @@ listen + graceful shutdown
 |---|---|---|
 | `db` | `DatabaseConnection` | SeaORM PG/MySQL |
 | `mt_master_key` | `String` | 加密 team API key 的主密钥 |
-| `mt_team_codex` | `Arc<TeamCodexManager>` | per-team 进程池 |
 | `mt_redis` | `Option<redis::Client>` | Redis（可选）|
 | `metrics_handle` | `Option<PrometheusHandle>` | Prometheus 指标 |
 | `auth` | `Arc<AuthService>` | JWT + API key |
@@ -284,8 +278,7 @@ $workspace_root/
 启动 codex 前向 `$CODEX_HOME/config.toml` 注入 `[hooks.audit]` 段（指向本进程 `/hooks/codex`）。
 `services/workspace/hooks_config.rs` 用 **`toml_edit`** 解析整个文件后只精确设置 4 个字段
 （`type`/`url`/`auth_header`/`auth_env`），其余用户配置（`model`/`model_providers`/注释/空行/格式）
-**原样保留**；内容无需变更时跳过写盘（不刷 mtime）。调用点：`codex_pool.rs`（多租户）、
-`codex/process.rs`（单租户遗留）。详见 `docs/thread-resume-cache-troubleshooting.md` §3。
+**原样保留**；内容无需变更时跳过写盘（不刷 mtime）。调用点：`codex/process.rs`。详见 `docs/thread-resume-cache-troubleshooting.md` §3。
 
 ---
 
@@ -296,7 +289,7 @@ $workspace_root/
 所有节点都是 **ingress + worker 一体**（无角色分流）。每个节点同时运行：
 - HTTP API（对外）
 - 内网 RPC server（`/internal/*`，对其他节点）
-- TeamCodexManager（per-team codex 进程池）
+- CodexProcessManager（per-node 全局 codex 单进程，threadId 多线程）
 - Replica maintenance（主副本续约 + 复制 + 晋升）
 
 ### ClusterMembership 三实现
@@ -340,14 +333,13 @@ $workspace_root/
 
 ---
 
-## 11. 进程池调度（TeamCodexManager）
+## 11. codex 进程模型（CodexProcessManager）
 
-- per-team 多进程（`max_processes_per_team`）
-- 全局上限（`max_global_processes`），满则跨 team LRU 回收
-- 空闲回收（`idle_evict_secs`），后台 task 周期扫描
-- 每进程并发 semaphore（`max_concurrent_per_process`）
-- `client_for()` → 选最闲存活 slot → 获取 permit
-- failover：spawn 前 CODEX_HOME 不存在则从快照 restore
+- per-node 全局唯一 codex app-server 进程（codex 原生 threadId 多线程，多 team 共享同一进程）
+- 全局并发上限 Semaphore（`codex.max_concurrent`，默认 32）：每个 `request()` 获取 permit，返回时释放，防止过载
+- `state.codex.request(method, params)` → 统一调用点（所有 handler / realtime 走此路径，注入 cwd + threadId）
+- 指数退避重启（崩溃/退出后自动拉起，generation 递增；旧 generation 审批由 event_persist 启动时清 stale）
+- 事件转发：codex notification / server_request → EventBus("codex:events") → event_persist（team 维度落 PG + quota + 审批双保险）+ realtime（socket.io 跨节点 fan-out）
 
 ---
 
@@ -410,7 +402,6 @@ VARCHAR(36) UUIDv7 / BIGINT i64 毫秒 / BOOLEAN / TEXT（不用 JSON/ENUM/ARRAY
 | POST | `/internal/thread/start` | 创建会话 |
 | POST | `/internal/thread/invoke` | 通用会话方法 |
 | POST | `/internal/turn/start` | 发起 turn |
-| POST | `/internal/evict` | 踢除 team 进程 |
 | POST | `/internal/approval/respond` | 审批响应 |
 | POST | `/internal/replicate` | 接收 rollout 增量 |
 

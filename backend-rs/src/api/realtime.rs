@@ -417,7 +417,6 @@ fn ack_term_err(s: &SocketRef, ack: AckSender, e: AppError) {
 /// M1 修复:pending-record 与 WS emit 合并,以防止 TOCTOU(DB 记录
 /// 必须在 WS 投递之前完成,以便 respond 端点能找到该行)。
 pub fn spawn_emit_tasks(io: SocketIo, codex: Arc<CodexProcessManager>, terminal: Arc<TerminalService>, db: DatabaseConnection, active: Arc<ActiveThreadRegistry>, resume_registry: Arc<ThreadResumeRegistry>) {
-    spawn_notification_emit(io.clone(), codex.clone());
     spawn_server_request_record_and_emit(io.clone(), codex.clone(), db);
     spawn_lifecycle_emit(io.clone(), codex.clone(), active, resume_registry);
     spawn_terminal_output_emit(io.clone(), terminal.clone());
@@ -478,37 +477,6 @@ pub fn spawn_event_bus_emit(
     });
 }
 
-fn spawn_notification_emit(io: SocketIo, codex: Arc<CodexProcessManager>) {
-    let mut rx = codex.subscribe_notifications();
-    // H6：循环体不再使用 codex，立即释放强引用，避免任务持有 service 阻止其回收
-    // （单例运行无影响；防御性修复，使未来 service 重建时旧任务能随 service 析构退出）。
-    drop(codex);
-    tokio::spawn(async move {
-        loop {
-            match rx.recv().await {
-                Ok(msg) => {
-                    let thread_id = msg
-                        .get("params")
-                        .and_then(|p| p.get("threadId"))
-                        .and_then(Value::as_str)
-                        .map(|s| s.to_string());
-                    let Some(ns) = io.of("/ws") else { continue };
-                    let res = if let Some(tid) = thread_id.as_deref() {
-                        ns.within(format!("thread:{tid}")).emit("codex.notification", &msg).await
-                    } else {
-                        ns.broadcast().emit("codex.notification", &msg).await
-                    };
-                    if let Err(e) = res {
-                        tracing::warn!("emit codex.notification failed: {e}");
-                    }
-                }
-                Err(RecvError::Lagged(n)) => tracing::warn!("notification emit lagged {n}"),
-                Err(RecvError::Closed) => break,
-            }
-        }
-    });
-}
-
 /// M1 修复:记录与 emit 合并 — DB 记录在 WS 投递之前完成。
 /// M1 修复：server-request 持久化与 emit 合并在同一个任务内，避免 TOCTOU。
 ///
@@ -536,7 +504,7 @@ fn spawn_server_request_record_and_emit(io: SocketIo, codex: Arc<CodexProcessMan
                     // 阶段 1:记录到 DB(必须在 WS emit 之前完成)。
                     // MEDIUM-1 修复:若 DB 记录失败,则完全跳过 emit
                     // (防止出现无法响应的幽灵请求)。
-                    if let Err(e) = crate::api::event_subscribers::record_server_request(&db, &codex, &req).await {
+                    if let Err(e) = crate::services::multitenant::event_persist::record_server_request(&db, &req).await {
                         tracing::error!("record server request failed, skipping emit: {e}");
                         continue;
                     }

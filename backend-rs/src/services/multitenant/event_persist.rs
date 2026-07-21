@@ -12,7 +12,7 @@ use crate::error::AppError;
 use crate::services::multitenant::event_bus::EventBus;
 use crate::services::multitenant::now_ms;
 use sea_orm::ActiveModelTrait;
-use sea_orm::{DatabaseConnection, EntityTrait, Set};
+use sea_orm::{ColumnTrait, DatabaseConnection, EntityTrait, QueryFilter, Set};
 use serde_json::Value;
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -30,6 +30,11 @@ pub fn spawn_team_event_persistor(
     node_id: String,
 ) {
     tokio::spawn(async move {
+        // 启动时清 stale(>1h)pending 审批:多副本 HA(共享 PG)下不能全表 expire(会清其他
+        // 节点活审批 → 审批双保险失效),只清 created_at 早于 1h 阈值的残留(上次运行/已失效 turn)。
+        if let Err(e) = expire_stale_pending(&db).await {
+            tracing::warn!(error = %e, "startup expire stale pending failed");
+        }
         let mut rx = match bus.subscribe("codex:events").await {
             Ok(rx) => rx,
             Err(e) => {
@@ -225,6 +230,54 @@ async fn persist_server_request(db: &DatabaseConnection, team_id: &str, msg: &Va
         };
         let _ = am.insert(db).await;
     }
+}
+
+/// 记录审批请求(team 维度,team_generation 主键)。供 realtime 在 WS emit 之前调用,
+/// 保证客户端立即 respond 时行已存在(TOCTOU:realtime 直订阅 codex 快于 bus 路径,先落库)。
+///
+/// 与 handle_event → persist_server_request(经 bus)用同一 team_generation(team_id) 主键,
+/// 两路 upsert 合并为同一行 —— 消除原 event_subscribers::record_server_request 用 codex.generation()
+/// + team_id=None 与 event_persist team_generation 双写产生的孤儿行(team_id=None 行 list/resolve
+/// 命不中)+ TOCTOU 失效(realtime 落 codex.generation() 主键,handlers resolve 用 team_generation
+/// 命不中)。
+pub async fn record_server_request(db: &DatabaseConnection, msg: &Value) -> Result<(), AppError> {
+    let params = msg.get("params");
+    let thread_id = params.and_then(|p| p.get("threadId")).and_then(Value::as_str);
+    let Some(tid) = thread_id else { return Ok(()); };
+    // 反查 team_id(无缓存:审批请求低频,每次查 DB 可接受)。
+    let row = ThreadEntity::find_by_id(tid.to_string())
+        .one(db)
+        .await
+        .map_err(|e| AppError::internal(format!("record_server_request query thread: {e}")))?;
+    let Some(team_id) = row.map(|r| r.team_id) else { return Ok(()); };
+    persist_server_request(db, &team_id, msg).await;
+    Ok(())
+}
+
+/// 启动时把 status='pending' 且较旧(stale > 1h)的审批批量过期。
+/// 多副本 HA(共享 PG)下不能全表 expire(会清其他节点活审批 → mt_list_approvals 返回空 →
+/// 审批双保险失效),只清 created_at 早于 1h 阈值的残留(上次运行/已失效 turn)。
+async fn expire_stale_pending(db: &DatabaseConnection) -> Result<(), AppError> {
+    use crate::db::entity::pending_server_request::{Column as PSRColumn, Entity as PSREntity};
+    let now = now_ms();
+    const STALE_MS: i64 = 3600 * 1000; // 1h:超过视为残留,活审批(近期)保留。
+    let cutoff = now - STALE_MS;
+    let rows = PSREntity::find()
+        .filter(PSRColumn::Status.eq("pending"))
+        .filter(PSRColumn::CreatedAt.lt(cutoff))
+        .all(db)
+        .await
+        .map_err(|e| AppError::internal(format!("find stale pending: {e}")))?;
+    let expired_count = rows.len();
+    for model in rows {
+        let mut am: psr::ActiveModel = model.into();
+        am.status = Set("expired".to_string());
+        am.updated_at = Set(now);
+        am.resolved_at = Set(Some(now));
+        let _ = am.update(db).await;
+    }
+    tracing::debug!(expired_count, "expired stale pending requests: startup");
+    Ok(())
 }
 
 async fn upsert_turn_error(
