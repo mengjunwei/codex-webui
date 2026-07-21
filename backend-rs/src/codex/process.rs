@@ -13,7 +13,7 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::process::Command;
-use tokio::sync::{broadcast, Mutex};
+use tokio::sync::{broadcast, Mutex, Semaphore};
 use tokio::time::sleep;
 
 const RESTART_DELAY_MS: u64 = 3000;
@@ -43,11 +43,20 @@ pub struct CodexProcessManager {
     /// 最近一次 initialize 握手结果（原始 JSON），供 CodexStatusService
     /// 暴露为 `initialize.data`。握手失败或进程退出后为 None。
     init_result: Mutex<Option<Value>>,
+    /// 全局并发信号量:单进程模式下所有 thread 的请求共用同一 stdin/stdout
+    /// 管道,必须在 request() 入口 acquire 许可,防止管道过载。
+    /// AcquireError 只在 Semaphore 被 close 时发生 —— 本管理器从不 close 它,
+    /// 故该错误在此等价于"管理器已不可用",映射为 RpcError::Closed。
+    concurrency: Arc<Semaphore>,
 }
 
 impl CodexProcessManager {
     /// 构造但不立即启动（懒加载）。调用 `start()` 才会启动 + 初始化。
-    pub fn new(codex_bin: String, codex_home: Option<String>) -> Self {
+    ///
+    /// `max_concurrent` 为单进程全局并发上限,用于构造内部信号量。
+    /// 每节点只跑一个 codex 进程,N 个 thread 的请求都走同一 stdin/stdout
+    /// 管道,超过该上限的请求会在 acquire 处排队等待(而非打爆管道)。
+    pub fn new(codex_bin: String, codex_home: Option<String>, max_concurrent: usize) -> Self {
         let (notify_tx, _) = broadcast::channel::<Value>(256);
         let (server_request_tx, _) = broadcast::channel::<Value>(1024);
         let (lifecycle_tx, _) = broadcast::channel::<LifecycleEvent>(32);
@@ -63,6 +72,7 @@ impl CodexProcessManager {
             server_request_tx,
             lifecycle_tx,
             init_result: Mutex::new(None),
+            concurrency: Arc::new(Semaphore::new(max_concurrent)),
         }
     }
 
@@ -101,7 +111,17 @@ impl CodexProcessManager {
     }
 
     /// 向当前 app-server 发送 JSON-RPC 请求，不可用则返回错误。
+    ///
+    /// ## 全局并发限流
+    ///
+    /// 进入实际请求前先 `acquire()` 信号量许可。单进程模式下所有 thread 共用
+    /// 同一 stdin/stdout 管道,无限并发会把管道打爆(写队列满 / 响应乱序);
+    /// 许可数 = `cfg.codex.max_concurrent`(默认 32)。`_permit` 在函数
+    /// 返回前持续持有,drop 时自动归还 —— 故 await 期间许可不会泄漏。
+    /// AcquireError 只在 Semaphore close 时出现,本管理器从不 close,
+    /// 映射为 RpcError::Closed 即可。
     pub async fn request(&self, method: &str, params: Option<Value>) -> Result<Value, RpcError> {
+        let _permit = self.concurrency.acquire().await.map_err(|_| RpcError::Closed)?;
         match self.client().await {
             Some(c) => c.request(method, params).await,
             None => Err(RpcError::Closed),

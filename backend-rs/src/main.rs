@@ -184,6 +184,7 @@ async fn main() -> anyhow::Result<()> {
     let codex = Arc::new(CodexProcessManager::new(
         cfg.codex_bin().to_string(),
         cfg.codex_home().map(|s| s.to_string()),
+        cfg.codex_max_concurrent(),
     ));
     let codex_bg = codex.clone();
     tokio::spawn(async move { codex_bg.start().await; });

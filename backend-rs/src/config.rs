@@ -224,10 +224,22 @@ pub struct CodexConfig {
     pub home: CodexHomeConfig,
     #[serde(default)]
     pub openai_api_key: CodexOpenaiConfig,
+    /// 单进程全局并发上限(单 stdin/stdout 管道防过载;默认 32)。
+    /// 每节点只跑一个 codex 进程,所有 thread 的请求都走同一管道,
+    /// 故需在管理器层用信号量限流,避免 stdin/stdout 被打爆。
+    #[serde(default = "default_codex_max_concurrent")]
+    pub max_concurrent: usize,
 }
 
 fn default_codex_bin() -> String {
     "codex".to_string()
+}
+
+/// CodexConfig.max_concurrent 的默认值(32)。
+/// 注意:与 ProcessPoolConfig 的 `default_max_concurrent`(20)语义不同 ——
+/// 这里是单进程全局并发,而非每进程并发,故独立命名以避免命名冲突。
+fn default_codex_max_concurrent() -> usize {
+    32
 }
 
 #[derive(Clone, Debug, Deserialize, Default)]
@@ -632,6 +644,13 @@ impl Config {
     /// 便捷访问器:codex bin(总有值,有默认值)。
     pub fn codex_bin(&self) -> &str {
         &self.codex.bin
+    }
+
+    /// 便捷访问器:单进程全局并发上限(默认 32)。
+    /// CodexProcessManager 据此构造 `Semaphore::new(max_concurrent)`,
+    /// 在 request() 入口 acquire 许可,防止单 stdin/stdout 管道过载。
+    pub fn codex_max_concurrent(&self) -> usize {
+        self.codex.max_concurrent
     }
 
     /// 便捷访问器:codex 全局 OpenAI key(启用才返回)。
