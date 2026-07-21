@@ -65,8 +65,8 @@ pub struct RolloutChunk {
 
 // ── session_replicas 分配 / 查询 ───────────────────────────────────────────
 
-pub async fn get(db: &DatabaseConnection, team_id: &str) -> Result<Option<Model>, AppError> {
-    Entity::find_by_id(team_id.to_string())
+pub async fn get(db: &DatabaseConnection, thread_id: &str) -> Result<Option<Model>, AppError> {
+    Entity::find_by_id(thread_id.to_string())
         .one(db)
         .await
         .map_err(|e| AppError::internal(format!("query session_replica: {e}")))
@@ -76,10 +76,10 @@ pub async fn get(db: &DatabaseConnection, team_id: &str) -> Result<Option<Model>
 /// insert 主键冲突(并发首请求)→ 重读返回已存在行(原子化)。
 pub async fn get_or_assign(
     db: &DatabaseConnection,
-    team_id: &str,
+    thread_id: &str,
     cluster: &dyn ClusterMembership,
 ) -> Result<Model, AppError> {
-    if let Some(m) = get(db, team_id).await? {
+    if let Some(m) = get(db, thread_id).await? {
         return Ok(m);
     }
     let primary = cluster.local_node_id().to_string();
@@ -87,7 +87,7 @@ pub async fn get_or_assign(
     let replica = alive.into_iter().find(|n| n != &primary);
     let now = now_ms();
     let am = ActiveModel {
-        team_id: Set(team_id.to_string()),
+        thread_id: Set(thread_id.to_string()),
         primary_node: Set(primary),
         replica_node: Set(replica),
         status: Set("active".to_string()),
@@ -97,7 +97,7 @@ pub async fn get_or_assign(
     match am.insert(db).await {
         Ok(m) => Ok(m),
         // 主键冲突 = 并发首请求,重读。
-        Err(_) => get(db, team_id).await?.ok_or_else(|| AppError::internal("session_replica vanished".into())),
+        Err(_) => get(db, thread_id).await?.ok_or_else(|| AppError::internal("session_replica vanished".into())),
     }
 }
 
@@ -105,10 +105,10 @@ pub async fn get_or_assign(
 /// 用于扩容后补选副本(否则主挂无人晋升)。
 pub async fn ensure_replica(
     db: &DatabaseConnection,
-    team_id: &str,
+    thread_id: &str,
     cluster: &dyn ClusterMembership,
 ) -> Result<(), AppError> {
-    let Some(row) = get(db, team_id).await? else {
+    let Some(row) = get(db, thread_id).await? else {
         return Ok(());
     };
     if row.replica_node.is_some() {
@@ -218,11 +218,11 @@ pub async fn try_acquire_primary(
 /// 更新主副本(晋升 / 重选副本时)。
 pub async fn set_primary(
     db: &DatabaseConnection,
-    team_id: &str,
+    thread_id: &str,
     new_primary: &str,
     new_replica: Option<&str>,
 ) -> Result<(), AppError> {
-    let row = get(db, team_id)
+    let row = get(db, thread_id)
         .await?
         .ok_or_else(|| AppError::internal("session_replica row missing".into()))?;
     let now = now_ms();
