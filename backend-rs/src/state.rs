@@ -4,7 +4,6 @@ use crate::auth::AuthService;
 use crate::codex::CodexProcessManager;
 use crate::services::codex_status::CodexStatusService;
 use crate::services::multitenant::cluster::ClusterMembership;
-use crate::services::multitenant::codex_pool::TeamCodexManager;
 use crate::services::multitenant::rpc::WorkerRpcClient;
 use crate::services::multitenant::sticky::StickyStore;
 use crate::services::workspace::audit_writer::AuditWriter;
@@ -26,8 +25,6 @@ pub struct AppState {
     pub db: DatabaseConnection,
     /// 主密钥(加密 team API key)。来自 MASTER_KEY 或回退 webui_api_key。
     pub mt_master_key: String,
-    /// 按 team 启动 codex 进程的管理器(per-team 进程,共享全局 CODEX_HOME)。
-    pub mt_team_codex: Arc<TeamCodexManager>,
     /// Redis 客户端(事件总线/限流/复制 offset;None = 未配置)。
     pub mt_redis: Option<redis::Client>,
     /// Prometheus 指标 handle(供 /metrics 暴露;None = 未启用指标)。

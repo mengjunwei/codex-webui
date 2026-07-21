@@ -1,8 +1,8 @@
 //! 节点间内网 RPC 客户端(HTTP/JSON,带内部 token 校验)。
 //!
 //! 路由决策后,若目标节点非本地,则用本客户端调用目标节点的内网 RPC 端点
-//! (`POST /internal/{thread/start, turn/start, evict}`)完成 codex 调用。
-//! 若目标就是本节点,直接调用 TeamCodexManager 短路,不走 RPC。
+//! (`POST /internal/{thread/start, turn/start, approval/respond}`)完成 codex 调用。
+//! 若目标就是本节点,直接调用 state.codex 短路,不走 RPC。
 
 use crate::error::AppError;
 use serde_json::{json, Value};

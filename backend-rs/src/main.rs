@@ -1,6 +1,6 @@
 //! Codex WebUI 后端 —— 程序入口。
 //!
-//! 多副本 HA 模型:全局 CODEX_HOME(所有 team 共用)+ per-team codex 进程 + session 级
+//! 多副本 HA 模型:全局 CODEX_HOME(所有 team 共用)+ per-node codex 单进程 + session 级
 //! rollout 增量复制到副本 + memberlist/redis 探活 + 副本晋升。所有节点同配置(无 ingress/worker 之分)。
 
 use codex_webui::{
@@ -13,7 +13,6 @@ use codex_webui::{
     db::migration::Migrator,
     logging,
     services::multitenant::cluster::{ClusterMembership, RedisCluster, SingleCluster},
-    services::multitenant::codex_pool::PoolConfig,
     services::multitenant::event_bus::EventBus,
     services::multitenant::replication,
     services::multitenant::rpc::WorkerRpcClient,
@@ -86,9 +85,9 @@ async fn main() -> anyhow::Result<()> {
     };
 
     // 事件总线:有 Redis 用 RedisEventBus(多机跨节点);无 Redis 用 InMemoryEventBus(单机)。
-    // Bug8 修复:此前无 Redis 时 mt_event_bus=None → codex_pool 不发布事件、event_persist 不
+    // Bug8 修复:此前无 Redis 时 mt_event_bus=None → codex 进程不发布事件、event_persist 不
     // 启动 → 单节点部署(文档明确支持)静默丢失全部审批/用量/错误/diff 持久化,quota 不累加。
-    // 改为总用 Some:单节点用 InMemory bus(per-team codex 事件 → event_persist 落 PG)。
+    // 改为总用 Some:单节点用 InMemory bus(codex 单进程事件 → event_persist 落 PG)。
     let mt_event_bus: Option<Arc<dyn EventBus>> = Some(match mt_redis.as_ref() {
         Some(c) => Arc::new(
             codex_webui::services::multitenant::event_bus::RedisEventBus::new(c.clone(), 256),
@@ -162,24 +161,6 @@ async fn main() -> anyhow::Result<()> {
         None => Arc::new(NoopSticky),
     };
 
-    let pool_config = PoolConfig::new(
-        cfg.process_pool.max_processes_per_team,
-        cfg.process_pool.max_global_processes,
-        cfg.process_pool.idle_evict_secs,
-        cfg.process_pool.max_concurrent_per_process,
-        cfg.process_pool.process_scale_threshold,
-    );
-    let mt_team_codex = Arc::new(
-        codex_webui::services::multitenant::codex_pool::TeamCodexManager::new(
-            codex_home.clone(),
-            cfg.codex_bin().to_string(),
-            mt_event_bus.clone(),
-            pool_config,
-            cfg.master_key_previous().map(|s| s.to_string()),
-        ),
-    );
-    mt_team_codex.start_idle_reaper();
-
     let auth = Arc::new(AuthService::new(cfg.webui_api_key()));
     let codex = Arc::new(CodexProcessManager::new(
         cfg.codex_bin().to_string(),
@@ -243,7 +224,6 @@ async fn main() -> anyhow::Result<()> {
     let state = AppState {
         db: db.clone(),
         mt_master_key: mt_master_key.clone(),
-        mt_team_codex: mt_team_codex.clone(),
         mt_redis: mt_redis.clone(),
         metrics_handle: Some(metrics_handle),
         auth: auth.clone(),

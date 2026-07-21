@@ -26,7 +26,7 @@ log_level = "info"
 webui_api_key = "REPLACE_WITH_RANDOM_SECRET_AT_LEAST_16_CHARS"
 
 [cluster]
-# 注:每个节点都是 ingress + worker 一体(同时跑 HTTP 路由 + 内网 RPC + codex 进程池 +
+# 注:每个节点都是 ingress + worker 一体(同时跑 HTTP 路由 + 内网 RPC + codex 单进程 +
 # memberlist/redis 探活),无角色分流。多机部署时所有节点配同一份 config.toml。
 # 内网 RPC 监听地址(对外暴露给其它节点转发调用)
 internal_rpc_host = "127.0.0.1"
@@ -94,18 +94,6 @@ bin = "codex"
 internal_rpc_token = "REPLACE_WITH_TOKEN_AT_LEAST_32_BYTES"
 # Hook webhook 鉴权 token(≥32 字节)
 internal_hook_token = "REPLACE_WITH_TOKEN_AT_LEAST_32_BYTES"
-
-[process_pool]
-# per-team 进程上限(默认 4)
-max_processes_per_team = 4
-# 全局进程上限(默认 25)
-max_global_processes = 25
-# 空闲回收阈值秒(默认 900 = 15min)
-idle_evict_secs = 900
-# 单进程并发上限(默认 20)
-max_concurrent_per_process = 20
-# 并发达到该阈值触发"按 team 扩进程"(默认 8)
-process_scale_threshold = 8
 
 # Memberlist gossip 探活(可选;enable=true 才启用,非空 seeds 启用 gossip)
 # 整段省略或 enable=false → 走 Redis/单机 cluster(默认)

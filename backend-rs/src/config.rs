@@ -4,7 +4,7 @@
 //!
 //! - **无环境变量回退路径**(避免与 secret manager / k8s ConfigMap 混用出错)
 //! - **分块结构**:按业务域组织(server / cluster / database / redis / codex / auth /
-//!   security / process_pool / memberlist / snapshot / quota / otel);DB/Redis 用结构化字段
+//!   security / memberlist / snapshot / quota / otel);DB/Redis 用结构化字段
 //!   (host/port/user/password)而非平铺 URL,运维侧可拆开管理。
 //! - **可选段显式 enable 开关**:`enable = true/false`,默认 false。`enable = false` →
 //!   字段忽略(忽略 Option<T>,未提供视为 None);`enable = true` → 校验内部必填字段并启用。
@@ -235,9 +235,8 @@ fn default_codex_bin() -> String {
     "codex".to_string()
 }
 
-/// CodexConfig.max_concurrent 的默认值(32)。
-/// 注意:与 ProcessPoolConfig 的 `default_max_concurrent`(20)语义不同 ——
-/// 这里是单进程全局并发,而非每进程并发,故独立命名以避免命名冲突。
+/// CodexConfig.max_concurrent 的默认值(32):单进程全局并发上限,
+/// 替代已删除的 per-team 进程池并发控制。
 fn default_codex_max_concurrent() -> usize {
     32
 }
@@ -272,48 +271,6 @@ pub struct SecurityConfig {
     /// 仅用于初始化首个管理员;之后以 DB 为准(不在列表里的不会被撤销)。
     #[serde(default)]
     pub admin_emails: Vec<String>,
-}
-
-#[derive(Clone, Debug, Deserialize)]
-pub struct ProcessPoolConfig {
-    #[serde(default = "default_max_per_team")]
-    pub max_processes_per_team: usize,
-    #[serde(default = "default_max_global")]
-    pub max_global_processes: usize,
-    #[serde(default = "default_idle_evict_secs")]
-    pub idle_evict_secs: u64,
-    #[serde(default = "default_max_concurrent")]
-    pub max_concurrent_per_process: usize,
-    #[serde(default = "default_process_scale")]
-    pub process_scale_threshold: usize,
-}
-
-impl Default for ProcessPoolConfig {
-    fn default() -> Self {
-        Self {
-            max_processes_per_team: default_max_per_team(),
-            max_global_processes: default_max_global(),
-            idle_evict_secs: default_idle_evict_secs(),
-            max_concurrent_per_process: default_max_concurrent(),
-            process_scale_threshold: default_process_scale(),
-        }
-    }
-}
-
-fn default_max_per_team() -> usize {
-    4
-}
-fn default_max_global() -> usize {
-    25
-}
-fn default_idle_evict_secs() -> u64 {
-    900
-}
-fn default_max_concurrent() -> usize {
-    20
-}
-fn default_process_scale() -> usize {
-    8
 }
 
 #[derive(Clone, Debug, Deserialize, Default)]
@@ -387,8 +344,6 @@ pub struct Config {
     pub auth: AuthConfig,
     pub security: SecurityConfig,
     #[serde(default)]
-    pub process_pool: ProcessPoolConfig,
-    #[serde(default)]
     pub snapshot: SnapshotConfig,
     #[serde(default)]
     pub quota: QuotaConfig,
@@ -409,7 +364,6 @@ impl std::fmt::Debug for Config {
             .field("workspace", &self.workspace)
             .field("auth", &"<redacted>")
             .field("security", &"<redacted>")
-            .field("process_pool", &self.process_pool)
             .field("snapshot", &self.snapshot)
             .field("quota", &self.quota)
             .field("otel", &self.otel)
@@ -739,7 +693,6 @@ internal_hook_token = "0123456789abcdef0123456789abcdef"
             "postgres://codex:codex@127.0.0.1:5432/codex"
         );
         // 默认值
-        assert_eq!(c.process_pool.max_processes_per_team, 4);
         assert_eq!(c.snapshot.interval_secs, 300);
         assert_eq!(c.quota.default_turn_quota_hourly, 0);
         // 可选段默认 disable

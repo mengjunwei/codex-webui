@@ -41,13 +41,6 @@ struct TurnStartReq {
     params: Value,
 }
 
-#[derive(Deserialize)]
-struct EvictReq {
-    #[serde(rename = "teamId")]
-    #[allow(dead_code)]
-    team_id: String,
-}
-
 /// 纯函数:校验 x-internal-token(恒定时间比较)。供 layer 与单测复用。
 fn check_internal_token(expected: &[u8], headers: &axum::http::HeaderMap) -> Result<(), AppError> {
     if expected.is_empty() {
@@ -93,7 +86,6 @@ pub fn build_internal_router(state: AppState) -> Router {
         .route("/internal/thread/start", post(thread_start))
         .route("/internal/thread/invoke", post(thread_invoke))
         .route("/internal/turn/start", post(turn_start))
-        .route("/internal/evict", post(evict))
         .route("/internal/approval/respond", post(approval_respond))
         .route("/internal/replicate", post(replicate_receive))
         .layer(axum::middleware::from_fn_with_state(
@@ -150,15 +142,6 @@ async fn turn_start(
         .await
         .map_err(|e| AppError::internal(format!("codex turn/start: {e}")))?;
     Ok(Json(resp))
-}
-
-async fn evict(
-    State(_state): State<AppState>,
-    Json(_req): Json<EvictReq>,
-) -> Result<StatusCode, AppError> {
-    // 单进程统一代理模式下 codex key 由全局 auth.json 管理,无需 per-team evict。
-    // 保留 handler + 路由以兼容旧副本的转发请求,Task 3 一并清理。
-    Ok(StatusCode::NO_CONTENT)
 }
 
 /// 副本:接收主节点推送的 rollout 增量,写入本地全局 CODEX_HOME(per-session 文件)。

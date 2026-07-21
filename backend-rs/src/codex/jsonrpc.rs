@@ -385,7 +385,7 @@ async fn write_loop(
         }
     }
     // write 失败(stdin 关闭/子进程不读):标记 closed + 发 close 信号。
-    // 否则 is_closed() 仍 false,pick_slot 会继续选这个已死的 client(codex_pool),
+    // 否则 is_closed() 仍 false,pick_slot 会继续选这个已死的 client,
     // 所有 request 因 write_rx dropped 返回 Closed,但 slot 不被清理 → team 请求持续失败。
     closed.store(true, Ordering::Release);
     let _ = close_tx.send(CloseReason::WriteFailed);

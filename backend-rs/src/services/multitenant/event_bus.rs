@@ -5,8 +5,8 @@
 //! - Redis Pub/Sub 实现(多机,跨 worker/接入节点广播)按同一 trait 实现,M4 多节点时启用。
 //!
 //! topic 约定:`team:{team_id}` 或 `thread:{thread_id}`(按事件归属)。
-//! 接入(TeamCodexManager 启动时 spawn 转发:client.subscribe_notifications → bus.publish;
-//! 接入层订阅 bus → socket.io emit)留 M4 后期,需改 codex_pool + realtime。
+//! 接入(codex 单进程启动时 spawn 转发:client.subscribe_notifications → bus.publish;
+//! 接入层订阅 bus → socket.io emit)留 M4 后期,需改 codex 进程接入 + realtime。
 
 use crate::error::AppError;
 use async_trait::async_trait;

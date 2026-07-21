@@ -449,7 +449,7 @@ pub async fn list_user_api_keys(
     }).collect()))
 }
 
-// ── 多租户 threads / turns(M3,经 TeamCodexManager)────────────────────────
+// ── 多租户 threads / turns(M3,经 state.codex 单进程)────────────────────────
 
 #[derive(Deserialize)]
 pub struct TeamIdQuery {
