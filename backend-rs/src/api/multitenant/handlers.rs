@@ -506,19 +506,21 @@ pub async fn require_thread_team(
     Ok((thread.team_id, thread.workspace_type))
 }
 
-/// 创建会话:成员校验 → 主副本分配 → (本地直跑 / 转发主) → thread/start → PG 双写 + 主侧复制 rollout。
+/// 创建会话:本地预生成 thread_id → per-thread workspace → 选节点(最少负载)
+/// → thread/start(传 threadId + cwd)→ 登记 session_replicas + sticky → PG 双写 + 主侧复制 rollout。
 ///
 /// 支持两种模式:
-/// - team workspace:传 teamId,使用团队共享 workspace + 团队 API key
-/// - 个人 workspace:不传 teamId,使用用户个人 workspace + 个人 API key
+/// - team workspace:传 teamId,team_id 用于权限校验 + threads.team_id 列
+/// - 个人 workspace:不传 teamId,team_id 落用户 id(personal)
+///
+/// 关键:thread_id 在本地预生成(UUIDv7),全系统(DB/sticky/session_replicas/cwd)统一用该 id,
+/// 并通过 rest.threadId 传给 codex(参见 Step 4 codex threadId 行为验证,部署后任务)。
 pub async fn mt_create_thread(
     State(state): State<AppState>,
     Extension(uid): Extension<UserId>,
     axum::Json(body): axum::Json<serde_json::Value>,
 ) -> Result<Json<Value>, AppError> {
     let db = require_db(&state);
-
-    // 手动提取 teamId，其余字段透传给 codex
     let team_id_raw = body.get("teamId").and_then(Value::as_str).map(String::from);
     let mut rest = match body {
         Value::Object(map) => map,
@@ -526,37 +528,34 @@ pub async fn mt_create_thread(
     };
     rest.remove("teamId"); // 不透传 teamId 给 codex
 
-    // 确定 team_id:个人 workspace 用 "user:{user_id}" 格式标识
-    let (team_id, is_personal) = match team_id_raw {
+    // 权限校验 + team_id/workspace_type 判定(保留:用于权限 + threads.team_id 列)。
+    // pg_team_id:个人 workspace 用纯 user_id(符合 VARCHAR(36));团队用 teamId(uuid)。
+    let (pg_team_id, workspace_type) = match &team_id_raw {
         Some(tid) => {
-            permissions::require_permission(db, &tid, &uid.0, TeamPermission::ThreadCreate).await?;
-            // 确保 team 共享 workspace 目录存在(codex 会话 cwd 落在此处)。
-            let _ = crate::services::workspace::ensure_team_shared(&state, &tid).await;
-            (tid, false)
+            permissions::require_permission(db, tid, &uid.0, TeamPermission::ThreadCreate).await?;
+            (tid.clone(), "team")
         }
-        None => {
-            // 个人 workspace:确保目录存在,用 "user:{user_id}" 格式标识
-            let _ = crate::services::workspace::ensure_user_personal(&state, &uid.0).await;
-            (format!("user:{}", uid.0), true)
-        }
+        None => (uid.0.clone(), "personal"),
     };
 
     metrics::counter!("mt_threads_created_total").increment(1);
 
-    // 设置 cwd 到对应 workspace(personal→users/{uid}/personal;team→teams/{tid}/shared),
-    // 确保 codex 会话工作目录落在 workspace 根内(文件树/终端沙箱校验才能通过)。
-    let ws_cwd = if is_personal {
-        crate::services::workspace::personal_path(&state.workspace_root, &uid.0)
-    } else {
-        crate::services::workspace::team_shared_path(&state.workspace_root, &team_id)
-    };
-    rest.insert("cwd".to_string(), Value::String(ws_cwd.to_string_lossy().to_string()));
+    // 本地预生成 thread_id(UUIDv7):用于 cwd/session_replicas/sticky/threads 表,
+    // 并通过 rest.threadId 传给 codex thread/start 作为会话 id。
+    let thread_id = uuid::Uuid::now_v7().to_string();
 
-    let target = resolve_worker(&state, &team_id, None, is_personal).await?;
+    // 统一 cwd = threads/{thread_id}/(个人/团队一致)。
+    let _ = crate::services::workspace::ensure_thread_workspace(&state, &thread_id).await;
+    let ws_cwd = crate::services::workspace::thread_workspace_path(&state.workspace_root, &thread_id);
+    rest.insert("cwd".to_string(), Value::String(ws_cwd.to_string_lossy().to_string()));
+    rest.insert("threadId".to_string(), Value::String(thread_id.clone()));
+
+    // 两阶段:先选节点(最少负载),再 thread/start。
+    let target = resolve_worker(&state, None).await?;
     let resp = if target == state.node_id {
         // 对齐 main 分支旧实现:这两个参数确保 codex 持久化 rollout + 不开启 raw events。
-        rest.entry("experimentalRawEvents".to_string()).or_insert(Value::Bool(false));
-        rest.entry("persistExtendedHistory".to_string()).or_insert(Value::Bool(true));
+        rest.entry("experimentalRawEvents").or_insert(Value::Bool(false));
+        rest.entry("persistExtendedHistory").or_insert(Value::Bool(true));
         state
             .codex
             .request("thread/start", Some(Value::Object(rest)))
@@ -566,62 +565,38 @@ pub async fn mt_create_thread(
         let rpc_url = worker_rpc_url(&state, &target).await?;
         state
             .worker_rpc
-            .thread_start(&rpc_url, &team_id, &uid.0, Value::Object(rest))
+            .thread_start(&rpc_url, &pg_team_id, &uid.0, Value::Object(rest))
             .await?
     };
 
-    // PG threads 元数据双写(共享库)。
-    // codex thread/start 响应 result 结构:{thread:{id,cwd,...}, cwd, model, ...},
-    // thread.id 即本次会话 UUID,fallback 取 threadId / 顶层 id(老版本/包装层兼容)。
-    let thread_id = resp
-        .get("thread")
-        .and_then(|t| t.get("id"))
-        .and_then(Value::as_str)
-        .or_else(|| resp.get("threadId").and_then(Value::as_str))
-        .or_else(|| resp.get("id").and_then(Value::as_str));
-    if let Some(tid) = thread_id {
-        // PG threads.team_id 对个人 workspace 用纯 user_id(符合 VARCHAR(36));
-        // workspace_type 显式区分 personal/team,路由仍按 "user:{uid}" 走。
-        // 团队 workspace 用 teamId(uuid)。
-        let pg_team_id: String = if is_personal { uid.0.clone() } else { team_id.clone() };
-        let workspace_type = if is_personal { "personal" } else { "team" };
-        double_write_thread_meta(db, tid, &pg_team_id, &uid.0, workspace_type).await;
-        // 绑定粘性:确保新创建的 thread 后续 turn 路由到同一 worker。
-        let _ = state.sticky.bind(tid, &target, 3600).await;
-        // PG 缓存 thread/start 响应供后续 thread/resume 复用 —— 跨进程 + 重启都生效,
-// 避免前端 create→resume 链路上 race codex 落盘前调 thread/resume 返回 -32600。
-        let _ = crate::services::multitenant::resume_cache::put_cached_resume(
-            db, tid, &resp,
-        ).await;
-    }
-    // 包装 codex 响应为一致格式:前端期望 {thread, id, cwd} 而非扁平 codex 响应。
-    let thread_id_str = thread_id.unwrap_or("");
-    let cwd = resp.get("cwd").and_then(Value::as_str)
-        .or_else(|| resp.get("thread").and_then(|t| t.get("cwd")).and_then(Value::as_str))
-        .unwrap_or("");
-    let wrapped = serde_json::json!({
-        "thread": resp,
-        "id": thread_id_str,
-        "cwd": cwd,
-    });
-    // 主侧:把 thread 关联到其 rollout 文件,供 replicate_team_rollouts 精确读取。
+    // 登记 session_replicas(per-thread)+ sticky:确保新创建 thread 后续 turn 路由到同一 worker。
+    let _ = crate::services::multitenant::replication::get_or_assign(
+        &state.db,
+        &thread_id,
+        state.cluster.as_ref(),
+    )
+    .await?;
+    let _ = state.sticky.bind(&thread_id, &target, 3600).await;
+
+    // PG threads 元数据(用本地预生成 thread_id 作主键)。
+    double_write_thread_meta(db, &thread_id, &pg_team_id, &uid.0, workspace_type).await;
+    // PG 缓存 thread/start 响应供后续 thread/resume 复用 —— 跨进程 + 重启都生效,
+    // 避免前端 create→resume 链路上 race codex 落盘前调 thread/resume 返回 -32600。
+    let _ = crate::services::multitenant::resume_cache::put_cached_resume(db, &thread_id, &resp).await;
+
+    // 主侧:关联 rollout 文件 + 复制增量到副本。
     if target == state.node_id {
-        if !thread_id_str.is_empty() {
-            if let Some(p) = crate::services::multitenant::replication::find_rollout_for_thread(
-                &state.codex_home, thread_id_str,
-            )
-            .await
-            {
-                state.active_rollout.lock().await.insert(thread_id_str.to_string(), p);
-            }
+        if let Some(p) = crate::services::multitenant::replication::find_rollout_for_thread(
+            &state.codex_home,
+            &thread_id,
+        )
+        .await
+        {
+            state.active_rollout.lock().await.insert(thread_id.clone(), p);
         }
-    }
-    // 主侧:复制该 team 的 rollout 增量到副本(准实时 session 同步)。
-    // 个人 workspace 跳过(个人 workspace 不参与 team 复制)。
-    if target == state.node_id && !is_personal {
-        let _ = crate::services::multitenant::replication::replicate_team_rollouts(
+        let _ = crate::services::multitenant::replication::replicate_thread_rollout(
             db,
-            &team_id,
+            &thread_id,
             &state.codex_home,
             state.cluster.as_ref(),
             state.mt_redis.as_ref(),
@@ -631,6 +606,18 @@ pub async fn mt_create_thread(
         )
         .await;
     }
+
+    // 包装 codex 响应为一致格式:前端期望 {thread, id, cwd} 而非扁平 codex 响应。
+    let cwd = resp
+        .get("cwd")
+        .and_then(Value::as_str)
+        .or_else(|| resp.get("thread").and_then(|t| t.get("cwd")).and_then(Value::as_str))
+        .unwrap_or("");
+    let wrapped = serde_json::json!({
+        "thread": resp,
+        "id": thread_id,
+        "cwd": cwd,
+    });
     Ok(Json(wrapped))
 }
 
@@ -744,10 +731,12 @@ pub async fn mt_delete_thread(
             "no permission to delete this thread".into(), None));
     }
     let team_id = thread.team_id.clone();
-    let is_personal = thread.workspace_type == "personal";
+    // per-thread 路由后,is_personal 不再参与选节点(resolve_worker 仅看 thread_id);
+    // 保留字段读取仅为后续可能的权限分支扩展。
+    let _is_personal = thread.workspace_type == "personal";
 
     // 2. 调 codex thread/delete(若 codex 支持);失败不阻塞,继续清 PG/文件。
-    if let Ok(target) = resolve_worker(&state, &team_id, Some(&thread_id), is_personal).await {
+    if let Ok(target) = resolve_worker(&state, Some(&thread_id)).await {
         if target == state.node_id {
             if let Err(e) = state
                 .codex
@@ -801,11 +790,11 @@ pub async fn mt_start_turn(
     body: axum::Json<Value>,
 ) -> Result<Json<Value>, AppError> {
     let db = require_db(&state);
-    let (team_id, workspace_type) = require_thread_team(db, &thread_id, &uid.0).await?;
+    let (team_id, _workspace_type) = require_thread_team(db, &thread_id, &uid.0).await?;
     // 配额校验(M6):超额返回 429。
     crate::services::multitenant::quota::check_turn_quota(db, &team_id).await?;
     metrics::counter!("mt_turns_total").increment(1);
-    let target = resolve_worker(&state, &team_id, Some(&thread_id), workspace_type == "personal").await?;
+    let target = resolve_worker(&state, Some(&thread_id)).await?;
     let mut params = body.0;
     if let Value::Object(ref mut map) = params {
         map.entry("threadId").or_insert(Value::String(thread_id.clone()));
@@ -827,7 +816,7 @@ pub async fn mt_start_turn(
     if let Err(e) = crate::services::multitenant::quota::incr_turn_usage(db, &team_id, None).await {
         tracing::warn!(error = %e, team_id = %team_id, "incr_turn_usage failed (non-fatal)");
     }
-    // 主侧:把 thread 关联到其 rollout 文件,供 replicate_team_rollouts 精确读取。
+    // 主侧:把 thread 关联到其 rollout 文件,供 replicate_thread_rollout 精确读取。
     if target == state.node_id {
         if let Some(p) = crate::services::multitenant::replication::find_rollout_for_thread(
             &state.codex_home, &thread_id,
@@ -837,11 +826,11 @@ pub async fn mt_start_turn(
             state.active_rollout.lock().await.insert(thread_id.clone(), p);
         }
     }
-    // 主侧:turn 完成后复制 rollout 增量到副本。
+    // 主侧:turn 完成后复制该 thread 的 rollout 增量到副本(per-thread 复制)。
     if target == state.node_id {
-        let _ = crate::services::multitenant::replication::replicate_team_rollouts(
+        let _ = crate::services::multitenant::replication::replicate_thread_rollout(
             db,
-            &team_id,
+            &thread_id,
             &state.codex_home,
             state.cluster.as_ref(),
             state.mt_redis.as_ref(),
@@ -868,37 +857,55 @@ pub async fn list_audit(
 
 // ── 多副本路由辅助 ──────────────────────────────────────────────────────
 
-/// 选目标节点:先查粘性绑定(保证会话上下文本地性),未命中再查/分配 session_replicas。
-async fn resolve_worker(state: &AppState, team_id: &str, thread_id: Option<&str>, is_personal: bool) -> Result<String, AppError> {
-    // 个人 workspace:不走 session_replica HA 分配(per-team 概念不适用 personal),
-    // 直接路由到本节点;sticky 也不绑(per-user 进程固定本节点)。
-    if is_personal {
-        return Ok(state.cluster.local_node_id().to_string());
-    }
-    // 1. 粘性优先:如果 thread 已绑定到某 worker 且该 worker 仍 alive,直接返回。
+/// 选目标节点(per-thread 调度):sticky 命中且 alive 优先;否则按最少负载选 alive 节点。
+/// 本节点负载并列最少时优先本节点(避免无谓 RPC 转发)。
+async fn resolve_worker(state: &AppState, thread_id: Option<&str>) -> Result<String, AppError> {
+    use crate::db::entities::session_replica::Entity as SREntity;
+    use sea_orm::EntityTrait;
+
+    // 1. sticky 命中且 alive → 直接返回。
     if let Some(tid) = thread_id {
-        if let Ok(Some(stuck_worker)) = state.sticky.lookup(tid).await {
-            // 验证该 worker 仍 alive(避免路由到已死节点)。
-            if crate::services::multitenant::cluster::is_alive(state.cluster.as_ref(), &stuck_worker).await {
-                return Ok(stuck_worker);
+        if let Ok(Some(stuck)) = state.sticky.lookup(tid).await {
+            if crate::services::multitenant::cluster::is_alive(state.cluster.as_ref(), &stuck).await {
+                return Ok(stuck);
             }
-            // worker 已死,清除失效绑定。
             let _ = state.sticky.clear(tid).await;
         }
     }
-    // 2. 回退到主副本分配。
-    let row = crate::services::multitenant::replication::get_or_assign(
-        &state.db,
-        team_id,
-        state.cluster.as_ref(),
-    )
-    .await?;
-    // 3. 绑定粘性(如果有 thread_id)。
-    if let Some(tid) = thread_id {
-        // 绑定 TTL = 1 小时(活跃时在 turn 完成后续期)。
-        let _ = state.sticky.bind(tid, &row.primary_node, 3600).await;
+
+    // 2. 统计各 alive 节点的 primary thread 数(负载指标)。
+    let alive = state.cluster.alive_nodes().await;
+    if alive.is_empty() {
+        return Ok(state.cluster.local_node_id().to_string());
     }
-    Ok(row.primary_node)
+    let mut load: std::collections::HashMap<String, i64> = std::collections::HashMap::new();
+    for n in &alive {
+        load.insert(n.clone(), 0);
+    }
+    let rows = SREntity::find()
+        .all(&state.db)
+        .await
+        .map_err(|e| AppError::internal(format!("load scan: {e}")))?;
+    for r in &rows {
+        if let Some(c) = load.get_mut(&r.primary_node) {
+            *c += 1;
+        }
+    }
+
+    // 3. 选最少负载;并列时优先本节点(避免无谓 RPC 转发)。
+    let me = state.cluster.local_node_id();
+    let mut iter = alive.iter();
+    let first = iter.next().expect("alive 非空(上面已 early-return)");
+    let mut best_node = first.clone();
+    let mut best_load = load[first];
+    for n in iter {
+        let l = load[n];
+        if l < best_load || (l == best_load && n.as_str() == me) {
+            best_node = n.clone();
+            best_load = l;
+        }
+    }
+    Ok(best_node)
 }
 
 /// 解析节点内网 RPC 地址(转发到主节点时用)。
@@ -985,8 +992,8 @@ pub async fn mt_resolve_approval(
     crate::error::Json(body): crate::error::Json<ResolveApprovalBody>,
 ) -> Result<StatusCode, AppError> {
     let db = require_db(&state);
-    let (team_id, workspace_type) = require_thread_team(db, &thread_id, &uid.0).await?;
-    let target = resolve_worker(&state, &team_id, Some(&thread_id), workspace_type == "personal").await?;
+    let (team_id, _workspace_type) = require_thread_team(db, &thread_id, &uid.0).await?;
+    let target = resolve_worker(&state, Some(&thread_id)).await?;
     let id_val = parse_request_id(&body.request_id);
     let ok = if target == state.node_id {
         if let Some(client) = state.codex.client().await {
@@ -1182,8 +1189,8 @@ pub async fn mt_invoke_thread(
     crate::error::Json(body): crate::error::Json<InvokeThreadBody>,
 ) -> Result<Json<Value>, AppError> {
     let db = require_db(&state);
-    let (team_id, workspace_type) = require_thread_team(db, &thread_id, &uid.0).await?;
-    let target = resolve_worker(&state, &team_id, Some(&thread_id), workspace_type == "personal").await?;
+    let (team_id, _workspace_type) = require_thread_team(db, &thread_id, &uid.0).await?;
+    let target = resolve_worker(&state, Some(&thread_id)).await?;
     // thread/resume 读 PG cache 作兜底(codex -32600 race 时返回),不短路 ——
     // 仍调 codex 取最新 turns + 确保 codex 内存持有 thread(进程重启/evict 后需重新加载)。
     // 若短路返回旧 cache,进入会话后发消息再刷新会看不到新对话(cache 是旧快照)。
