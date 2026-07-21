@@ -151,12 +151,20 @@ async fn thread_start(
         .await;
     }
 
-    // C1:关联 rollout 文件 + 复制增量到副本(active_rollout key = 系统 thread_id)。
-    //    find_rollout 用系统 thread_id 查找(C2 会改为 codex 响应 tid 以兼容 codex 忽略 threadId 的场景)。
+    // C1+C2:关联 rollout 文件 + 复制增量到副本。
+    //   - active_rollout key = 系统 thread_id(replicate 按 thread_id 取路径)。
+    //   - find_rollout 用 codex 响应 tid 查文件名(兼容 codex 忽略 threadId 自生成 tid);
+    //     codex 尊重 threadId 时 codex_tid==sys_thread_id,行为不变。
     if let Some(tid) = &sys_thread_id {
+        let codex_tid = resp
+            .get("thread")
+            .and_then(|t| t.get("id"))
+            .and_then(Value::as_str)
+            .or_else(|| resp.get("threadId").and_then(Value::as_str))
+            .or_else(|| resp.get("id").and_then(Value::as_str));
         if let Some(p) = crate::services::multitenant::replication::find_rollout_for_thread(
             &state.codex_home,
-            tid,
+            codex_tid.unwrap_or(tid.as_str()),
         )
         .await
         {

@@ -590,9 +590,12 @@ pub async fn mt_create_thread(
         let _ = state.sticky.bind(&thread_id, &target, 3600).await;
 
         // 主侧:关联 rollout 文件 + 复制增量到副本。
+        // C2:用 codex 响应 tid 查找 rollout 文件名(兼容 codex 忽略外部 threadId 自生成 tid 的场景);
+        //     active_rollout key 仍用系统 thread_id(replicate 按 thread_id 取路径)。
+        let codex_tid = extract_codex_tid(&resp);
         if let Some(p) = crate::services::multitenant::replication::find_rollout_for_thread(
             &state.codex_home,
-            &thread_id,
+            codex_tid.as_deref().unwrap_or(&thread_id),
         )
         .await
         {
@@ -822,8 +825,11 @@ pub async fn mt_start_turn(
     }
     // 主侧:把 thread 关联到其 rollout 文件,供 replicate_thread_rollout 精确读取。
     if target == state.node_id {
+        // C2:用 codex 响应 tid 查找 rollout(codex 尊重 threadId 时 == 系统 thread_id);
+        //     active_rollout key 用系统 thread_id。
+        let codex_tid = extract_codex_tid(&resp);
         if let Some(p) = crate::services::multitenant::replication::find_rollout_for_thread(
-            &state.codex_home, &thread_id,
+            &state.codex_home, codex_tid.as_deref().unwrap_or(&thread_id),
         )
         .await
         {
@@ -1048,6 +1054,20 @@ fn parse_request_id(s: &str) -> Value {
     } else {
         Value::String(s.to_string())
     }
+}
+
+/// 从 codex 响应提取其内部 tid(codex 实际用于 rollout 文件命名的会话 id)。
+/// 取值顺序对齐 internal_rpc 既有取法:resp.thread.id → resp.threadId → resp.id。
+/// 用途(C2):find_rollout_for_thread 按 codex_tid 匹配 rollout 文件名边界。
+/// - codex 尊重外部 threadId → codex_tid == 系统 thread_id(行为不变);
+/// - codex 忽略 threadId 自生成 → 返回 codex_tid,据此找到正确 rollout 文件。
+fn extract_codex_tid(resp: &Value) -> Option<String> {
+    resp.get("thread")
+        .and_then(|t| t.get("id"))
+        .and_then(Value::as_str)
+        .map(String::from)
+        .or_else(|| resp.get("threadId").and_then(Value::as_str).map(String::from))
+        .or_else(|| resp.get("id").and_then(Value::as_str).map(String::from))
 }
 
 /// 标记审批已处理(尽力,非阻塞)。
