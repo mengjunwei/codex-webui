@@ -22,6 +22,7 @@ const PERSONAL_DIR: &str = "users";
 const TEAMS_DIR: &str = "teams";
 const SHARED_SUBDIR: &str = "shared";
 const MEMBERS_SUBDIR: &str = "members";
+const THREADS_DIR: &str = "threads";
 
 /// 个人 workspace 绝对路径。
 pub fn personal_path(workspace_root: &Path, user_id: &str) -> PathBuf {
@@ -40,6 +41,23 @@ pub fn team_member_path(workspace_root: &Path, team_id: &str, user_id: &str) -> 
         .join(team_id)
         .join(MEMBERS_SUBDIR)
         .join(user_id)
+}
+
+/// per-thread workspace 绝对路径(个人/团队统一)。
+pub fn thread_workspace_path(workspace_root: &Path, thread_id: &str) -> PathBuf {
+    workspace_root.join(THREADS_DIR).join(thread_id)
+}
+
+/// 确保 per-thread workspace 目录存在,返回其绝对路径。
+pub async fn ensure_thread_workspace(
+    state: &AppState,
+    thread_id: &str,
+) -> Result<PathBuf, AppError> {
+    let path = thread_workspace_path(&state.workspace_root, thread_id);
+    tokio::fs::create_dir_all(&path)
+        .await
+        .map_err(|e| AppError::internal(format!("create {}: {e}", path.display())))?;
+    Ok(path)
 }
 
 #[cfg(unix)]
@@ -93,5 +111,17 @@ pub async fn get_role(
     match teams::member_role(db, team_id, user_id).await? {
         Some(r) => Ok(r),
         None => Ok("member".to_string()),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn thread_workspace_path_layout() {
+        let root = std::path::Path::new("/data/ws");
+        let p = thread_workspace_path(root, "tid-123");
+        assert_eq!(p, std::path::PathBuf::from("/data/ws/threads/tid-123"));
     }
 }
