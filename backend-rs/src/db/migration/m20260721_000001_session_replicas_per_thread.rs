@@ -8,8 +8,9 @@
 //! 多方言(PG/MySQL):
 //! - ALTER ... RENAME TO / CREATE TABLE IF NOT EXISTS / DROP TABLE IF EXISTS:PG/MySQL 均支持。
 //! - COMMENT ON ...:仅 PG;MySQL 下 .ok() 吞错。
-//! - INSERT ... ON CONFLICT:仅 PG;MySQL 下该 INSERT 失败被 .ok() 吞掉,
-//!   per-thread 行由运行时 get_or_assign 补建,不影响正确性。
+//! - I5:数据迁移按方言分支 —— PG 用 INSERT...ON CONFLICT DO NOTHING;
+//!   MySQL 不支持 ON CONFLICT(整条失败被 .ok() 吞 → 零行迁移 → 随后 DROP 旧表丢数据),
+//!   改用 INSERT IGNORE。失败改 tracing::warn!(不再静默 .ok())。
 
 use sea_orm_migration::prelude::*;
 
@@ -47,21 +48,32 @@ impl MigrationTrait for Migration {
         )
         .await?;
 
-        // 3. 数据迁移:为每个旧 team 行,按该 team 当前活跃 thread 展开成 per-thread 行。
-        //    无活跃 thread 的旧 team 行丢弃。
-        //    ON CONFLICT 仅 PG;MySQL 无该语法时整条 INSERT 失败被 .ok() 吞掉,
-        //    per-thread 行后续运行时 get_or_assign 会补建。
-        db.execute_unprepared(
-            r#"INSERT INTO session_replicas (thread_id, primary_node, replica_node, status, primary_lease_until, updated_at)
-               SELECT t.id, o.primary_node, o.replica_node, o.status, o.primary_lease_until, o.updated_at
-               FROM threads t
-               JOIN session_replicas_old o ON t.team_id = o.team_id
-               ON CONFLICT (thread_id) DO NOTHING"#,
-        )
-        .await
-        .ok();
+        // 3. I5:数据迁移按方言分支。为每个旧 team 行,按该 team 当前活跃 thread 展开成 per-thread 行。
+        //    无活跃 thread 的旧 team 行丢弃。PG 用 ON CONFLICT;MySQL 用 INSERT IGNORE
+        //    (MySQL 不支持 ON CONFLICT,原整条失败被 .ok() 吞 → 零行迁移 → DROP 旧表丢既有映射)。
+        //    必须在步骤 4 DROP 旧表前完成迁移尝试;失败 warn(不静默),便于运维介入。
+        use sea_orm::DbBackend;
+        let insert_sql = match manager.get_database_backend() {
+            DbBackend::MySql => r#"INSERT IGNORE INTO session_replicas (thread_id, primary_node, replica_node, status, primary_lease_until, updated_at)
+                   SELECT t.id, o.primary_node, o.replica_node, o.status, o.primary_lease_until, o.updated_at
+                   FROM threads t
+                   JOIN session_replicas_old o ON t.team_id = o.team_id"#,
+            // Postgres(及其它):ON CONFLICT DO NOTHING 处理主键冲突。
+            _ => r#"INSERT INTO session_replicas (thread_id, primary_node, replica_node, status, primary_lease_until, updated_at)
+                   SELECT t.id, o.primary_node, o.replica_node, o.status, o.primary_lease_until, o.updated_at
+                   FROM threads t
+                   JOIN session_replicas_old o ON t.team_id = o.team_id
+                   ON CONFLICT (thread_id) DO NOTHING"#,
+        };
+        if let Err(e) = db.execute_unprepared(insert_sql).await {
+            tracing::warn!(
+                error = %e,
+                "session_replicas per-thread data migration failed \
+                 (per-thread rows will be built at runtime by get_or_assign)"
+            );
+        }
 
-        // 4. 删旧表。
+        // 4. 删旧表(迁移已在步骤 3 尝试过)。
         db.execute_unprepared("DROP TABLE IF EXISTS session_replicas_old")
             .await
             .ok();
