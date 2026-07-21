@@ -9,7 +9,9 @@
 //! threads 元数据双写由主节点在 PG 完成(共享库)。
 
 use crate::error::{AppError, ErrorCode};
-use crate::services::multitenant::replication::RolloutChunk;
+use crate::services::multitenant::replication::{safe_join, RolloutChunk};
+use crate::services::workspace::file_sync::{ChangeType, FileChange};
+use crate::services::workspace::{ensure_thread_workspace, thread_workspace_path};
 use crate::state::AppState;
 use axum::extract::State;
 use axum::http::StatusCode;
@@ -88,6 +90,7 @@ pub fn build_internal_router(state: AppState) -> Router {
         .route("/internal/turn/start", post(turn_start))
         .route("/internal/approval/respond", post(approval_respond))
         .route("/internal/replicate", post(replicate_receive))
+        .route("/internal/filesync", post(receive_files))
         .layer(axum::middleware::from_fn_with_state(
             state.clone(),
             require_internal_token_layer,
@@ -152,6 +155,44 @@ async fn replicate_receive(
     crate::services::multitenant::replication::receive_rollout(&chunk, &state.codex_home).await?;
     metrics::counter!("replication_received_total").increment(1);
     Ok(StatusCode::NO_CONTENT)
+}
+
+/// 副本:接收主节点推送的 per-thread workspace 文件变更,写入本地 thread workspace。
+///
+/// 每条变更:ensure_thread_workspace(首次接收建目录)→ safe_join 校验 relative_path
+/// 防穿越 → Create/Modify 覆盖写(parent 目录 create_dir_all)→ Delete 删文件。
+async fn receive_files(
+    State(state): State<AppState>,
+    Json(changes): Json<Vec<FileChange>>,
+) -> Result<StatusCode, AppError> {
+    for change in changes {
+        // 确保 thread workspace 存在(副本首次接收)。
+        let _ = ensure_thread_workspace(&state, &change.thread_id).await;
+        let ws = thread_workspace_path(&state.workspace_root, &change.thread_id);
+        // 路径安全:过 replication::safe_join 校验相对路径(防穿越)。
+        let path = safe_join(&ws, &change.relative_path).await?;
+        match change.change_type {
+            ChangeType::Create | ChangeType::Modify => {
+                if let Some(content) = &change.content {
+                    if let Some(p) = path.parent() {
+                        tokio::fs::create_dir_all(p)
+                            .await
+                            .map_err(|e| AppError::internal(format!("mkdir: {e}")))?;
+                    }
+                    tokio::fs::write(&path, content)
+                        .await
+                        .map_err(|e| AppError::internal(format!("write {}: {e}", path.display())))?;
+                }
+            }
+            ChangeType::Delete => {
+                if path.exists() {
+                    let _ = tokio::fs::remove_file(&path).await;
+                }
+            }
+        }
+        metrics::counter!("filesync_received_total").increment(1);
+    }
+    Ok(StatusCode::OK)
 }
 
 #[derive(Deserialize)]

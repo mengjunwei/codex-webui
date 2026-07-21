@@ -123,6 +123,19 @@ impl WorkerRpcClient {
         Ok(())
     }
 
+    /// 推送 per-thread workspace 文件变更到副本节点(POST /internal/filesync)。
+    /// header 校验由 `post` helper 统一注入 x-internal-token(对齐 replicate_rollout)。
+    pub async fn replicate_files(
+        &self,
+        base: &str,
+        changes: &[crate::services::workspace::file_sync::FileChange],
+    ) -> Result<(), AppError> {
+        let body = serde_json::to_value(changes)
+            .map_err(|e| AppError::internal(format!("serialize file changes: {e}")))?;
+        self.post(base, "/internal/filesync", body).await?;
+        Ok(())
+    }
+
     /// 响应审批(转发到远程 worker 的 codex 进程)。
     pub async fn approval_respond(
         &self,
