@@ -419,6 +419,8 @@ async fn run_replica_maintenance(state: &AppState) {
                 &state.local_offsets,
             )
             .await;
+            // per-thread workspace 文件增量同步(failover 后副本可见文件)。
+            let _ = codex_webui::services::workspace::file_sync::scan_and_replicate(&state, &thread_id).await;
         } else if row.replica_node.as_deref() == Some(state.node_id.as_str()) {
             match replication::promote_if_primary_down(
                 &state.db,
