@@ -375,10 +375,10 @@ async fn main() -> anyhow::Result<()> {
     // abort 副本维护 loop task:释放其持有的 state.clone()(audit_writer sender),
     // 否则 audit_writer 的 rx 永不返回 None → flush 永久阻塞(死锁)。
     replica_maintenance_handle.abort();
-    // drop state 释放 audit_writer 的 mpsc sender(本节点最后一份,除非有 promote_resume_team
+    // drop state 释放 audit_writer 的 mpsc sender(本节点最后一份,除非有 promote_resume_thread
     // 短命 task 仍在跑 —— 短命,退出后释放);后台 task flush 剩余 buf 后退出。
     drop(state);
-    // audit_writer flush:带 5s 超时兜底,防 promote_resume_team(resume 各 thread,10s/team)
+    // audit_writer flush:带 5s 超时兜底,防 promote_resume_thread(resume 各 thread,10s/thread)
     // 在 failover 期间仍持 sender 导致短暂阻塞;超时则放弃 flush(best-effort 审计)。
     let _ = tokio::time::timeout(Duration::from_secs(5), audit_writer_handle).await;
     codex_for_shutdown.destroy().await;
@@ -388,8 +388,8 @@ async fn main() -> anyhow::Result<()> {
 /// 周期维护:遍历 session_replicas,主节点续约+复制;副本节点探测主失活并晋升。
 async fn run_replica_maintenance(state: &AppState) {
     use sea_orm::EntityTrait;
-    // 孤儿 team 认领(重启换 id 等场景;确定性,仅最低 alive id 节点执行)。
-    let _ = replication::reclaim_orphan_teams(&state.db, state.cluster.as_ref(), state.mt_redis.as_ref()).await;
+    // 孤儿 thread 认领(重启换 id 等场景;确定性,仅最低 alive id 节点执行)。
+    let _ = replication::reclaim_orphan_threads(&state.db, state.cluster.as_ref(), state.mt_redis.as_ref()).await;
     let rows = match codex_webui::db::entities::session_replica::Entity::find()
         .all(&state.db)
         .await
@@ -401,16 +401,16 @@ async fn run_replica_maintenance(state: &AppState) {
         }
     };
     for row in rows {
-        let team_id = row.team_id.clone();
+        let thread_id = row.thread_id.clone();
         // 确保副本已分配(扩容后回填 None,否则主挂无人晋升)。
-        let _ = replication::ensure_replica(&state.db, &team_id, state.cluster.as_ref()).await;
+        let _ = replication::ensure_replica(&state.db, &thread_id, state.cluster.as_ref()).await;
         if row.primary_node == state.node_id {
-            if let Err(e) = replication::renew_lease(&state.db, &team_id, &state.node_id, state.mt_redis.as_ref()).await {
-                tracing::warn!(error = %e, team_id = %team_id, "renew_lease failed");
+            if let Err(e) = replication::renew_lease(&state.db, &thread_id, &state.node_id, state.mt_redis.as_ref()).await {
+                tracing::warn!(error = %e, thread_id = %thread_id, "renew_lease failed");
             }
-            let _ = replication::replicate_team_rollouts(
+            let _ = replication::replicate_thread_rollout(
                 &state.db,
-                &team_id,
+                &thread_id,
                 &state.codex_home,
                 state.cluster.as_ref(),
                 state.mt_redis.as_ref(),
@@ -422,7 +422,7 @@ async fn run_replica_maintenance(state: &AppState) {
         } else if row.replica_node.as_deref() == Some(state.node_id.as_str()) {
             match replication::promote_if_primary_down(
                 &state.db,
-                &team_id,
+                &thread_id,
                 state.cluster.as_ref(),
                 state.mt_redis.as_ref(),
                 &state.active_rollout,
@@ -431,48 +431,34 @@ async fn run_replica_maintenance(state: &AppState) {
             .await
             {
                 Ok(true) => {
-                    // M1 修复:promote_resume_team spawn 独立 task,不阻塞维护循环。
-                    // 该函数对 team 所有 thread 串行 thread/resume(每个 30s 超时),N 个 thread
-                    // 可累积超过 LEASE_TTL(120s),阻塞期间排在后面的 team 拿不到 renew_lease →
-                    // 其副本误判主失活 → 雪崩式切主。spawn 后维护循环继续给其他 team 续约。
+                    // M1 修复:promote_resume_thread spawn 独立 task,不阻塞维护循环。
+                    // 即便单 thread resume 带 10s 超时,spawn 后维护循环也能继续给其他 thread 续约,
+                    // 避免排在后面的 thread 拿不到 renew_lease → 副本误判主失活 → 雪崩式切主。
                     let st = state.clone();
-                    let team_id_owned = team_id.clone();
+                    let tid = thread_id.clone();
                     tokio::spawn(async move {
-                        if let Err(e) = promote_resume_team(&st, &team_id_owned).await {
-                            tracing::warn!(error = %e, team_id = %team_id_owned, "promote resume failed");
+                        if let Err(e) = promote_resume_thread(&st, &tid).await {
+                            tracing::warn!(error = %e, thread_id = %tid, "promote resume failed");
                         }
                     });
                 }
                 Ok(false) => {}
-                Err(e) => tracing::warn!(error = %e, team_id = %team_id, "promote check failed"),
+                Err(e) => tracing::warn!(error = %e, thread_id = %thread_id, "promote check failed"),
             }
         }
     }
 }
 
-/// 副本晋升后:起该 team 的 codex 进程,并对所有活跃 thread 调 thread/resume 续接。
+/// 副本晋升后:对单个 thread 调 thread/resume 续接。
 ///
-/// 每个 resume 加 10s 超时上限(M1):thread 多时避免单 thread 慢拖累整体,
-/// 且单 thread 卡死不阻塞其他 thread 续接。
-async fn promote_resume_team(state: &AppState, team_id: &str) -> Result<(), codex_webui::error::AppError> {
-    use codex_webui::db::entities::thread::{Column as ThreadColumn, Entity as ThreadEntity};
-    use sea_orm::{ColumnTrait, EntityTrait, QueryFilter};
-    // 单进程 codex 已懒启动:首个 request 触发 spawn + initialize,无需 client_for 预热。
-    // 全局 CODEX_HOME 已有该 team 所有 thread 的 rollout 副本。
-    let threads = ThreadEntity::find()
-        .filter(ThreadColumn::TeamId.eq(team_id.to_string()))
-        .all(&state.db)
-        .await
-        .map_err(|e| codex_webui::error::AppError::internal(format!("query threads for resume: {e}")))?;
-    for t in threads {
-        let params = serde_json::json!({ "threadId": t.id, "persistExtendedHistory": true });
-        // 10s 超时:单 thread resume 卡死不拖累其他 thread。
-        let resume = state.codex.request("thread/resume", Some(params));
-        match tokio::time::timeout(std::time::Duration::from_secs(10), resume).await {
-            Ok(Ok(_)) => {}
-            Ok(Err(e)) => tracing::warn!(error = %e, thread_id = %t.id, "resume after promote failed (non-fatal)"),
-            Err(_) => tracing::warn!(thread_id = %t.id, "resume after promote timed out (10s, non-fatal)"),
-        }
+/// 10s 超时上限(M1):单 thread resume 卡死不拖累维护循环的其他续约。
+async fn promote_resume_thread(state: &AppState, thread_id: &str) -> Result<(), codex_webui::error::AppError> {
+    let params = serde_json::json!({ "threadId": thread_id, "persistExtendedHistory": true });
+    let resume = state.codex.request("thread/resume", Some(params));
+    match tokio::time::timeout(std::time::Duration::from_secs(10), resume).await {
+        Ok(Ok(_)) => {}
+        Ok(Err(e)) => tracing::warn!(error = %e, thread_id = %thread_id, "resume after promote failed (non-fatal)"),
+        Err(_) => tracing::warn!(thread_id = %thread_id, "resume after promote timed out (10s, non-fatal)"),
     }
     metrics::counter!("replica_promotion_resumed_total").increment(1);
     Ok(())
