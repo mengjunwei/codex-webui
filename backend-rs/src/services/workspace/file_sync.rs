@@ -5,6 +5,9 @@
 //! 副本 safe_join 后覆盖写。offset = 已同步的最大 mtime(ms),存 Redis + 进程内。
 
 use crate::error::AppError;
+use crate::services::multitenant::replication::get as get_replica;
+use crate::services::workspace::thread_workspace_path;
+use crate::state::AppState;
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 
@@ -77,6 +80,101 @@ pub async fn scan_changes(dir: &Path, since_ms: i64) -> Result<Vec<FileChange>, 
         }
     }
     Ok(out)
+}
+
+/// 读取该 thread 的文件同步 offset(已同步的最大 mtime,ms)。
+/// Redis key `filesync:offset:{thread_id}`;失败/无 Redis 返回 0(下次全量扫)。
+async fn get_filesync_offset(redis: Option<&redis::Client>, thread_id: &str) -> i64 {
+    if let Some(c) = redis {
+        if let Ok(mut conn) = c.get_multiplexed_async_connection().await {
+            let v: Option<String> = redis::cmd("GET")
+                .arg(format!("filesync:offset:{thread_id}"))
+                .query_async(&mut conn)
+                .await
+                .ok()
+                .flatten();
+            if let Some(s) = v {
+                return s.parse().unwrap_or(0);
+            }
+        }
+    }
+    0
+}
+
+/// 推进 offset(发送成功后才调用)。Redis 失败静默忽略(下次重发幂等)。
+async fn set_filesync_offset(redis: Option<&redis::Client>, thread_id: &str, v: i64) {
+    if let Some(c) = redis {
+        if let Ok(mut conn) = c.get_multiplexed_async_connection().await {
+            let _: () = redis::cmd("SET")
+                .arg(format!("filesync:offset:{thread_id}"))
+                .arg(v)
+                .query_async(&mut conn)
+                .await
+                .unwrap_or(());
+        }
+    }
+}
+
+/// 主侧:扫描该 thread workspace 增量,经 RPC 推到副本。仅在 primary 节点调用。
+///
+/// 流程:读 offset → scan_changes → 查副本节点 → 解析 RPC 地址 →
+/// 回填 thread_id → 算本轮最大 mtime → replicate_files 成功后推进 offset + metrics。
+/// 任一中间步骤缺数据(无副本/副本即本节点/无 RPC 地址)静默返回,等下轮。
+pub async fn scan_and_replicate(state: &AppState, thread_id: &str) -> Result<(), AppError> {
+    let ws = thread_workspace_path(&state.workspace_root, thread_id);
+    let last = get_filesync_offset(state.mt_redis.as_ref(), thread_id).await;
+    let mut changes = scan_changes(&ws, last).await?;
+    if changes.is_empty() {
+        return Ok(());
+    }
+
+    let row = get_replica(&state.db, thread_id).await?;
+    let replica_node = row.and_then(|r| r.replica_node);
+    let Some(replica) = replica_node else {
+        return Ok(());
+    };
+    if replica == state.node_id {
+        return Ok(());
+    }
+    let Some(rpc_addr) = state.cluster.node_rpc_addr(&replica).await else {
+        return Ok(());
+    };
+
+    for c in changes.iter_mut() {
+        c.thread_id = thread_id.to_string();
+    }
+
+    // 计算本轮最大 mtime 作为新 offset(发送成功后才推进)。
+    use std::time::UNIX_EPOCH;
+    let mut max_mt = last;
+    for c in &changes {
+        let p = ws.join(&c.relative_path);
+        if let Ok(m) = tokio::fs::metadata(&p).await {
+            if let Ok(t) = m.modified() {
+                if let Ok(d) = t.duration_since(UNIX_EPOCH) {
+                    max_mt = max_mt.max(d.as_millis() as i64);
+                }
+            }
+        }
+    }
+
+    if state
+        .worker_rpc
+        .replicate_files(&rpc_addr, &changes)
+        .await
+        .is_ok()
+    {
+        set_filesync_offset(state.mt_redis.as_ref(), thread_id, max_mt).await;
+        metrics::counter!("filesync_bytes_total").increment(
+            changes
+                .iter()
+                .map(|c| c.content.as_ref().map(|b| b.len()).unwrap_or(0) as u64)
+                .sum(),
+        );
+    } else {
+        tracing::warn!(thread_id, "replicate_files failed (will retry next round)");
+    }
+    Ok(())
 }
 
 #[cfg(test)]
