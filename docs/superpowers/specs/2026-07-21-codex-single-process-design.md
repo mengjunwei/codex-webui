@@ -89,22 +89,24 @@ config 加 `[codex] max_concurrent = 32`（或复用某字段）。
 - `resume_cache` / `sticky` / `quota` / `audit` / `permissions`
 - `api_keys.rs`（BYOK 加密存储保留，set_team_api_key/set_user_api_key 仍写 DB；只是 codex 不再读 per-team key）
 
-## 5. 风险与缓解
+## 5. 风险与缓解（per-node 视角，多节点 HA 下大幅缓解）
 
-| 风险 | 缓解 |
+> 单进程是 **per-node**（每节点一个 codex，N 节点 = N 进程），不是全局一个。多节点 HA（session_replicas + memberlist + replication + sticky 路由）提供 failover + 负载分散。
+
+| 风险（per-node） | 缓解 |
 |---|---|
-| 单点故障（codex 崩溃影响所有 team） | CodexProcessManager 内置自动重启（3→60s 指数退避）；in-flight turn 丢失（30s 超时） |
-| 并发瓶颈（单管道） | 全局信号量 max_concurrent=32 + WRITE_QUEUE_CAP=1024 兜底 |
-| 线程内存积累（无 idle evict） | 后续加 thread 级驱逐（本重构先不做，监控 codex 内存） |
+| 节点 codex 崩溃（影响该节点 sticky 的 team） | CodexProcessManager 内置自动重启（3→60s 退避）；**多节点 HA：sticky team failover 到其他节点**（session_replicas + rollout 复制），秒级恢复。非全局单点 |
+| 并发瓶颈（节点单 stdin/stdout 管道） | **per-node** 信号量 max_concurrent=32 + WRITE_QUEUE_CAP=1024 兜底；**多节点 sticky 分散** team 到 N 节点，每节点负载=全局/N，全局并发=32×N |
+| 线程内存积累（节点 codex 持有该节点所有 thread） | 后续加 thread 级驱逐（本重构先不做，监控 codex 内存） |
 | BYOK per-team key 丢失 | 统一代理管 key（方案 A，已确认） |
 | set_team_api_key 不即时生效 | 统一代理场景 team_api_keys 基本不用；需即时则重启 |
 
 ## 6. 验收
 
-1. 1000 team 只有 1 个 codex 进程（`ps` 确认）
+1. **per-node 单进程**：N 节点 = N 个 codex 进程（每节点一个，多 thread 复用）；无 per-team 进程（`ps` 每节点确认 1 个 codex，不再有 per-team 的多个）
 2. 发 turn 正常（codex 用 .codex 代理调 LLM，响应回前端）
-3. 多 team 并发 turn 复用单进程（thread_id 隔离）
-4. codex 崩溃后自动重启，新 turn 恢复
+3. 多 team 并发 turn 在 per-node 单进程内复用（thread_id 隔离）；多节点 sticky 分散
+4. 节点 codex 崩溃后自动重启；多节点下 sticky team failover 到其他节点
 5. cargo build/test 全绿；删 ~520 行 codex_pool + 配置
 
 ## 7. 非目标

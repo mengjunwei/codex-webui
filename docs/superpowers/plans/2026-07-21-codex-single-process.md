@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: superpowers:subagent-driven-development. Steps use `- [ ]`.
 
-**Goal:** 把 codex 从 per-team 进程池重构为单进程多 thread——删 `codex_pool.rs`(~520 行)，所有 handler 改调 `state.codex`，加全局并发信号量。
+**Goal:** 把 codex 从 per-team 进程池重构为 **per-node 单进程多 thread**——每节点一个 codex 进程（多节点 HA 下 N 节点 = N 进程 + sticky 分散 + failover），删 `codex_pool.rs`(~520 行)，所有 handler 改调 `state.codex`，加 per-node 并发信号量。
 
 **Architecture:** `state.codex`(CodexProcessManager 单进程) 闲置→启用为唯一执行路径；删 `state.mt_team_codex`(TeamCodexManager per-team 池)。webui thread.id == codex thread id，CODEX_HOME 本就全局，rollout/jsonrpc/replication/权限不动。
 
@@ -173,7 +173,7 @@ Run: `cargo build && cargo test`，零错误全绿。
 - [ ] **Step 3: 发 turn 端到端验证**
 
 login admin → 创建 team + thread → 发 turn（POST /turns）→ 等 codex 响应 → 确认前端收到（或 API 返回 turn 结果，不再超时）。
-确认**只有一个 codex 进程**（`tasklist | grep codex` 或 ps）。
+确认 **per-node 1 个 codex 进程**（`tasklist | grep codex` 或 ps，每节点一个；无 per-team 的多个进程）。
 
 - [ ] **Step 4: Commit（如有验证修复）**
 
