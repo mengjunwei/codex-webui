@@ -149,12 +149,14 @@ pub async fn renew_lease(
     // DB 条件 update:仅当 primary_node 仍是本节点时才推进 lease。
     // 用 update_many + filter(而非 ActiveModel::update)——后者会把 Unchanged 的
     // primary_node 也写回(覆盖副本刚 set_primary 的结果)。
+    // I2:只刷 PrimaryLeaseUntil,不刷 UpdatedAt —— updated_at 须反映分配/迁移时间,
+    //     rebalance order_by_asc(UpdatedAt) 才能"最久未迁移优先";否则 renew 每 15s
+    //     把所有 primary 行 updated_at 刷成 now,导致 rebalance 等于随机选(可能迁活跃 thread)。
     use crate::db::entities::session_replica::Column as SRColumn;
     use sea_orm::sea_query::Expr;
     use sea_orm::{ColumnTrait, EntityTrait, QueryFilter};
     let res = Entity::update_many()
         .col_expr(SRColumn::PrimaryLeaseUntil, Expr::value(now + LEASE_TTL_MS))
-        .col_expr(SRColumn::UpdatedAt, Expr::value(now))
         .filter(SRColumn::ThreadId.eq(thread_id.to_string()))
         .filter(SRColumn::PrimaryNode.eq(node_id.to_string()))
         .exec(db)
@@ -215,27 +217,51 @@ pub async fn try_acquire_primary(
     ok.is_some()
 }
 
-/// 更新主副本(晋升 / 重选副本时)。
+/// 更新主副本(晋升 / 重选副本 / rebalance 迁移时)。
+///
+/// I3 CAS:仅当当前 primary_node == caller 时才更新。rebalance 路径不经 Redis 租约,
+/// 原无条件 update 会与并发的 promote/reclaim 踩踏:
+///   A(rebalance)读行 primary=A → B(promote)判 A 失活抢占 set_primary(B) → A 的 set_primary(target) 覆盖。
+/// CAS 消除该竞争。返回 true=已更新;false=CAS 失败(primary_node 已不是 caller,被抢占/迁移,
+/// 调用方应放弃后续 offset/sticky 清理等动作)。
 pub async fn set_primary(
     db: &DatabaseConnection,
     thread_id: &str,
+    caller: &str,
     new_primary: &str,
     new_replica: Option<&str>,
-) -> Result<(), AppError> {
-    let row = get(db, thread_id)
-        .await?
-        .ok_or_else(|| AppError::internal("session_replica row missing".into()))?;
+) -> Result<bool, AppError> {
     let now = now_ms();
-    let mut am: ActiveModel = row.into();
-    am.primary_node = Set(new_primary.to_string());
-    am.replica_node = Set(new_replica.map(String::from));
-    am.status = Set("active".to_string());
-    am.primary_lease_until = Set(now + LEASE_TTL_MS);
-    am.updated_at = Set(now);
-    am.update(db)
+    use crate::db::entities::session_replica::Column as SRColumn;
+    use sea_orm::sea_query::Expr;
+    use sea_orm::{ColumnTrait, EntityTrait, QueryFilter};
+    let res = Entity::update_many()
+        .col_expr(SRColumn::PrimaryNode, Expr::value(new_primary.to_string()))
+        .col_expr(
+            SRColumn::ReplicaNode,
+            Expr::value(new_replica.map(String::from)),
+        )
+        .col_expr(SRColumn::Status, Expr::value("active".to_string()))
+        .col_expr(
+            SRColumn::PrimaryLeaseUntil,
+            Expr::value(now + LEASE_TTL_MS),
+        )
+        .col_expr(SRColumn::UpdatedAt, Expr::value(now))
+        .filter(SRColumn::ThreadId.eq(thread_id.to_string()))
+        .filter(SRColumn::PrimaryNode.eq(caller.to_string()))
+        .exec(db)
         .await
         .map_err(|e| AppError::internal(format!("set primary: {e}")))?;
-    Ok(())
+    if res.rows_affected == 0 {
+        tracing::warn!(
+            thread_id,
+            caller,
+            new_primary,
+            "set_primary CAS aborted: primary_node no longer caller (preempted/migrated)"
+        );
+        return Ok(false);
+    }
+    Ok(true)
 }
 
 // ── rollout 增量复制(主侧)─────────────────────────────────────────────────
@@ -471,7 +497,13 @@ pub async fn promote_if_primary_down(
     // 抢占成功 → 晋升:选新副本(反亲和,alive 中 != 自己)。
     let alive = cluster.alive_nodes().await;
     let new_replica = alive.into_iter().find(|n| n != me);
-    set_primary(db, thread_id, me, new_replica.as_deref()).await?;
+    // I3 CAS:caller = 旧主(row.primary_node,已失活)。仅当 DB primary_node 仍是旧主时才晋升,
+    //         防并发 rebalance(不经 Redis 租约)此时改了 primary_node 导致踩踏。
+    let promoted = set_primary(db, thread_id, row.primary_node.as_str(), me, new_replica.as_deref()).await?;
+    if !promoted {
+        tracing::info!(thread_id, "promote CAS aborted: primary_node changed concurrently");
+        return Ok(false);
+    }
     // 晋升成功 → 删 Redis + 进程内 offset,触发下次从 0 全量同步(spec §2.3.3)。
     delete_all_thread_offsets_dual(redis, local_offsets, thread_id).await;
     let _ = active_rollout; // 占位:下次 mt_start_turn / mt_create_thread 重新发现文件。
@@ -511,7 +543,20 @@ pub async fn reclaim_orphan_threads(
             continue;
         }
         let new_replica = alive.iter().find(|n| n.as_str() != me).cloned();
-        set_primary(db, &row.thread_id, &me, new_replica.as_deref()).await?;
+        // I3 CAS:caller = 旧主(row.primary_node,已失活)。仅当 DB primary_node 仍是旧主才认领,
+        //         防并发 rebalance/promote 此时改了 primary_node 导致踩踏。
+        let claimed = set_primary(
+            db,
+            &row.thread_id,
+            row.primary_node.as_str(),
+            &me,
+            new_replica.as_deref(),
+        )
+        .await?;
+        if !claimed {
+            // CAS 失败:primary_node 已被并发改动,跳过本行(可能已被别人认领/迁移)。
+            continue;
+        }
         // R3 修复:认领后清 Redis 残留 offset。认领者不是旧主/副本,本地无该 thread 的 rollout,
         // 但 Redis 可能残留旧 offset;新副本 receive_rollout 会因 offset>cur_len 拒绝同步,
         // 导致认领后数据永久对不齐。

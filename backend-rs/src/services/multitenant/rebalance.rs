@@ -80,6 +80,8 @@ pub async fn maybe_rebalance(state: &AppState) -> Result<(), AppError> {
     // 选本节点最旧的一个 thread 迁移(updated_at asc)。
     // 仅迁移 status='active' 的 thread:promoting/degraded 中的 thread 正在晋升流程里,
     // 迁移会干扰 promote_if_primary_down 的状态机(竞争改 primary_node + status)。
+    // I2:updated_at 语义 = 最久未迁移优先(renew_lease 已不再刷 updated_at,仅 set_primary/
+    //     get_or_assign 写),故 order_by_asc(UpdatedAt) 选最久未动的 thread,避免迁活跃 thread。
     let Some(thread) = SREntity::find()
         .filter(SRColumn::PrimaryNode.eq(state.node_id.clone()))
         .filter(SRColumn::Status.eq("active"))
@@ -94,7 +96,20 @@ pub async fn maybe_rebalance(state: &AppState) -> Result<(), AppError> {
 
     // 迁移:把 primary 改为 target,选新 replica(反亲和,alive 中第一个 != target)。
     let new_replica = alive.iter().find(|n| n.as_str() != target).cloned();
-    replication::set_primary(&state.db, &thread.thread_id, &target, new_replica.as_deref()).await?;
+    // I3 CAS:caller = 本节点(state.node_id)。仅当 DB primary_node 仍是本节点才迁移,
+    //         防与并发 promote/reclaim 踩踏(rebalance 不经 Redis 租约,原无条件 update 会覆盖)。
+    let migrated = replication::set_primary(
+        &state.db,
+        &thread.thread_id,
+        &state.node_id,
+        &target,
+        new_replica.as_deref(),
+    )
+    .await?;
+    if !migrated {
+        // CAS 失败:已被抢占/迁移,放弃本轮(不清 offset/sticky,避免误清别人的迁移结果)。
+        return Ok(());
+    }
     // 清该 thread 复制 offset → target 下次从 0 全量同步 rollout+文件。
     if let Some(c) = state.mt_redis.as_ref() {
         replication::delete_all_thread_offsets(c, &thread.thread_id).await;
