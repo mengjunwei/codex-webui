@@ -271,14 +271,14 @@ pub mod team_route {
     impl ActiveModelBehavior for ActiveModel {}
 }
 
-/// per-team 主副本映射(active-passive HA):team_id → primary_node + replica_node。
+/// per-thread 主副本映射(active-passive HA):thread_id → primary_node + replica_node。
 pub mod session_replica {
     use sea_orm::entity::prelude::*;
     #[derive(Clone, Debug, PartialEq, DeriveEntityModel, serde::Serialize)]
     #[sea_orm(table_name = "session_replicas")]
     pub struct Model {
         #[sea_orm(primary_key, column_type = "String(StringLen::N(36))")]
-        pub team_id: String,
+        pub thread_id: String,
         #[sea_orm(column_type = "String(StringLen::N(64))")]
         pub primary_node: String,
         #[sea_orm(column_type = "String(StringLen::N(64))")]
