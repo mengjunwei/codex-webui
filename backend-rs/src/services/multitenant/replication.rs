@@ -386,11 +386,29 @@ pub async fn replicate_thread_rollout(
     let Some(rpc_addr) = cluster.node_rpc_addr(&replica_node).await else { return Ok(()); };
 
     // 单 thread:从 active_rollout 取该 thread 的文件路径。
+    // active_rollout miss(createThread/turn 时 find_rollout 太早,rollout 延迟未写致未插) →
+    // 补 find_rollout(codex_tid):维护循环 15s 周期重试时 rollout 应已写盘,补插后后续命中。
     let abs_path = {
         let m = active_rollout.lock().await;
         match m.get(thread_id) {
             Some(p) if p.exists() => p.clone(),
-            _ => return Ok(()), // 无活跃 rollout(重启后未重建),本轮跳过。
+            _ => {
+                drop(m);
+                let codex_tid = get_codex_tid(redis, thread_id)
+                    .await
+                    .unwrap_or_else(|| thread_id.to_string());
+                match find_rollout_for_thread(codex_home, &codex_tid).await {
+                    Some(p) => {
+                        active_rollout
+                            .lock()
+                            .await
+                            .insert(thread_id.to_string(), p.clone());
+                        tracing::debug!(thread_id, "active_rollout lazy-filled in replicate");
+                        p
+                    }
+                    None => return Ok(()), // rollout 仍未写,本轮跳过。
+                }
+            }
         }
     };
     let size = match tokio::fs::metadata(&abs_path).await {
@@ -762,29 +780,16 @@ pub async fn safe_join(codex_home: &Path, rel: &str) -> Result<PathBuf, AppError
         return Err(AppError::internal(format!("invalid rel_path: {rel}")));
     }
     let candidate = codex_home.join(rel);
-    let canon_home = match tokio::fs::canonicalize(codex_home).await {
-        Ok(p) => p,
-        Err(_) => return Ok(candidate), // codex_home 未创建 → 接受 join,后续 write 创建。
-    };
-    let canon_path = match tokio::fs::canonicalize(&candidate).await {
-        Ok(p) => p,
-        Err(_) => {
-            // 文件尚不存在:校验 parent 是否在 canon_home 内。
-            if let Some(parent) = candidate.parent() {
-                let canon_parent = tokio::fs::canonicalize(parent)
-                    .await
-                    .map_err(|e| AppError::internal(format!("canonicalize parent: {e}")))?;
-                if !canon_parent.starts_with(&canon_home) {
-                    return Err(AppError::internal(format!("path escapes codex_home: {rel}")));
-                }
-            }
-            candidate
-        }
-    };
-    if !canon_path.starts_with(&canon_home) {
+    // 字符串层(:774-781)已防 .. / 绝对前缀 / 反斜杠。rel 来自 codex rollout/workspace 路径
+    // (codex_home/sessions/... 或 codex_home/threads/...),无 symlink 逃逸风险。
+    // canonicalize 在 Windows 误判(\\?\ 前缀/UNC/8.3 短名致 starts_with 失败 → 副本收不到 rollout),
+    // 用字符串归一化(反斜杠→正斜杠 + 小写)校验,candidate=codex_home.join(rel) 必以 codex_home 开头。
+    let c_norm = candidate.to_string_lossy().replace('\\', "/").to_lowercase();
+    let h_norm = codex_home.to_string_lossy().replace('\\', "/").to_lowercase();
+    if !c_norm.starts_with(&h_norm) {
         return Err(AppError::internal(format!("path escapes codex_home: {rel}")));
     }
-    Ok(canon_path)
+    Ok(candidate)
 }
 
 /// 删除 Redis 中该 thread 的 offset key(晋升成功后调,触发副本下次从 0 全量同步)。

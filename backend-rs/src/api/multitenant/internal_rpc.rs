@@ -211,13 +211,40 @@ async fn turn_start(
     .await
     .unwrap_or_else(|| req.thread_id.clone());
     if let Value::Object(ref mut m) = params {
-        m.entry("threadId").or_insert(Value::String(codex_tid));
+        m.entry("threadId").or_insert(Value::String(codex_tid.clone()));
     }
     let resp = state
         .codex
         .request("turn/start", Some(params))
         .await
         .map_err(|e| AppError::internal(format!("codex turn/start: {e}")))?;
+    // turn 后 rollout 必有内容:补插 active_rollout(thread_start 时 rollout 可能延迟未插)
+    // + 增量复制到副本。转发场景下 target 是 primary,本节点复制最可靠(对齐 mt_start_turn 本地分支)。
+    let tid = &req.thread_id;
+    {
+        let mut active = state.active_rollout.lock().await;
+        if !active.contains_key(tid) {
+            if let Some(p) = crate::services::multitenant::replication::find_rollout_for_thread(
+                &state.codex_home,
+                &codex_tid,
+            )
+            .await
+            {
+                active.insert(tid.clone(), p);
+            }
+        }
+    }
+    let _ = crate::services::multitenant::replication::replicate_thread_rollout(
+        &state.db,
+        tid,
+        &state.codex_home,
+        state.cluster.as_ref(),
+        state.mt_redis.as_ref(),
+        &state.worker_rpc,
+        &state.active_rollout,
+        &state.local_offsets,
+    )
+    .await;
     Ok(Json(resp))
 }
 
