@@ -10,6 +10,7 @@
 
 pub mod audit_writer;
 pub mod decision;
+pub mod file_sync;
 pub mod hooks_config;
 
 use crate::error::AppError;
