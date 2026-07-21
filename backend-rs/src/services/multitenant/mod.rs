@@ -9,6 +9,7 @@ pub mod event_persist;
 pub mod permissions;
 pub mod quota;
 pub mod rate_limit;
+pub mod rebalance;
 pub mod replication;
 pub mod resume_cache;
 pub mod rpc;
