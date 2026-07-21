@@ -78,8 +78,11 @@ pub async fn maybe_rebalance(state: &AppState) -> Result<(), AppError> {
     };
 
     // 选本节点最旧的一个 thread 迁移(updated_at asc)。
+    // 仅迁移 status='active' 的 thread:promoting/degraded 中的 thread 正在晋升流程里,
+    // 迁移会干扰 promote_if_primary_down 的状态机(竞争改 primary_node + status)。
     let Some(thread) = SREntity::find()
         .filter(SRColumn::PrimaryNode.eq(state.node_id.clone()))
+        .filter(SRColumn::Status.eq("active"))
         .order_by_asc(SRColumn::UpdatedAt)
         // 仅取一条,避免拉全表。
         .one(&state.db)

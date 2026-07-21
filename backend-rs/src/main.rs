@@ -388,6 +388,21 @@ async fn main() -> anyhow::Result<()> {
 /// 周期维护:遍历 session_replicas,主节点续约+复制;副本节点探测主失活并晋升。
 async fn run_replica_maintenance(state: &AppState) {
     use sea_orm::EntityTrait;
+    // 节流 rebalance:每 5 分钟最多触发一次(防抖动 —— 维护循环 15s 跑一轮,频繁迁移会
+    // 反复改 primary_node + 清 Redis offset,造成 rollout 全量同步风暴)。
+    // static AtomicI64 进程内全局,多副本各节点独立计数(各节点各自判断是否过热)。
+    use std::sync::atomic::{AtomicI64, Ordering};
+    static LAST_REBALANCE_MS: AtomicI64 = AtomicI64::new(0);
+    const REBALANCE_INTERVAL_MS: i64 = 300_000; // 5 分钟
+    let now = codex_webui::services::multitenant::now_ms();
+    if now - LAST_REBALANCE_MS.load(Ordering::Relaxed) >= REBALANCE_INTERVAL_MS {
+        LAST_REBALANCE_MS.store(now, Ordering::Relaxed);
+        if let Err(e) =
+            codex_webui::services::multitenant::rebalance::maybe_rebalance(state).await
+        {
+            tracing::warn!(error = %e, "rebalance failed");
+        }
+    }
     // 孤儿 thread 认领(重启换 id 等场景;确定性,仅最低 alive id 节点执行)。
     let _ = replication::reclaim_orphan_threads(&state.db, state.cluster.as_ref(), state.mt_redis.as_ref()).await;
     let rows = match codex_webui::db::entities::session_replica::Entity::find()
