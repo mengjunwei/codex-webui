@@ -295,7 +295,7 @@ async fn main() -> anyhow::Result<()> {
         let rpc_url = own_rpc_url.clone();
         tokio::spawn(async move {
             loop {
-                if let Err(e) = rc.heartbeat(30, &rpc_url).await {
+                if let Err(e) = rc.heartbeat(15, &rpc_url).await {
                     tracing::warn!(error = %e, "cluster heartbeat failed");
                 }
                 tokio::time::sleep(Duration::from_secs(10)).await;

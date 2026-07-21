@@ -48,9 +48,9 @@ async fn reap_receive_lock(key: &str) {
 }
 
 /// 主租约有效期(主须在此周期内续约,否则副本可抢占)。需显著大于维护周期(15s)。
-pub const LEASE_TTL_MS: i64 = 120_000;
+pub const LEASE_TTL_MS: i64 = 60_000;
 /// Redis 主租约 TTL 秒。
-const LEASE_TTL_SECS: u64 = 120;
+const LEASE_TTL_SECS: u64 = 60;
 
 /// 一段 rollout 增量(主 → 副本)。
 #[derive(Serialize, Deserialize, Clone)]
