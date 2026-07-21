@@ -67,17 +67,32 @@ impl MigrationTrait for Migration {
             .ok();
 
         // 5. 注释(仅 PG;MySQL .ok() 吞错)。
+        //    每条 COMMENT 独立 execute_unprepared:PG 下 execute_unprepared 走单 prepared
+        //    statement,多语句拼接时 libpq 默认只执行首条,后续 COMMENT 会静默丢失 → 表/列
+        //    元数据建不完整。拆分后保证每条都执行。
         db.execute_unprepared(
-            "COMMENT ON TABLE session_replicas IS 'per-thread 主副本映射(active-passive HA):thread_id → primary + replica';
-             COMMENT ON COLUMN session_replicas.thread_id IS '会话 ID(主键)';
-             COMMENT ON COLUMN session_replicas.primary_node IS '跑 codex 的主节点 ID';
-             COMMENT ON COLUMN session_replicas.replica_node IS '存 rollout/workspace 副本的节点 ID(可空)';
-             COMMENT ON COLUMN session_replicas.status IS '状态:active / promoting / degraded';
-             COMMENT ON COLUMN session_replicas.primary_lease_until IS '主节点租约到期时间戳(毫秒)';
-             COMMENT ON COLUMN session_replicas.updated_at IS '更新时间戳(毫秒)';",
+            "COMMENT ON TABLE session_replicas IS 'per-thread 主副本映射(active-passive HA):thread_id → primary + replica'",
         )
         .await
         .ok();
+        db.execute_unprepared("COMMENT ON COLUMN session_replicas.thread_id IS '会话 ID(主键)'")
+            .await
+            .ok();
+        db.execute_unprepared("COMMENT ON COLUMN session_replicas.primary_node IS '跑 codex 的主节点 ID'")
+            .await
+            .ok();
+        db.execute_unprepared("COMMENT ON COLUMN session_replicas.replica_node IS '存 rollout/workspace 副本的节点 ID(可空)'")
+            .await
+            .ok();
+        db.execute_unprepared("COMMENT ON COLUMN session_replicas.status IS '状态:active / promoting / degraded'")
+            .await
+            .ok();
+        db.execute_unprepared("COMMENT ON COLUMN session_replicas.primary_lease_until IS '主节点租约到期时间戳(毫秒)'")
+            .await
+            .ok();
+        db.execute_unprepared("COMMENT ON COLUMN session_replicas.updated_at IS '更新时间戳(毫秒)'")
+            .await
+            .ok();
 
         Ok(())
     }
