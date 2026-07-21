@@ -426,11 +426,12 @@ VARCHAR(36) UUIDv7 / BIGINT i64 毫秒 / BOOLEAN / TEXT（不用 JSON/ENUM/ARRAY
 # lib 单测
 cargo test --lib
 
-# 集成测试
-cargo test --tests
+# 全部(lib + bin + 集成)—— 需 --jobs 1 规避 cargo 1.95 多 target rmeta/rlab 竞态
+# (多 test target 并行编译时传递依赖 rlib 间歇性 "not found in rlib format",非代码问题;--jobs 1 串行稳定)
+cargo test --jobs 1
 
 # 带 memberlist feature
-cargo test --features memberlist-backend
+cargo test --jobs 1 --features memberlist-backend
 ```
 
-当前：70 lib + 6 集成测试全过。
+当前:77 lib + 9 集成测试全过(`cargo test --lib` / `cargo test --jobs 1`)。

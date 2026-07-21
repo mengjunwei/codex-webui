@@ -94,7 +94,9 @@ async fn handle_event(
     let method = msg.get("method").and_then(Value::as_str).unwrap_or("");
     // server_request(带 id)→ 审批持久化(双保险)。
     if msg.get("id").is_some() && !method.is_empty() {
-        persist_server_request(db, &team_id, msg).await;
+        // 双保险:bus 路径 persist 失败不阻断 event_persist 主循环(审批落库主路径是
+        // realtime::record_server_request,它 propagate 错误使 realtime 跳过 emit 防幽灵)。
+        let _ = persist_server_request(db, &team_id, msg).await;
     }
     // turn 错误(error 通知)。
     if method == "error" {
@@ -168,7 +170,11 @@ async fn resolve_team(
     Ok(team)
 }
 
-async fn persist_server_request(db: &DatabaseConnection, team_id: &str, msg: &Value) {
+async fn persist_server_request(
+    db: &DatabaseConnection,
+    team_id: &str,
+    msg: &Value,
+) -> Result<(), AppError> {
     let now = now_ms();
     let request_id = id_to_string(msg.get("id").unwrap_or(&Value::Null));
     let generation = team_generation(team_id);
@@ -196,8 +202,7 @@ async fn persist_server_request(db: &DatabaseConnection, team_id: &str, msg: &Va
     let existing = psr::Entity::find_by_id((generation, request_id.clone()))
         .one(db)
         .await
-        .ok()
-        .flatten();
+        .map_err(|e| AppError::internal(format!("find pending_server_request: {e}")))?;
     let team_id = team_id.to_string();
     if let Some(model) = existing {
         let mut am: psr::ActiveModel = model.into();
@@ -211,7 +216,9 @@ async fn persist_server_request(db: &DatabaseConnection, team_id: &str, msg: &Va
         am.resolved_by = Set(None);
         am.resolved_at = Set(None);
         am.updated_at = Set(now);
-        let _ = am.update(db).await;
+        am.update(db)
+            .await
+            .map_err(|e| AppError::internal(format!("update pending_server_request: {e}")))?;
     } else {
         let am = psr::ActiveModel {
             generation: Set(generation),
@@ -228,8 +235,11 @@ async fn persist_server_request(db: &DatabaseConnection, team_id: &str, msg: &Va
             updated_at: Set(now),
             resolved_at: Set(None),
         };
-        let _ = am.insert(db).await;
+        am.insert(db)
+            .await
+            .map_err(|e| AppError::internal(format!("insert pending_server_request: {e}")))?;
     }
+    Ok(())
 }
 
 /// 记录审批请求(team 维度,team_generation 主键)。供 realtime 在 WS emit 之前调用,
@@ -250,7 +260,7 @@ pub async fn record_server_request(db: &DatabaseConnection, msg: &Value) -> Resu
         .await
         .map_err(|e| AppError::internal(format!("record_server_request query thread: {e}")))?;
     let Some(team_id) = row.map(|r| r.team_id) else { return Ok(()); };
-    persist_server_request(db, &team_id, msg).await;
+    persist_server_request(db, &team_id, msg).await?;
     Ok(())
 }
 
