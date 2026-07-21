@@ -435,24 +435,17 @@ async fn run_replica_maintenance(state: &AppState) {
 async fn promote_resume_team(state: &AppState, team_id: &str) -> Result<(), codex_webui::error::AppError> {
     use codex_webui::db::entities::thread::{Column as ThreadColumn, Entity as ThreadEntity};
     use sea_orm::{ColumnTrait, EntityTrait, QueryFilter};
-    // 起 codex 进程(全局 CODEX_HOME 已有该 team 所有 thread 的 rollout 副本)。
-    let _ = state
-        .mt_team_codex
-        .client_for(team_id, &state.db, &state.mt_master_key, false)
-        .await?;
+    // 单进程 codex 已懒启动:首个 request 触发 spawn + initialize,无需 client_for 预热。
+    // 全局 CODEX_HOME 已有该 team 所有 thread 的 rollout 副本。
     let threads = ThreadEntity::find()
         .filter(ThreadColumn::TeamId.eq(team_id.to_string()))
         .all(&state.db)
         .await
         .map_err(|e| codex_webui::error::AppError::internal(format!("query threads for resume: {e}")))?;
     for t in threads {
-        let lease = state
-            .mt_team_codex
-            .client_for(team_id, &state.db, &state.mt_master_key, false)
-            .await?;
         let params = serde_json::json!({ "threadId": t.id, "persistExtendedHistory": true });
         // 10s 超时:单 thread resume 卡死不拖累其他 thread。
-        let resume = lease.client().request("thread/resume", Some(params));
+        let resume = state.codex.request("thread/resume", Some(params));
         match tokio::time::timeout(std::time::Duration::from_secs(10), resume).await {
             Ok(Ok(_)) => {}
             Ok(Err(e)) => tracing::warn!(error = %e, thread_id = %t.id, "resume after promote failed (non-fatal)"),

@@ -23,6 +23,7 @@ use subtle::ConstantTimeEq;
 #[derive(Deserialize)]
 struct ThreadStartReq {
     #[serde(rename = "teamId")]
+    #[allow(dead_code)]
     team_id: String,
     #[serde(rename = "createdBy")]
     #[allow(dead_code)]
@@ -35,6 +36,7 @@ struct TurnStartReq {
     #[serde(rename = "threadId")]
     thread_id: String,
     #[serde(rename = "teamId")]
+    #[allow(dead_code)]
     team_id: String,
     params: Value,
 }
@@ -42,6 +44,7 @@ struct TurnStartReq {
 #[derive(Deserialize)]
 struct EvictReq {
     #[serde(rename = "teamId")]
+    #[allow(dead_code)]
     team_id: String,
 }
 
@@ -105,18 +108,14 @@ async fn thread_start(
     Json(req): Json<ThreadStartReq>,
 ) -> Result<Json<Value>, AppError> {
     metrics::counter!("internal_thread_start_total").increment(1);
-    let lease = state
-        .mt_team_codex
-        .client_for(&req.team_id, &state.db, &state.mt_master_key, false)
-        .await?;
     // 对齐 mt_create_thread 的本地参数:这两个参数确保 codex 持久化 rollout。
     let mut params = req.params;
     if let Value::Object(ref mut m) = params {
         m.entry("experimentalRawEvents".to_string()).or_insert(Value::Bool(false));
         m.entry("persistExtendedHistory".to_string()).or_insert(Value::Bool(true));
     }
-    let resp = lease
-        .client()
+    let resp = state
+        .codex
         .request("thread/start", Some(params))
         .await
         .map_err(|e| AppError::internal(format!("codex thread/start: {e}")))?;
@@ -141,16 +140,12 @@ async fn turn_start(
     Json(req): Json<TurnStartReq>,
 ) -> Result<Json<Value>, AppError> {
     metrics::counter!("internal_turn_start_total").increment(1);
-    let lease = state
-        .mt_team_codex
-        .client_for(&req.team_id, &state.db, &state.mt_master_key, false)
-        .await?;
     let mut params = req.params;
     if let Value::Object(ref mut m) = params {
         m.entry("threadId").or_insert(Value::String(req.thread_id.clone()));
     }
-    let resp = lease
-        .client()
+    let resp = state
+        .codex
         .request("turn/start", Some(params))
         .await
         .map_err(|e| AppError::internal(format!("codex turn/start: {e}")))?;
@@ -158,10 +153,11 @@ async fn turn_start(
 }
 
 async fn evict(
-    State(state): State<AppState>,
-    Json(req): Json<EvictReq>,
+    State(_state): State<AppState>,
+    Json(_req): Json<EvictReq>,
 ) -> Result<StatusCode, AppError> {
-    state.mt_team_codex.evict(&req.team_id).await;
+    // 单进程统一代理模式下 codex key 由全局 auth.json 管理,无需 per-team evict。
+    // 保留 handler + 路由以兼容旧副本的转发请求,Task 3 一并清理。
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -178,6 +174,7 @@ async fn replicate_receive(
 #[derive(Deserialize)]
 struct ApprovalRespondReq {
     #[serde(rename = "teamId")]
+    #[allow(dead_code)]
     team_id: String,
     #[serde(rename = "requestId")]
     request_id: String,
@@ -191,24 +188,22 @@ async fn approval_respond(
     Json(req): Json<ApprovalRespondReq>,
 ) -> Result<StatusCode, AppError> {
     metrics::counter!("internal_approval_respond_total").increment(1);
-    let lease = state
-        .mt_team_codex
-        .client_for(&req.team_id, &state.db, &state.mt_master_key, false)
-        .await?;
     let id_val = parse_req_id(&req.request_id);
-    let ok = if req.approved {
-        lease
-            .client()
-            .respond_to_server_request(
-                id_val,
-                req.result.unwrap_or(Value::Object(Default::default())),
-            )
-            .is_ok()
+    let ok = if let Some(client) = state.codex.client().await {
+        if req.approved {
+            client
+                .respond_to_server_request(
+                    id_val,
+                    req.result.unwrap_or(Value::Object(Default::default())),
+                )
+                .is_ok()
+        } else {
+            client
+                .respond_to_server_request_with_error(id_val, -32000, "denied by user")
+                .is_ok()
+        }
     } else {
-        lease
-            .client()
-            .respond_to_server_request_with_error(id_val, -32000, "denied by user")
-            .is_ok()
+        false
     };
     if ok {
         Ok(StatusCode::NO_CONTENT)
@@ -228,6 +223,7 @@ fn parse_req_id(s: &str) -> Value {
 #[derive(Deserialize)]
 struct InvokeReq {
     #[serde(rename = "teamId")]
+    #[allow(dead_code)]
     team_id: String,
     #[serde(rename = "threadId")]
     thread_id: String,
@@ -248,10 +244,6 @@ async fn thread_invoke(
     } else {
         None
     };
-    let lease = state
-        .mt_team_codex
-        .client_for(&req.team_id, &state.db, &state.mt_master_key, false)
-        .await?;
     let mut params = req.params.unwrap_or(Value::Object(Default::default()));
     if let Value::Object(ref mut m) = params {
         m.entry("threadId").or_insert(Value::String(req.thread_id.clone()));
@@ -259,8 +251,8 @@ async fn thread_invoke(
             m.entry("persistExtendedHistory".to_string()).or_insert(Value::Bool(true));
         }
     }
-    let resp = match lease
-        .client()
+    let resp = match state
+        .codex
         .request(&req.method, Some(params))
         .await
     {

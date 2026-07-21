@@ -390,9 +390,7 @@ pub async fn set_team_api_key(
     )
     .await?;
     audit::record(db, &team_id, &uid.0, "api_key_set", Some(&k.key_hint)).await;
-    // 轮换串联(M2):踢除该 team 持有旧 key 的 codex 进程;下次请求用新 key 重启
-    // (spawn 时重新解密 active key + 重写 auth.json)。
-    state.mt_team_codex.evict(&team_id).await;
+    // 单进程统一代理模式下 codex key 由全局 auth.json 管理,无需 per-team evict。
     Ok(Json(k.into()))
 }
 
@@ -555,19 +553,12 @@ pub async fn mt_create_thread(
     rest.insert("cwd".to_string(), Value::String(ws_cwd.to_string_lossy().to_string()));
 
     let target = resolve_worker(&state, &team_id, None, is_personal).await?;
-    // client_for 的 team_id 必须与 PG threads.team_id 一致(personal=纯 user_id;
-    // team=teamId),否则 create 与后续 turn/invoke 起不同 codex 进程 → thread not found。
-    let pool_team_id: String = if is_personal { uid.0.clone() } else { team_id.clone() };
     let resp = if target == state.node_id {
-        let lease = state
-            .mt_team_codex
-            .client_for(&pool_team_id, db, &state.mt_master_key, is_personal)
-            .await?;
         // 对齐 main 分支旧实现:这两个参数确保 codex 持久化 rollout + 不开启 raw events。
         rest.entry("experimentalRawEvents".to_string()).or_insert(Value::Bool(false));
         rest.entry("persistExtendedHistory".to_string()).or_insert(Value::Bool(true));
-        lease
-            .client()
+        state
+            .codex
             .request("thread/start", Some(Value::Object(rest)))
             .await
             .map_err(|e| AppError::internal(format!("codex thread/start: {e}")))?
@@ -758,14 +749,12 @@ pub async fn mt_delete_thread(
     // 2. 调 codex thread/delete(若 codex 支持);失败不阻塞,继续清 PG/文件。
     if let Ok(target) = resolve_worker(&state, &team_id, Some(&thread_id), is_personal).await {
         if target == state.node_id {
-            if let Ok(lease) = state.mt_team_codex.client_for(&team_id, db, &state.mt_master_key, is_personal).await {
-                if let Err(e) = lease
-                    .client()
-                    .request("thread/delete", Some(serde_json::json!({ "threadId": thread_id })))
-                    .await
-                {
-                    tracing::warn!(error = %e, thread_id = %thread_id, "codex thread/delete failed (non-fatal, cleanup PG+file anyway)");
-                }
+            if let Err(e) = state
+                .codex
+                .request("thread/delete", Some(serde_json::json!({ "threadId": thread_id })))
+                .await
+            {
+                tracing::warn!(error = %e, thread_id = %thread_id, "codex thread/delete failed (non-fatal, cleanup PG+file anyway)");
             }
         } else if let Ok(rpc_url) = worker_rpc_url(&state, &target).await {
             let _ = state
@@ -822,12 +811,8 @@ pub async fn mt_start_turn(
         map.entry("threadId").or_insert(Value::String(thread_id.clone()));
     }
     let resp = if target == state.node_id {
-        let lease = state
-            .mt_team_codex
-            .client_for(&team_id, db, &state.mt_master_key, workspace_type == "personal")
-            .await?;
-        lease
-            .client()
+        state
+            .codex
             .request("turn/start", Some(params))
             .await
             .map_err(|e| AppError::internal(format!("codex turn/start: {e}")))?
@@ -1004,23 +989,21 @@ pub async fn mt_resolve_approval(
     let target = resolve_worker(&state, &team_id, Some(&thread_id), workspace_type == "personal").await?;
     let id_val = parse_request_id(&body.request_id);
     let ok = if target == state.node_id {
-        let lease = state
-            .mt_team_codex
-            .client_for(&team_id, db, &state.mt_master_key, workspace_type == "personal")
-            .await?;
-        if body.approved {
-            lease
-                .client()
-                .respond_to_server_request(
-                    id_val,
-                    body.result.unwrap_or(Value::Object(Default::default())),
-                )
-                .is_ok()
+        if let Some(client) = state.codex.client().await {
+            if body.approved {
+                client
+                    .respond_to_server_request(
+                        id_val,
+                        body.result.unwrap_or(Value::Object(Default::default())),
+                    )
+                    .is_ok()
+            } else {
+                client
+                    .respond_to_server_request_with_error(id_val, -32000, "denied by user")
+                    .is_ok()
+            }
         } else {
-            lease
-                .client()
-                .respond_to_server_request_with_error(id_val, -32000, "denied by user")
-                .is_ok()
+            false
         }
     } else {
         let rpc_url = worker_rpc_url(&state, &target).await?;
@@ -1220,13 +1203,9 @@ pub async fn mt_invoke_thread(
     const RETRY_METHODS: &[&str] = &["thread/resume", "thread/read"];
     let needs_retry = RETRY_METHODS.contains(&body.method.as_str());
     let resp = if target == state.node_id {
-        let lease = state
-            .mt_team_codex
-            .client_for(&team_id, db, &state.mt_master_key, workspace_type == "personal")
-            .await?;
         let mut attempt = 0u32;
         let value = loop {
-            let r = lease.client().request(&body.method, Some(params.clone())).await;
+            let r = state.codex.request(&body.method, Some(params.clone())).await;
             match r {
                 Ok(v) => break v,
                 Err(crate::codex::jsonrpc::RpcError::ServerError { code: -32600, .. })
