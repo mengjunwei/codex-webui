@@ -569,23 +569,27 @@ pub async fn mt_create_thread(
             .await?
     };
 
-    // 登记 session_replicas(per-thread)+ sticky:确保新创建 thread 后续 turn 路由到同一 worker。
-    let _ = crate::services::multitenant::replication::get_or_assign(
-        &state.db,
-        &thread_id,
-        state.cluster.as_ref(),
-    )
-    .await?;
-    let _ = state.sticky.bind(&thread_id, &target, 3600).await;
-
-    // PG threads 元数据(用本地预生成 thread_id 作主键)。
+    // PG 共享操作(入口节点写即可,双写幂等):threads 元数据 + resume cache。
+    // 跨进程 + 重启都生效,避免前端 create→resume 链路上 race codex 落盘前调 thread/resume 返回 -32600。
     double_write_thread_meta(db, &thread_id, &pg_team_id, &uid.0, workspace_type).await;
-    // PG 缓存 thread/start 响应供后续 thread/resume 复用 —— 跨进程 + 重启都生效,
-    // 避免前端 create→resume 链路上 race codex 落盘前调 thread/resume 返回 -32600。
     let _ = crate::services::multitenant::resume_cache::put_cached_resume(db, &thread_id, &resp).await;
 
-    // 主侧:关联 rollout 文件 + 复制增量到副本。
+    // C1:仅本地分支登记 session_replicas/sticky/active_rollout/复制。
+    //     转发场景(target != self)由 target 侧 internal_rpc thread_start 自登记:
+    //     入口节点若在此调 get_or_assign 会用 local_node_id()=入口 把 primary_node 登记成入口,
+    //     但 codex 进程实际跑在 target → primary_node 错乱,破坏 failover + rollout 复制。
+    //     sticky.bind 也委托 target 侧(共享 Redis)。
     if target == state.node_id {
+        // get_or_assign 在本地分支调 → local_node_id()=本节点=target,primary 登记正确。
+        let _ = crate::services::multitenant::replication::get_or_assign(
+            &state.db,
+            &thread_id,
+            state.cluster.as_ref(),
+        )
+        .await?;
+        let _ = state.sticky.bind(&thread_id, &target, 3600).await;
+
+        // 主侧:关联 rollout 文件 + 复制增量到副本。
         if let Some(p) = crate::services::multitenant::replication::find_rollout_for_thread(
             &state.codex_home,
             &thread_id,

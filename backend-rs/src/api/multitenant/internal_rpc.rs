@@ -109,24 +109,72 @@ async fn thread_start(
         m.entry("experimentalRawEvents".to_string()).or_insert(Value::Bool(false));
         m.entry("persistExtendedHistory".to_string()).or_insert(Value::Bool(true));
     }
+    // C1:系统 thread_id(入口节点预生成,放 params.threadId)—— 用于 session_replicas /
+    // sticky / active_rollout 的 key(全系统统一用该 id)。
+    let sys_thread_id = params
+        .get("threadId")
+        .and_then(Value::as_str)
+        .map(String::from);
     let resp = state
         .codex
         .request("thread/start", Some(params))
         .await
         .map_err(|e| AppError::internal(format!("codex thread/start: {e}")))?;
-    // PG 缓存响应供任意 owner 后续 thread/resume 复用(集群:副本转发 RPC 到 owner)。
-    let thread_id = resp
-        .get("thread")
-        .and_then(|t| t.get("id"))
-        .and_then(Value::as_str)
-        .or_else(|| resp.get("threadId").and_then(Value::as_str))
-        .or_else(|| resp.get("id").and_then(Value::as_str));
-    if let Some(tid) = thread_id {
+
+    // C1:target 侧自登记。转发场景下 codex 进程跑在本节点,本节点 local_node_id()=target,
+    //    在此登记 primary_node=target 才正确(入口节点不再无条件登记,避免把 primary 登记成入口)。
+    //    codex thread 已成功启动,登记失败改 best-effort(不中断 RPC,否则入口侧重试生成新 id 留孤儿)。
+    if let Some(tid) = &sys_thread_id {
+        if let Err(e) = crate::services::multitenant::replication::get_or_assign(
+            &state.db,
+            tid,
+            state.cluster.as_ref(),
+        )
+        .await
+        {
+            tracing::error!(error = %e, thread_id = %tid, "target-side get_or_assign failed (best-effort)");
+        }
+        // sticky 共享 Redis,在 target 侧绑定 → 后续 turn 经入口路由时 sticky 命中回到本节点。
+        if let Err(e) = state.sticky.bind(tid, &state.node_id, 3600).await {
+            tracing::error!(error = %e, thread_id = %tid, "target-side sticky.bind failed (best-effort)");
+        }
+    } else {
+        tracing::warn!("internal thread_start missing params.threadId, skip target-side registration");
+    }
+
+    // PG 缓存响应供任意 owner 后续 thread/resume 复用 —— key 用系统 thread_id
+    // (全系统 resume 查询按系统 thread_id;codex 尊重 threadId 时 codex_tid==sys_thread_id)。
+    if let Some(tid) = &sys_thread_id {
         let _ = crate::services::multitenant::resume_cache::put_cached_resume(
             &state.db, tid, &resp,
         )
         .await;
     }
+
+    // C1:关联 rollout 文件 + 复制增量到副本(active_rollout key = 系统 thread_id)。
+    //    find_rollout 用系统 thread_id 查找(C2 会改为 codex 响应 tid 以兼容 codex 忽略 threadId 的场景)。
+    if let Some(tid) = &sys_thread_id {
+        if let Some(p) = crate::services::multitenant::replication::find_rollout_for_thread(
+            &state.codex_home,
+            tid,
+        )
+        .await
+        {
+            state.active_rollout.lock().await.insert(tid.clone(), p);
+        }
+        let _ = crate::services::multitenant::replication::replicate_thread_rollout(
+            &state.db,
+            tid,
+            &state.codex_home,
+            state.cluster.as_ref(),
+            state.mt_redis.as_ref(),
+            &state.worker_rpc,
+            &state.active_rollout,
+            &state.local_offsets,
+        )
+        .await;
+    }
+
     Ok(Json(resp))
 }
 
