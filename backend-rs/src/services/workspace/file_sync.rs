@@ -134,6 +134,13 @@ async fn set_filesync_offset(redis: Option<&redis::Client>, thread_id: &str, v: 
         .insert(thread_id.to_string(), v);
 }
 
+/// 清除该 thread 的进程内 filesync offset(thread 删除时调用,防 entry 残留)。
+/// 仅清进程内 map;Redis 侧 `filesync:offset:{thread_id}` 无 TTL 但 thread 已删,
+/// key 成为孤儿(UUID 极难复用,容忍)。对齐 rollout local_offsets 的清理粒度。
+pub async fn clear_thread_offsets(thread_id: &str) {
+    LOCAL_FILESYNC_OFFSETS.lock().await.remove(thread_id);
+}
+
 /// 主侧:扫描该 thread workspace 增量,经 RPC 推到副本。仅在 primary 节点调用。
 ///
 /// 流程:读 offset → scan_changes → 查副本节点 → 解析 RPC 地址 →

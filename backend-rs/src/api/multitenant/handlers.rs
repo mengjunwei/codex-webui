@@ -768,8 +768,20 @@ pub async fn mt_delete_thread(
         }
     }
 
-    // 3. 删 rollout 文件(codex home sessions/.../{thread_id}*.jsonl)。
-    if let Some(p) = crate::services::multitenant::replication::find_rollout_for_thread(&state.codex_home, &thread_id).await {
+    // 3. 删 rollout 文件(codex home sessions/.../{tid}*.jsonl)。
+    // C2 同类遗漏:codex 忽略外部 threadId 时 rollout 以 codex_tid 命名,
+    // 直接用系统 thread_id 找不到 → 磁盘孤儿。先从 resume_cache 取 codex 响应提 tid
+    // (须在下面第 4 步删 cache 之前取),提取失败回退系统 thread_id(对齐 C2 unwrap_or 模式)。
+    let codex_tid = crate::services::multitenant::resume_cache::get_cached_resume(db, &thread_id)
+        .await
+        .as_ref()
+        .and_then(extract_codex_tid);
+    if let Some(p) = crate::services::multitenant::replication::find_rollout_for_thread(
+        &state.codex_home,
+        codex_tid.as_deref().unwrap_or(&thread_id),
+    )
+    .await
+    {
         if let Err(e) = tokio::fs::remove_file(&p).await {
             tracing::warn!(error = %e, path = %p.display(), "remove rollout file failed (non-fatal)");
         }
@@ -789,9 +801,10 @@ pub async fn mt_delete_thread(
     let _ = pending_server_request::Entity::delete_many()
         .filter(pending_server_request::Column::ThreadId.eq(thread_id.clone())).exec(db).await;
 
-    // 5. 清 sticky 绑定 + 本地 active_rollout 记录。
+    // 5. 清 sticky 绑定 + 本地 active_rollout 记录 + filesync 进程内 offset。
     let _ = state.sticky.clear(&thread_id).await;
     state.active_rollout.lock().await.remove(&thread_id);
+    crate::services::workspace::file_sync::clear_thread_offsets(&thread_id).await;
 
     tracing::info!(thread_id = %thread_id, team_id = %team_id, "thread deleted");
     Ok(StatusCode::NO_CONTENT)
