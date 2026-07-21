@@ -11,6 +11,13 @@ use crate::state::AppState;
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 
+/// 进程内 filesync offset fallback(无 Redis / Redis miss 时用)。
+/// key = thread_id,value = 已同步最大 mtime(ms)。对齐 rollout local_offsets 的双存储语义:
+/// 重启归零(接受全量重扫);避免无 Redis 时 offset 恒 0 → 每 15s 全量重扫重传(I4)。
+static LOCAL_FILESYNC_OFFSETS: once_cell::sync::Lazy<
+    tokio::sync::Mutex<std::collections::HashMap<String, i64>>,
+> = once_cell::sync::Lazy::new(|| tokio::sync::Mutex::new(std::collections::HashMap::new()));
+
 /// 文件变更类型。
 #[derive(Serialize, Deserialize, Clone, Copy, PartialEq, Eq)]
 pub enum ChangeType {
@@ -83,7 +90,8 @@ pub async fn scan_changes(dir: &Path, since_ms: i64) -> Result<Vec<FileChange>, 
 }
 
 /// 读取该 thread 的文件同步 offset(已同步的最大 mtime,ms)。
-/// Redis key `filesync:offset:{thread_id}`;失败/无 Redis 返回 0(下次全量扫)。
+/// I4:对齐 rollout local_offsets 双存储 —— Redis 优先,miss/无 Redis 回退进程内 map,
+///     否则无 Redis 时 offset 恒 0 → 每 15s 全量重扫重传。
 async fn get_filesync_offset(redis: Option<&redis::Client>, thread_id: &str) -> i64 {
     if let Some(c) = redis {
         if let Ok(mut conn) = c.get_multiplexed_async_connection().await {
@@ -98,10 +106,17 @@ async fn get_filesync_offset(redis: Option<&redis::Client>, thread_id: &str) -> 
             }
         }
     }
-    0
+    // Redis 未配置 / 连接失败 / miss → 进程内 fallback。
+    LOCAL_FILESYNC_OFFSETS
+        .lock()
+        .await
+        .get(thread_id)
+        .copied()
+        .unwrap_or(0)
 }
 
-/// 推进 offset(发送成功后才调用)。Redis 失败静默忽略(下次重发幂等)。
+/// 推进 offset(发送成功后才调用)。I4:双写 Redis + 进程内(对齐 rollout)。
+/// Redis 失败静默忽略(进程内仍写入,下次重发幂等)。
 async fn set_filesync_offset(redis: Option<&redis::Client>, thread_id: &str, v: i64) {
     if let Some(c) = redis {
         if let Ok(mut conn) = c.get_multiplexed_async_connection().await {
@@ -113,6 +128,10 @@ async fn set_filesync_offset(redis: Option<&redis::Client>, thread_id: &str, v: 
                 .unwrap_or(());
         }
     }
+    LOCAL_FILESYNC_OFFSETS
+        .lock()
+        .await
+        .insert(thread_id.to_string(), v);
 }
 
 /// 主侧:扫描该 thread workspace 增量,经 RPC 推到副本。仅在 primary 节点调用。
@@ -210,5 +229,17 @@ mod tests {
             .duration_since(UNIX_EPOCH)
             .unwrap()
             .as_millis() as i64
+    }
+
+    // I4:filesync offset 进程内 fallback(无 Redis 时双存储)。
+    #[tokio::test]
+    async fn filesync_offset_local_fallback_roundtrip() {
+        let tid = format!("t-{}", uuid::Uuid::new_v4());
+        // 无 Redis:初始为 0。
+        assert_eq!(get_filesync_offset(None, &tid).await, 0);
+        // set 双写进程内(无 Redis 仅写进程内)。
+        set_filesync_offset(None, &tid, 12345).await;
+        // get 回读进程内值。
+        assert_eq!(get_filesync_offset(None, &tid).await, 12345);
     }
 }
