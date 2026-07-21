@@ -548,11 +548,13 @@ pub async fn mt_create_thread(
     let _ = crate::services::workspace::ensure_thread_workspace(&state, &thread_id).await;
     let ws_cwd = crate::services::workspace::thread_workspace_path(&state.workspace_root, &thread_id);
     rest.insert("cwd".to_string(), Value::String(ws_cwd.to_string_lossy().to_string()));
-    rest.insert("threadId".to_string(), Value::String(thread_id.clone()));
+    // 不传 threadId 给 codex thread/start:codex 0.142.5 收到外部 threadId 会导致会话创建异常
+    // (rollout 不写、内存无会话 → resume -32600 → turn 无回复)。codex 自生成 codex_tid,
+    // 系统经 codex_tid 映射(get_codex_tid)给后续 turn/invoke/resume。cwd 仍用预生成 thread_id。
 
     // 两阶段:先选节点(最少负载),再 thread/start。
     let target = resolve_worker(&state, None).await?;
-    let resp = if target == state.node_id {
+    let mut resp = if target == state.node_id {
         // 对齐 main 分支旧实现:这两个参数确保 codex 持久化 rollout + 不开启 raw events。
         rest.entry("experimentalRawEvents").or_insert(Value::Bool(false));
         rest.entry("persistExtendedHistory").or_insert(Value::Bool(true));
@@ -637,6 +639,19 @@ pub async fn mt_create_thread(
     }
 
     // 包装 codex 响应为一致格式:前端期望 {thread, id, cwd} 而非扁平 codex 响应。
+    // 统一 id(须在 cwd 不可变借用前完成可变改写): codex 忽略外部 threadId 自生成 codex_tid,
+    // 但系统(threads 表/列表/URL)用预生成 thread_id。resp 是 codex 响应,结构 {thread:{id,sessionId,...}};
+    // 前端 thread-sidebar 取 res.thread.thread.id(= resp.thread.id = codex_tid)作会话 id 导航,
+    // 覆盖为系统 thread_id 保持全链路一致(后端内部 codex 调用仍经 codex_tid 映射 get_codex_tid,
+    // rollout 查找用上方 extract 的真实 codex_tid)。
+    if let Some(t) = resp.get_mut("thread") {
+        if t.get("id").is_some() {
+            t["id"] = Value::String(thread_id.clone());
+        }
+        if t.get("sessionId").is_some() {
+            t["sessionId"] = Value::String(thread_id.clone());
+        }
+    }
     let cwd = resp
         .get("cwd")
         .and_then(Value::as_str)
@@ -856,9 +871,10 @@ pub async fn mt_start_turn(
     .await
     .unwrap_or_else(|| thread_id.clone());
     if let Value::Object(ref mut map) = params {
-        map.entry("threadId").or_insert(Value::String(codex_tid));
+        // 强制覆盖:前端 body 可能已带 threadId(系统预生成),codex 忽略外部 threadId 须传 codex_tid
+        map.insert("threadId".to_string(), Value::String(codex_tid));
     }
-    let resp = if target == state.node_id {
+    let mut resp = if target == state.node_id {
         state
             .codex
             .request("turn/start", Some(params))
@@ -902,6 +918,7 @@ pub async fn mt_start_turn(
         )
         .await;
     }
+    normalize_thread_id_for_client(&mut resp, &thread_id);
     Ok(Json(resp))
 }
 
@@ -1142,6 +1159,21 @@ fn extract_codex_tid(resp: &Value) -> Option<String> {
         .or_else(|| resp.get("id").and_then(Value::as_str).map(String::from))
 }
 
+/// 把 codex 响应里的 thread.id/sessionId 统一为系统 thread_id。
+/// codex 忽略外部 threadId 自生成 codex_tid,但系统(threads 表/列表/URL)用预生成 thread_id;
+/// 前端从 res.thread.id 取会话标识,覆盖保持全链路一致(后端内部 codex 调用仍经 codex_tid 映射,
+/// rollout 查找用 extract_codex_tid 提取的真实 codex_tid)。幂等,可重复调用。
+fn normalize_thread_id_for_client(resp: &mut Value, thread_id: &str) {
+    if let Some(t) = resp.get_mut("thread") {
+        if t.get("id").is_some() {
+            t["id"] = Value::String(thread_id.to_string());
+        }
+        if t.get("sessionId").is_some() {
+            t["sessionId"] = Value::String(thread_id.to_string());
+        }
+    }
+}
+
 /// 标记审批已处理(尽力,非阻塞)。
 async fn mark_approval_resolved(
     db: &DatabaseConnection,
@@ -1306,7 +1338,8 @@ pub async fn mt_invoke_thread(
     .await
     .unwrap_or_else(|| thread_id.clone());
     if let Value::Object(ref mut m) = params {
-        m.entry("threadId").or_insert(Value::String(codex_tid));
+        // 强制覆盖:前端 body 可能已带 threadId(系统预生成),codex 忽略外部 threadId 须传 codex_tid
+        m.insert("threadId".to_string(), Value::String(codex_tid));
         // 对齐 main 旧实现:resume 也持久化 rollout,前端后续 thread/read 才能命中。
         if body.method == "thread/resume" {
             m.entry("persistExtendedHistory".to_string()).or_insert(Value::Bool(true));
@@ -1314,9 +1347,9 @@ pub async fn mt_invoke_thread(
     }
     const RETRY_METHODS: &[&str] = &["thread/resume", "thread/read"];
     let needs_retry = RETRY_METHODS.contains(&body.method.as_str());
-    let resp = if target == state.node_id {
+    let mut resp = if target == state.node_id {
         let mut attempt = 0u32;
-        let value = loop {
+        let mut value = loop {
             let r = state.codex.request(&body.method, Some(params.clone())).await;
             match r {
                 Ok(v) => break v,
@@ -1346,6 +1379,8 @@ pub async fn mt_invoke_thread(
         if attempt > 0 {
             tracing::info!(method = %body.method, thread_id = %thread_id, attempt, "codex recovered after retry");
         }
+        // 统一 thread.id 为系统 thread_id(cache fallback 也存 normalized,前端 res.thread.id 一致)
+        normalize_thread_id_for_client(&mut value, &thread_id);
         // resume 成功写 PG 缓存(下次 codex -32600 race 时作兜底)
         if body.method == "thread/resume" {
             let _ = crate::services::multitenant::resume_cache::put_cached_resume(
@@ -1361,5 +1396,6 @@ pub async fn mt_invoke_thread(
             .thread_invoke(&rpc_url, &team_id, &thread_id, &body.method, params)
             .await?
     };
+    normalize_thread_id_for_client(&mut resp, &thread_id);
     Ok(Json(resp))
 }

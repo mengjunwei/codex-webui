@@ -216,11 +216,31 @@ async fn main() -> anyhow::Result<()> {
         // notification 流(token 用量/turn diff/turn error/agent 事件)。
         let codex_for_notif = codex.clone();
         let bus_for_notif = bus.clone();
+        let redis_for_notif = mt_redis.clone();
         tokio::spawn(async move {
             let mut rx = codex_for_notif.subscribe_notifications();
             loop {
                 match rx.recv().await {
-                    Ok(msg) => {
+                    Ok(mut msg) => {
+                        // 反向映射 threadId:codex 通知用 codex_tid,emit room(thread:{tid})/
+                        // event_persist(DB 按 thread_id)需系统 thread_id。codex 尊重 threadId 时
+                        // codex_tid==thread_id,映射 miss fallback 原 threadId(幂等无害)。
+                        if let Some(ctid) = msg
+                            .get("params")
+                            .and_then(|p| p.get("threadId"))
+                            .and_then(serde_json::Value::as_str)
+                            .map(String::from)
+                        {
+                            if let Some(sys_tid) = replication::get_thread_id_by_codex(
+                                redis_for_notif.as_ref(), &ctid,
+                            )
+                            .await
+                            {
+                                if let Some(p) = msg.get_mut("params").and_then(|p| p.as_object_mut()) {
+                                    p.insert("threadId".to_string(), serde_json::Value::String(sys_tid));
+                                }
+                            }
+                        }
                         if let Ok(payload) = serde_json::to_string(&msg) {
                             let _ = bus_for_notif.publish("codex:events", &payload).await;
                         }
@@ -235,11 +255,29 @@ async fn main() -> anyhow::Result<()> {
         });
         // server_request 流(审批请求)。
         let codex_for_sr = codex.clone();
+        let redis_for_sr = mt_redis.clone();
         tokio::spawn(async move {
             let mut rx = codex_for_sr.subscribe_server_requests();
             loop {
                 match rx.recv().await {
-                    Ok(msg) => {
+                    Ok(mut msg) => {
+                        // 反向映射 threadId(同 notification):审批按系统 thread_id 落 PG + emit。
+                        if let Some(ctid) = msg
+                            .get("params")
+                            .and_then(|p| p.get("threadId"))
+                            .and_then(serde_json::Value::as_str)
+                            .map(String::from)
+                        {
+                            if let Some(sys_tid) = replication::get_thread_id_by_codex(
+                                redis_for_sr.as_ref(), &ctid,
+                            )
+                            .await
+                            {
+                                if let Some(p) = msg.get_mut("params").and_then(|p| p.as_object_mut()) {
+                                    p.insert("threadId".to_string(), serde_json::Value::String(sys_tid));
+                                }
+                            }
+                        }
                         if let Ok(payload) = serde_json::to_string(&msg) {
                             let _ = bus.publish("codex:events", &payload).await;
                         }

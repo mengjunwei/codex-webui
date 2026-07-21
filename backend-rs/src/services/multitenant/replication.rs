@@ -58,8 +58,12 @@ async fn reap_receive_lock(key: &str) {
 /// 对齐 file_sync.rs LOCAL_FILESYNC_OFFSETS 的双存储语义:重启进程内丢失 → Redis 兜底。
 static CODEX_TID_MAP: once_cell::sync::Lazy<tokio::sync::Mutex<HashMap<String, String>>> =
     once_cell::sync::Lazy::new(|| tokio::sync::Mutex::new(HashMap::new()));
+/// 反向映射 codex_tid → 系统 thread_id:codex notification 的 threadId 是 codex_tid,
+/// emit room(thread:{tid})/event_persist(DB 按 thread_id)需还原为系统 thread_id。
+static CODEX_TID_REV_MAP: once_cell::sync::Lazy<tokio::sync::Mutex<HashMap<String, String>>> =
+    once_cell::sync::Lazy::new(|| tokio::sync::Mutex::new(HashMap::new()));
 
-/// 存储 codex_tid 映射(thread/start 成功后调)。双写 Redis + 进程内。
+/// 存储 codex_tid 映射(thread/start 成功后调)。双写 Redis + 进程内(正向 + 反向)。
 /// codex_tid 为空则跳过(防御:codex 尊重 threadId 时 codex_tid==thread_id,存了幂等无害)。
 pub async fn set_codex_tid(redis: Option<&redis::Client>, thread_id: &str, codex_tid: &str) {
     if codex_tid.is_empty() {
@@ -73,12 +77,23 @@ pub async fn set_codex_tid(redis: Option<&redis::Client>, thread_id: &str, codex
                 .query_async(&mut conn)
                 .await
                 .unwrap_or(());
+            // 反向:codex 通知 threadId(codex_tid)→ 系统 thread_id。
+            let _: () = redis::cmd("SET")
+                .arg(format!("codex:tid_rev:{codex_tid}"))
+                .arg(thread_id)
+                .query_async(&mut conn)
+                .await
+                .unwrap_or(());
         }
     }
     CODEX_TID_MAP
         .lock()
         .await
         .insert(thread_id.to_string(), codex_tid.to_string());
+    CODEX_TID_REV_MAP
+        .lock()
+        .await
+        .insert(codex_tid.to_string(), thread_id.to_string());
 }
 
 /// 读取 codex_tid 映射:进程内优先 → Redis(命中回填进程内加速后续命中)→ None。
@@ -101,6 +116,31 @@ pub async fn get_codex_tid(redis: Option<&redis::Client>, thread_id: &str) -> Op
                     .lock()
                     .await
                     .insert(thread_id.to_string(), s.clone());
+                return Some(s);
+            }
+        }
+    }
+    None
+}
+
+/// 反向查询 codex_tid → 系统 thread_id(codex notification 的 threadId 还原用)。
+pub async fn get_thread_id_by_codex(redis: Option<&redis::Client>, codex_tid: &str) -> Option<String> {
+    if let Some(v) = CODEX_TID_REV_MAP.lock().await.get(codex_tid).cloned() {
+        return Some(v);
+    }
+    if let Some(c) = redis {
+        if let Ok(mut conn) = c.get_multiplexed_async_connection().await {
+            let v: Option<String> = redis::cmd("GET")
+                .arg(format!("codex:tid_rev:{codex_tid}"))
+                .query_async(&mut conn)
+                .await
+                .ok()
+                .flatten();
+            if let Some(s) = v {
+                CODEX_TID_REV_MAP
+                    .lock()
+                    .await
+                    .insert(codex_tid.to_string(), s.clone());
                 return Some(s);
             }
         }
