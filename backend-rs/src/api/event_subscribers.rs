@@ -11,6 +11,11 @@
 //! 每个订阅者都是一个独立的 tokio 任务。在启动时调用一次 `spawn_all` 即可。
 //!
 //! 数据库访问统一走 SeaORM 1.1(`sea_orm::DatabaseConnection`,PG/MySQL 多方言)。
+//!
+//! 注:token_usage/turn_diff/turn_errors 订阅者已禁用(由 event_persist 经 EventBus 统一负责,
+//! 避免双写竞争覆盖 team_id);函数保留供回滚,后续 event 架构梳理时彻底删除。
+
+#![allow(dead_code)]
 
 use crate::codex::{CodexProcessManager, LifecycleEvent};
 use crate::db::entity::{
@@ -40,9 +45,14 @@ pub fn spawn_all(db: DatabaseConnection, codex: Arc<CodexProcessManager>) {
             tracing::warn!("startup expire-all-pending failed: {e}");
         }
     });
-    spawn_token_usage(db.clone(), codex.clone());
-    spawn_turn_diff(db.clone(), codex.clone());
-    spawn_turn_errors(db.clone(), codex.clone());
+    // token_usage/turn_diff/turn_errors 由 event_persist(team 维度 + quota + primary 守门,
+    // 经 EventBus "codex:events")唯一负责。这 3 个单租户遗留订阅者(team_id=None)与
+    // event_persist 双写同主键(token_usage_snapshots/turn_diffs/turn_errors),竞争覆盖导致
+    // team_id 不稳定(后写者赢,实测 token_usage team_id 被 null 覆盖),按 team 聚合查询失效。
+    // 故禁用;函数保留(#[allow(dead_code)])供回滚参考,后续 event 架构梳理时彻底删除。
+    // spawn_token_usage(db.clone(), codex.clone());
+    // spawn_turn_diff(db.clone(), codex.clone());
+    // spawn_turn_errors(db.clone(), codex.clone());
     // M1 修复：pending_record 已移至 realtime.rs，与 WS emit 合并处理
     // （原来是分开的订阅者 → 存在 TOCTOU：emit 可能在 DB 记录之前到达）。
     spawn_pending_resolved(db.clone(), codex.clone());

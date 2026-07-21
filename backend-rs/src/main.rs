@@ -211,6 +211,50 @@ async fn main() -> anyhow::Result<()> {
             node_id.clone(),
         );
     }
+    // codex 单进程事件 → EventBus("codex:events"):供 event_persist 落 PG(team 维度 + quota +
+    // 审批双保险)+ realtime 跨节点 fan-out。等价原 codex_pool 的
+    // subscribe_notifications/server_requests → bus.publish 转发(单进程化后改为转发唯一全局 codex)。
+    if let Some(bus) = mt_event_bus.clone() {
+        // notification 流(token 用量/turn diff/turn error/agent 事件)。
+        let codex_for_notif = codex.clone();
+        let bus_for_notif = bus.clone();
+        tokio::spawn(async move {
+            let mut rx = codex_for_notif.subscribe_notifications();
+            loop {
+                match rx.recv().await {
+                    Ok(msg) => {
+                        if let Ok(payload) = serde_json::to_string(&msg) {
+                            let _ = bus_for_notif.publish("codex:events", &payload).await;
+                        }
+                    }
+                    Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
+                        tracing::warn!(lagged = n, "codex→bus notification forward lagged");
+                        continue;
+                    }
+                    Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+                }
+            }
+        });
+        // server_request 流(审批请求)。
+        let codex_for_sr = codex.clone();
+        tokio::spawn(async move {
+            let mut rx = codex_for_sr.subscribe_server_requests();
+            loop {
+                match rx.recv().await {
+                    Ok(msg) => {
+                        if let Ok(payload) = serde_json::to_string(&msg) {
+                            let _ = bus.publish("codex:events", &payload).await;
+                        }
+                    }
+                    Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
+                        tracing::warn!(lagged = n, "codex→bus server_request forward lagged");
+                        continue;
+                    }
+                    Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+                }
+            }
+        });
+    }
 
     let status_service = codex_webui::services::codex_status::CodexStatusService::new(codex.clone());
 
