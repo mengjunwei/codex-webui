@@ -875,12 +875,11 @@ pub async fn list_audit(
 
 // ── 多副本路由辅助 ──────────────────────────────────────────────────────
 
-/// 选目标节点(per-thread 调度):sticky 命中且 alive 优先;否则按最少负载选 alive 节点。
-/// 本节点负载并列最少时优先本节点(避免无谓 RPC 转发)。
+/// 选目标节点(per-thread 调度):
+/// 1. sticky 命中且 alive → 直接返回;
+/// 2. I1:sticky 未命中但 thread 已登记 → 回落 session_replicas.primary_node(alive 则返回并重绑 sticky);
+/// 3. 否则按最少负载选 alive 节点(本节点并列最少时优先,避免无谓 RPC 转发)。
 async fn resolve_worker(state: &AppState, thread_id: Option<&str>) -> Result<String, AppError> {
-    use crate::db::entities::session_replica::Entity as SREntity;
-    use sea_orm::EntityTrait;
-
     // 1. sticky 命中且 alive → 直接返回。
     if let Some(tid) = thread_id {
         if let Ok(Some(stuck)) = state.sticky.lookup(tid).await {
@@ -891,7 +890,23 @@ async fn resolve_worker(state: &AppState, thread_id: Option<&str>) -> Result<Str
         }
     }
 
-    // 2. 统计各 alive 节点的 primary thread 数(负载指标)。
+    // 2. I1:sticky 未命中 → 回落 session_replicas.primary_node(会话本地性)。
+    //    前提:C1 已修(primary_node 登记正确);primary 仍 alive 则回落并重绑 sticky。
+    if let Some(tid) = thread_id {
+        if let Ok(Some(row)) = crate::services::multitenant::replication::get(&state.db, tid).await {
+            if crate::services::multitenant::cluster::is_alive(state.cluster.as_ref(), &row.primary_node).await {
+                let _ = state.sticky.bind(tid, &row.primary_node, 3600).await;
+                return Ok(row.primary_node);
+            }
+        }
+    }
+
+    // 3. 统计各 alive 节点的 primary thread 数(负载指标)。
+    //    I6:改 SeaORM 聚合查询(group_by primary_node + count),避免每请求全表扫
+    //    session_replicas(设计预期百万级 thread)。仅统计 alive 节点行。
+    use crate::db::entities::session_replica::{Column as SRColumn, Entity as SREntity};
+    use sea_orm::sea_query::Expr;
+    use sea_orm::{EntityTrait, QuerySelect};
     let alive = state.cluster.alive_nodes().await;
     if alive.is_empty() {
         return Ok(state.cluster.local_node_id().to_string());
@@ -900,17 +915,22 @@ async fn resolve_worker(state: &AppState, thread_id: Option<&str>) -> Result<Str
     for n in &alive {
         load.insert(n.clone(), 0);
     }
-    let rows = SREntity::find()
+    let rows: Vec<(String, i64)> = SREntity::find()
+        .select_only()
+        .column(SRColumn::PrimaryNode)
+        .column_as(Expr::col(SRColumn::PrimaryNode).count(), "cnt")
+        .group_by(SRColumn::PrimaryNode)
+        .into_tuple::<(String, i64)>()
         .all(&state.db)
         .await
         .map_err(|e| AppError::internal(format!("load scan: {e}")))?;
-    for r in &rows {
-        if let Some(c) = load.get_mut(&r.primary_node) {
-            *c += 1;
+    for (node, cnt) in &rows {
+        if let Some(c) = load.get_mut(node) {
+            *c = *cnt;
         }
     }
 
-    // 3. 选最少负载;并列时优先本节点(避免无谓 RPC 转发)。
+    // 4. 选最少负载;并列时优先本节点(避免无谓 RPC 转发)。
     let me = state.cluster.local_node_id();
     let mut iter = alive.iter();
     let first = iter.next().expect("alive 非空(上面已 early-return)");
