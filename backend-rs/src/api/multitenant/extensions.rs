@@ -216,6 +216,12 @@ pub async fn delete_extension(
 
     store::delete_extension(&state.db, &id).await?;
 
+    // 从本地状态文件移除该扩展条目(upload 时写入了 id→hash),
+    // 否则 Task 8 同步循环对齐时 local_state 会残留已删扩展。幂等:id 不在 map 也安全。
+    let mut st = apply::load_local_state(&state.codex_home).await;
+    st.remove(&id);
+    let _ = apply::save_local_state(&state.codex_home, &st).await;
+
     if let Some(bus) = &state.mt_event_bus {
         let _ = bus
             .publish("extensions:changed", &format!("{{\"id\":\"{id}\"}}"))

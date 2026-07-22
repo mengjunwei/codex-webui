@@ -302,10 +302,16 @@ pub async fn build_router(state: AppState) -> Router {
         // ── 集群扩展分发(Task 6):skill 上传/列表/删除(单一安装入口)──
         // 鉴权收紧(spec §8):skill 是集群级共享资源,POST(上传)/DELETE(删除)收紧为平台管理员专属;
         // GET(列表)保持登录可读。写法与 settings/files 一致(admin_layer 只套在写方法上)。
+        // body limit:mt_protected 未整体挂 DefaultBodyLimit,axum 默认 2MB 会让 handler 内
+        // MAX_TOTAL_BYTES=50MB 永不触达、>2MB skill 上传在进 handler 前就被 400 拒绝;
+        // 故给 POST(上传)单独叠加 50MB 上限(与 upload_extension 的 MAX_TOTAL_BYTES 一致),GET 不受影响。
         .route(
             "/extensions",
-            get(mt_ext::list_extensions)
-                .merge(post(mt_ext::upload_extension).layer(admin_layer.clone())),
+            get(mt_ext::list_extensions).merge(
+                post(mt_ext::upload_extension)
+                    .layer(axum::extract::DefaultBodyLimit::max(50 * 1024 * 1024))
+                    .layer(admin_layer.clone()),
+            ),
         )
         .route(
             "/extensions/{id}",
