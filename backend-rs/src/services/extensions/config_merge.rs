@@ -100,6 +100,63 @@ pub async fn remove_section(cfg_path: &Path, section: &str) -> Result<(), AppErr
     Ok(())
 }
 
+/// 把 content_toml(段内容,无 [parent.leaf] 头) 合并进 config.toml 的 [parent.leaf] 段。
+/// 实现:包头 parse 成 doc,取其 [parent.leaf] table,逐 key clone 到目标 doc 的 [parent.leaf]。
+/// 支持嵌套值(env = { ... } 等),因 toml_edit::Item clone 递归。
+pub async fn merge_full_section(
+    cfg_path: &Path,
+    parent: &str,
+    leaf: &str,
+    content_toml: &str,
+) -> Result<(), AppError> {
+    // 包头 parse:[parent.leaf] + content_toml → DocumentMut,再取其 [parent][leaf] table。
+    let wrapped = format!("[{parent}.{leaf}]\n{content_toml}\n");
+    let src = wrapped
+        .parse::<DocumentMut>()
+        .map_err(|e| AppError::internal(format!("parse mcp content: {e}")))?;
+    let src_table = src
+        .get(parent)
+        .and_then(|i| i.as_table())
+        .and_then(|t| t.get(leaf))
+        .and_then(|i| i.as_table())
+        .ok_or_else(|| AppError::internal("merge_full_section: 解析后取不到段 table".into()))?;
+
+    // 读现有 config(不存在视作空),解析成 doc。
+    let existing = tokio::fs::read_to_string(cfg_path)
+        .await
+        .unwrap_or_default();
+    let mut doc = existing
+        .parse::<DocumentMut>()
+        .map_err(|e| AppError::internal(format!("parse config: {e}")))?;
+    // 确保 [parent] 存在且是表。
+    let p = doc
+        .entry(parent)
+        .or_insert_with(|| Item::Table(toml_edit::Table::new()));
+    let ptbl = p
+        .as_table_mut()
+        .ok_or_else(|| AppError::internal(format!("config [{parent}] 不是表")))?;
+    // 确保 [parent.leaf] 存在且是表。
+    let leaf_item = ptbl
+        .entry(leaf)
+        .or_insert_with(|| Item::Table(toml_edit::Table::new()));
+    let ltbl = leaf_item
+        .as_table_mut()
+        .ok_or_else(|| AppError::internal(format!("config [{parent}.{leaf}] 不是表")))?;
+    // 逐 key clone 进目标段(支持嵌套,因 Item clone 递归);同 key 后写覆盖前写。
+    for (k, v) in src_table.iter() {
+        ltbl.insert(k, v.clone());
+    }
+    let merged = doc.to_string();
+    // 内容未变跳过写盘。
+    if merged == existing {
+        return Ok(());
+    }
+    tokio::fs::write(cfg_path, merged)
+        .await
+        .map_err(|e| AppError::internal(format!("write config: {e}")))?;
+    Ok(())
+}
+
 /// `plugins."foo@bar"` -> ("plugins", "foo@bar");`mcp_servers.xxx` -> ("mcp_servers", "xxx")。
 /// leaf 用 `trim_matches('"')` 去掉 quoted 形式的引号(toml_edit 写回时会按需自动再加引号)。
 fn split_section(section: &str) -> (String, String) {
@@ -160,5 +217,41 @@ mod tests {
         let s = tokio::fs::read_to_string(&p).await.unwrap();
         assert!(!s.contains("plugins.\"a@m\""));
         assert!(s.contains("[model_providers.x]"));
+    }
+}
+
+#[cfg(test)]
+mod merge_full_tests {
+    use super::*;
+    #[tokio::test]
+    async fn merges_multifield_section_preserving_others() {
+        let tmp = tempfile::tempdir().unwrap();
+        let p = tmp.path().join("config.toml");
+        tokio::fs::write(&p, "[model_providers.custom]\nname = \"x\"\n")
+            .await
+            .unwrap();
+        let content = "command = \"node\"\nargs = [\"s.js\"]\n";
+        merge_full_section(&p, "mcp_servers", "myserver", content)
+            .await
+            .unwrap();
+        let s = tokio::fs::read_to_string(&p).await.unwrap();
+        assert!(s.contains("[mcp_servers.myserver]") || s.contains("[mcp_servers.\"myserver\"]"));
+        assert!(s.contains("command"));
+        assert!(s.contains("s.js"));
+        assert!(s.contains("[model_providers.custom]")); // 原段保留
+    }
+    #[tokio::test]
+    async fn merge_is_idempotent_and_updates() {
+        let tmp = tempfile::tempdir().unwrap();
+        let p = tmp.path().join("config.toml");
+        merge_full_section(&p, "mcp_servers", "s", "command = \"a\"\n")
+            .await
+            .unwrap();
+        // 再合并不同内容,应更新
+        merge_full_section(&p, "mcp_servers", "s", "command = \"b\"\n")
+            .await
+            .unwrap();
+        let s = tokio::fs::read_to_string(&p).await.unwrap();
+        assert!(s.contains("b"));
     }
 }
