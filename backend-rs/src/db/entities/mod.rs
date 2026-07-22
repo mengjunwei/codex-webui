@@ -338,6 +338,9 @@ pub mod cluster_extension {
         pub updated_at: i64,
         #[sea_orm(column_type = "String(StringLen::N(36))", nullable)]
         pub created_by: Option<String>,
+        /// plugin 的市场名(skill/mcp 为空)。plugin 分发按此列检索目标市场。
+        #[sea_orm(column_type = "String(StringLen::N(128))", nullable)]
+        pub marketplace: Option<String>,
     }
     #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]
     pub enum Relation {}

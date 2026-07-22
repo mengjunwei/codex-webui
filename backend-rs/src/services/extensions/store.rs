@@ -30,6 +30,8 @@ pub struct ExtRecord {
     pub content_form: String,
     pub content_hash: String,
     pub enabled: bool,
+    /// plugin 的市场名(skill/mcp 为 None)。plugin 上传时由 API 填入,同步/下载侧按此列检索。
+    pub marketplace: Option<String>,
 }
 
 impl From<ExtModel> for ExtRecord {
@@ -41,6 +43,7 @@ impl From<ExtModel> for ExtRecord {
             content_form: m.content_form,
             content_hash: m.content_hash,
             enabled: m.enabled,
+            marketplace: m.marketplace,
         }
     }
 }
@@ -133,6 +136,7 @@ pub async fn upsert_extension(
                 created_at: Set(existing.as_ref().map(|m| m.created_at).unwrap_or(now)),
                 updated_at: Set(now),
                 created_by: Set(None),
+                marketplace: Set(rec.marketplace.clone()),
             };
             if existing.is_some() {
                 ExtEntity::update(active)
@@ -293,6 +297,7 @@ mod tests {
             created_at: 10,
             updated_at: 20,
             created_by: Some("u-1".into()),
+            marketplace: None,
         };
         let r: ExtRecord = m.into();
         assert_eq!(r.id, "ext-1");
@@ -301,7 +306,8 @@ mod tests {
         assert_eq!(r.content_form, "dir");
         assert_eq!(r.content_hash, "abc123");
         assert!(r.enabled);
-        // ExtRecord 仅 6 字段,不含 display_name/description/version 等 → 无从断言它们。
+        assert_eq!(r.marketplace, None, "skill 行 marketplace 应为 None");
+        // ExtRecord 仅 7 字段,不含 display_name/description/version 等 → 无从断言它们。
     }
 
     /// next_file_id 必须严格单调递增 → 同毫秒并发 / 批次内 / 跨批次 id 均唯一,不碰主键。

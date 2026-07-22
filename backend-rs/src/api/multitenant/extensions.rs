@@ -156,6 +156,8 @@ pub async fn upload_extension(
         content_form: "files".into(),
         content_hash: content_hash.clone(),
         enabled: true,
+        // skill 上传走此分支,marketplace 仅 plugin 有 → None。
+        marketplace: None,
     };
     store::upsert_extension(&state.db, &rec, &fps).await?;
     store::add_holder(&state.db, &id, &state.node_id).await?;
