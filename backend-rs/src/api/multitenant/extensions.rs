@@ -172,6 +172,8 @@ pub async fn upload_extension(
         kind: body.kind.clone(),
         name: body.name.clone(),
         content_form: "files".into(),
+        // skill 以文件形式存储,无内联配置 → config_text 为 None(MCP 才填)。
+        config_text: None,
         content_hash: content_hash.clone(),
         enabled: true,
         // skill 上传走此分支,marketplace/version 仅 plugin 有 → None。
@@ -287,6 +289,8 @@ async fn upload_plugin(state: AppState, body: UploadBody) -> Result<Json<ExtResp
         kind: "plugin".into(),
         name: body.name.clone(),
         content_form: "files".into(),
+        // plugin 以文件形式存储,无内联配置 → config_text 为 None(MCP 才填)。
+        config_text: None,
         content_hash: content_hash.clone(),
         enabled: true,
         marketplace: Some(market.clone()),

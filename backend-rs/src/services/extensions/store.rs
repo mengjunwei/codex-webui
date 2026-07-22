@@ -21,13 +21,16 @@ use sea_orm::{
 };
 use std::sync::atomic::{AtomicI64, Ordering};
 
-/// 扩展清单记录（cluster_extensions 的业务视图，剥离可选展示字段）。
+/// 扩展清单记录(cluster_extensions 的业务视图,剥离可选展示字段)。
 #[derive(Clone, Debug)]
 pub struct ExtRecord {
     pub id: String,
     pub kind: String,
     pub name: String,
     pub content_form: String,
+    /// MCP 扩展的内联配置原文(skill/plugin 为 None —— 它们以文件形式存储)。
+    /// MCP 上传时由 API 填入,同步/下载侧据此写配置段;对应 cluster_extensions.config_text 列。
+    pub config_text: Option<String>,
     pub content_hash: String,
     pub enabled: bool,
     /// plugin 的市场名(skill/mcp 为 None)。plugin 上传时由 API 填入,同步/下载侧按此列检索。
@@ -44,6 +47,7 @@ impl From<ExtModel> for ExtRecord {
             kind: m.kind,
             name: m.name,
             content_form: m.content_form,
+            config_text: m.config_text,
             content_hash: m.content_hash,
             enabled: m.enabled,
             marketplace: m.marketplace,
@@ -134,7 +138,7 @@ pub async fn upsert_extension(
                 description: Set(None),
                 version: Set(rec.version.clone()),
                 content_form: Set(rec.content_form.clone()),
-                config_text: Set(None),
+                config_text: Set(rec.config_text.clone()),
                 content_hash: Set(rec.content_hash.clone()),
                 enabled: Set(rec.enabled),
                 created_at: Set(existing.as_ref().map(|m| m.created_at).unwrap_or(now)),
@@ -283,10 +287,10 @@ mod tests {
     // 且含 db 字段,全局开 mock 会让 cargo test 编译整个 lib 失败。故改用纯函数测试覆盖
     // ExtRecord 映射(list_enabled 内部依赖)与 file id 生成,SQL 形态留 Task 9 端到端验证。
 
-    /// 校验 list_enabled 内部依赖的 ExtModel→ExtRecord 转换:不 panic + 8 业务字段对齐 +
-    /// 展示字段(display_name/description/config_text/created_by)被正确剥离(version/marketplace 保留)。
+    /// 校验 list_enabled 内部依赖的 ExtModel→ExtRecord 转换:不 panic + 9 业务字段对齐 +
+    /// 展示字段(display_name/description/created_by)被正确剥离(version/marketplace/config_text 保留)。
     #[test]
-    fn ext_record_from_maps_eight_business_fields() {
+    fn ext_record_from_maps_nine_business_fields() {
         let m = ExtModel {
             id: "ext-1".into(),
             kind: "skill".into(),
@@ -312,7 +316,12 @@ mod tests {
         assert!(r.enabled);
         assert_eq!(r.marketplace, None, "skill 行 marketplace 应为 None");
         assert_eq!(r.version.as_deref(), Some("1.2.3"), "version 列应映射到 ExtRecord");
-        // ExtRecord 仅 8 字段,不含 display_name/description/config_text/created_by → 无从断言它们。
+        assert_eq!(
+            r.config_text.as_deref(),
+            Some("{...}"),
+            "config_text 列应映射到 ExtRecord(MCP 用)"
+        );
+        // ExtRecord 仅 9 字段,不含 display_name/description/created_by → 无从断言它们。
     }
 
     /// next_file_id 必须严格单调递增 → 同毫秒并发 / 批次内 / 跨批次 id 均唯一,不碰主键。
