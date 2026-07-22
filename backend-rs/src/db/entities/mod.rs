@@ -308,3 +308,77 @@ pub mod role_permission {
     pub enum Relation {}
     impl ActiveModelBehavior for ActiveModel {}
 }
+
+/// 集群扩展清单。
+pub mod cluster_extension {
+    use sea_orm::entity::prelude::*;
+    #[derive(Clone, Debug, PartialEq, DeriveEntityModel, serde::Serialize)]
+    #[sea_orm(table_name = "cluster_extensions")]
+    pub struct Model {
+        #[sea_orm(primary_key, column_type = "String(StringLen::N(36))")]
+        pub id: String,
+        #[sea_orm(column_type = "String(StringLen::N(32))")]
+        pub kind: String,
+        #[sea_orm(column_type = "String(StringLen::N(128))")]
+        pub name: String,
+        #[sea_orm(column_type = "String(StringLen::N(256))", nullable)]
+        pub display_name: Option<String>,
+        #[sea_orm(column_type = "Text", nullable)]
+        pub description: Option<String>,
+        #[sea_orm(column_type = "String(StringLen::N(64))", nullable)]
+        pub version: Option<String>,
+        #[sea_orm(column_type = "String(StringLen::N(16))")]
+        pub content_form: String,
+        #[sea_orm(column_type = "Text", nullable)]
+        pub config_text: Option<String>,
+        #[sea_orm(column_type = "String(StringLen::N(128))")]
+        pub content_hash: String,
+        pub enabled: bool,
+        pub created_at: i64,
+        pub updated_at: i64,
+        #[sea_orm(column_type = "String(StringLen::N(36))", nullable)]
+        pub created_by: Option<String>,
+    }
+    #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]
+    pub enum Relation {}
+    impl ActiveModelBehavior for ActiveModel {}
+}
+
+/// 扩展文件指纹(无内容)。
+pub mod cluster_extension_file {
+    use sea_orm::entity::prelude::*;
+    #[derive(Clone, Debug, PartialEq, DeriveEntityModel, serde::Serialize)]
+    #[sea_orm(table_name = "cluster_extension_files")]
+    pub struct Model {
+        #[sea_orm(primary_key)]
+        pub id: i64,
+        #[sea_orm(column_type = "String(StringLen::N(36))")]
+        pub extension_id: String,
+        #[sea_orm(column_type = "String(StringLen::N(512))")]
+        pub rel_path: String,
+        pub size_bytes: i64,
+        #[sea_orm(column_type = "String(StringLen::N(128))")]
+        pub content_hash: String,
+        pub is_binary: bool,
+    }
+    #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]
+    pub enum Relation {}
+    impl ActiveModelBehavior for ActiveModel {}
+}
+
+/// 扩展持有节点。
+pub mod cluster_extension_holder {
+    use sea_orm::entity::prelude::*;
+    #[derive(Clone, Debug, PartialEq, DeriveEntityModel, serde::Serialize)]
+    #[sea_orm(table_name = "cluster_extension_holders")]
+    pub struct Model {
+        #[sea_orm(primary_key, column_type = "String(StringLen::N(36))")]
+        pub extension_id: String,
+        #[sea_orm(primary_key, column_type = "String(StringLen::N(36))")]
+        pub node_id: String,
+        pub held_since: i64,
+    }
+    #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]
+    pub enum Relation {}
+    impl ActiveModelBehavior for ActiveModel {}
+}
