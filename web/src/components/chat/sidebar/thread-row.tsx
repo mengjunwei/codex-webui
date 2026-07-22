@@ -19,7 +19,7 @@ import { Button } from '@/components/ui/button';
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
 import type { ThreadDto } from './sidebar-types';
 import { cn } from '@/lib/utils';
-import { threadLabel } from './sidebar-types';
+import { threadLabel, timeAgo } from './sidebar-types';
 
 interface Props {
   thread: ThreadDto;
@@ -108,6 +108,14 @@ export function ThreadRow({
         {statusIcon}
         {wsBadge}
         <span className="truncate">{threadLabel(thread)}</span>
+        {thread.last_activity_at > 0 && (
+          <span
+            className="ml-auto shrink-0 pl-1 text-[10px] text-muted-foreground/50"
+            title={new Date(thread.last_activity_at).toLocaleString()}
+          >
+            {timeAgo(thread.last_activity_at)}
+          </span>
+        )}
         {pendingApprovalCount > 1 && (
           <span className="ml-auto rounded-full bg-yellow-500/15 px-1.5 py-0.5 text-[10px] font-medium leading-none text-yellow-600 dark:text-yellow-400">
             {badgeText}

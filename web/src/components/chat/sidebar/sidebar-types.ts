@@ -26,7 +26,26 @@ export interface WorkspaceGroup {
 
 /** Display label for a thread: title → id prefix. */
 export function threadLabel(thread: ThreadDto): string {
-  return thread.title?.trim() || thread.id.slice(0, 8);
+  // 有标题展示标题;无标题用完整 UUID(前 8 位是 UUIDv7 时间戳,同秒创建的会话会撞前缀)。
+  return thread.title?.trim() || thread.id;
+}
+
+/** 相对时间:ms 时间戳 → "N 分钟前"(中文)。<=0 或未来时间返回空串。 */
+export function timeAgo(ms: number): string {
+  if (!ms) return '';
+  const diff = Date.now() - ms;
+  if (diff < 0) return '';
+  const sec = Math.floor(diff / 1000);
+  if (sec < 60) return `${sec} 秒前`;
+  const min = Math.floor(sec / 60);
+  if (min < 60) return `${min} 分钟前`;
+  const hr = Math.floor(min / 60);
+  if (hr < 24) return `${hr} 小时前`;
+  const day = Math.floor(hr / 24);
+  if (day < 30) return `${day} 天前`;
+  const mon = Math.floor(day / 30);
+  if (mon < 12) return `${mon} 个月前`;
+  return `${Math.floor(mon / 12)} 年前`;
 }
 
 /** Extract the last path segment from a cwd for display. */
