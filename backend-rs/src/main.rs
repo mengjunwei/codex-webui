@@ -325,6 +325,8 @@ async fn main() -> anyhow::Result<()> {
         http_bind_port: cfg.server.port,
         active_rollout,
         local_offsets,
+        cfg_extensions_max_file_bytes: cfg.extensions.max_file_bytes,
+        mt_event_bus: mt_event_bus.clone(),
     };
 
     // cluster 心跳 task(RedisCluster:周期登记本节点 + rpc 地址)。

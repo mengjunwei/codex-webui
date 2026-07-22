@@ -261,6 +261,7 @@ pub async fn build_router(state: AppState) -> Router {
 
     // 多租户路由(M1):/api/mt/auth/* 公开;/api/mt/teams/* 受 require_user_auth 保护。
     use crate::api::multitenant::handlers as mt;
+    use crate::api::multitenant::extensions as mt_ext;
     let mt_protected: Router<AppState> = Router::new()
         .route("/me", get(mt::mt_me))
         .route("/teams", post(mt::create_team).get(mt::list_teams))
@@ -298,6 +299,12 @@ pub async fn build_router(state: AppState) -> Router {
             axum::routing::patch(mt::set_member_role_handler),
         )
         .route("/user/api-key", post(mt::set_user_api_key).get(mt::list_user_api_keys))
+        // ── 集群扩展分发(Task 6):skill 上传/列表/删除(单一安装入口)──
+        .route(
+            "/extensions",
+            post(mt_ext::upload_extension).get(mt_ext::list_extensions),
+        )
+        .route("/extensions/{id}", delete(mt_ext::delete_extension))
         .layer(axum::middleware::from_fn_with_state(
             state.clone(),
             crate::multitenant::middleware::require_user_auth,
