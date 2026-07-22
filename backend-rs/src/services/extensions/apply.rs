@@ -95,6 +95,25 @@ pub async fn disable_plugin_config(
     config_merge::remove_section(&cfg, &section).await
 }
 
+/// MCP 启用:把 content_toml(段内容,无段头)合并进 config.toml `[mcp_servers.<name>]` 段。
+/// 复用 config_merge::merge_full_section:逐 key clone(支持 env 等嵌套值),保留其余配置。
+pub async fn enable_mcp_config(
+    codex_home: &Path,
+    name: &str,
+    content_toml: &str,
+) -> Result<(), AppError> {
+    let cfg = codex_home.join("config.toml");
+    config_merge::merge_full_section(&cfg, "mcp_servers", name, content_toml).await
+}
+
+/// MCP 卸载:移除 config.toml `[mcp_servers.<name>]` 段。
+/// 段不存在视为成功(容错),其余配置保留。
+pub async fn disable_mcp_config(codex_home: &Path, name: &str) -> Result<(), AppError> {
+    let cfg = codex_home.join("config.toml");
+    let section = format!("mcp_servers.{name}");
+    config_merge::remove_section(&cfg, &section).await
+}
+
 /// 安全拼路径：拒绝空 / 绝对 / 含 `..` / 含反斜杠的相对路径；
 /// 归一化（反斜杠→正斜杠、小写）后校验 candidate 必以 root 开头，防穿越。
 async fn safe_join_local(root: &Path, rel: &str) -> Result<PathBuf, AppError> {
@@ -250,5 +269,26 @@ mod tests {
             .await
             .unwrap();
         assert!(!s2.contains("foo@mkt"));
+    }
+
+    /// MCP 启用:enable 后 config.toml 含 [mcp_servers.mysrv] 及 command 字段;
+    /// disable 后该段被移除,文件中不再出现 mysrv。验证 Task 2 的两个封装。
+    #[tokio::test]
+    async fn mcp_config_enable_disable_roundtrip() {
+        let tmp = tempfile::tempdir().unwrap();
+        enable_mcp_config(tmp.path(), "mysrv", "command = \"node\"\nargs = [\"s.js\"]\n")
+            .await
+            .unwrap();
+        let s = tokio::fs::read_to_string(tmp.path().join("config.toml"))
+            .await
+            .unwrap();
+        assert!(s.contains("command"));
+        disable_mcp_config(tmp.path(), "mysrv")
+            .await
+            .unwrap();
+        let s2 = tokio::fs::read_to_string(tmp.path().join("config.toml"))
+            .await
+            .unwrap();
+        assert!(!s2.contains("mysrv"));
     }
 }
