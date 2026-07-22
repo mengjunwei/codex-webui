@@ -200,7 +200,7 @@ export function ThreadSidebar() {
 
   const compactThread = useMutation({
     mutationFn: (vars: { path: { threadId: string } }) =>
-      threadsApi.invoke(vars.path.threadId, { method: 'thread/compact' }),
+      threadsApi.invoke(vars.path.threadId, { method: 'thread/compact/start' }),
     onSuccess: () => invalidateThreads(),
   });
 

@@ -1193,6 +1193,87 @@ fn normalize_thread_id_for_client(resp: &mut Value, thread_id: &str) {
     }
 }
 
+/// fork 创建的新 thread 登记到集群:new_thread 主节点 = 原 thread 主节点(codex fork
+/// thread + rollout 都在原 primary),副本选另一 alive 节点(反亲和)。含元数据 / resume
+/// cache / codex_tid 映射 / session_replicas / sticky / rollout 关联与复制。
+/// 返回新系统 thread_id(供 normalize + 前端 navigate);提取 codex_tid 失败返回 None(降级)。
+async fn register_fork_thread(
+    state: &AppState,
+    db: &DatabaseConnection,
+    primary: &str,
+    team_id: &str,
+    user_id: &str,
+    workspace_type: &str,
+    resp: &mut Value,
+) -> Option<String> {
+    use crate::db::entities::session_replica::ActiveModel as SRActiveModel;
+    use sea_orm::ActiveModelTrait;
+    // codex fork 返回新 thread,thread.id 是新 codex_tid(normalize 覆盖前)。
+    let new_codex_tid = resp
+        .get("thread")
+        .and_then(|t| t.get("id"))
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string())?;
+    if new_codex_tid.is_empty() {
+        return None;
+    }
+    let new_thread_id = crate::services::multitenant::new_id();
+    double_write_thread_meta(db, &new_thread_id, team_id, user_id, workspace_type).await;
+    crate::services::multitenant::resume_cache::put_cached_resume(db, &new_thread_id, resp).await;
+    crate::services::multitenant::replication::set_codex_tid(
+        state.mt_redis.as_ref(),
+        &new_thread_id,
+        &new_codex_tid,
+    )
+    .await;
+    // session_replicas:primary = 原 thread primary(fork codex/rollout 在此),replica 反亲和选另一节点。
+    let alive = state.cluster.alive_nodes().await;
+    let replica = alive.into_iter().find(|n| n != primary);
+    let now = crate::services::multitenant::now_ms();
+    let sr = SRActiveModel {
+        thread_id: sea_orm::Set(new_thread_id.clone()),
+        primary_node: sea_orm::Set(primary.to_string()),
+        replica_node: sea_orm::Set(replica),
+        status: sea_orm::Set("active".to_string()),
+        primary_lease_until: sea_orm::Set(
+            now + crate::services::multitenant::replication::LEASE_TTL_MS,
+        ),
+        updated_at: sea_orm::Set(now),
+    };
+    if let Err(e) = sr.insert(db).await {
+        tracing::warn!(error = %e, thread_id = %new_thread_id, "fork session_replica insert failed (best-effort)");
+    }
+    if let Err(e) = state.sticky.bind(&new_thread_id, primary, 3600).await {
+        tracing::error!(error = %e, thread_id = %new_thread_id, "fork sticky.bind failed (best-effort)");
+    }
+    // rollout 关联 + 复制:本地分支(入口==primary)有源;转发场景入口无源 best-effort 跳过。
+    if let Some(p) = crate::services::multitenant::replication::find_rollout_for_thread(
+        &state.codex_home,
+        &new_codex_tid,
+    )
+    .await
+    {
+        state
+            .active_rollout
+            .lock()
+            .await
+            .insert(new_thread_id.clone(), p);
+    }
+    let _ = crate::services::multitenant::replication::replicate_thread_rollout(
+        db,
+        &new_thread_id,
+        &state.codex_home,
+        state.cluster.as_ref(),
+        state.mt_redis.as_ref(),
+        &state.worker_rpc,
+        &state.active_rollout,
+        &state.local_offsets,
+    )
+    .await;
+    tracing::info!(new_thread_id = %new_thread_id, forked_from = primary, "fork thread registered");
+    Some(new_thread_id)
+}
+
 /// 标记审批已处理(尽力,非阻塞)。
 async fn mark_approval_resolved(
     db: &DatabaseConnection,
@@ -1336,7 +1417,7 @@ pub async fn mt_invoke_thread(
     crate::error::Json(body): crate::error::Json<InvokeThreadBody>,
 ) -> Result<Json<Value>, AppError> {
     let db = require_db(&state);
-    let (team_id, _workspace_type) = require_thread_team(db, &thread_id, &uid.0).await?;
+    let (team_id, workspace_type) = require_thread_team(db, &thread_id, &uid.0).await?;
     let target = resolve_worker(&state, Some(&thread_id)).await?;
     // thread/resume 读 PG cache 作兜底(codex -32600 race 时返回),不短路 ——
     // 仍调 codex 取最新 turns + 确保 codex 内存持有 thread(进程重启/evict 后需重新加载)。
@@ -1415,6 +1496,16 @@ pub async fn mt_invoke_thread(
             .thread_invoke(&rpc_url, &team_id, &thread_id, &body.method, params)
             .await?
     };
-    normalize_thread_id_for_client(&mut resp, &thread_id);
+    // thread/fork 创建新 thread:登记到集群(primary=原 thread 主节点,因 codex fork thread
+    // + rollout 都在原 primary),normalize 用新系统 thread_id。否则 normalize 会把 fork 新
+    // thread.id 覆盖回原 thread_id + 新 fork 不登记 PG → 前端不可见。
+    let client_thread_id = if body.method == "thread/fork" {
+        register_fork_thread(&state, db, &target, &team_id, &uid.0, &workspace_type, &mut resp)
+            .await
+            .unwrap_or_else(|| thread_id.clone())
+    } else {
+        thread_id.clone()
+    };
+    normalize_thread_id_for_client(&mut resp, &client_thread_id);
     Ok(Json(resp))
 }

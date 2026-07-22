@@ -157,15 +157,18 @@ export function ThreadRow({
               {t('Compact')}
             </Button>
           )}
-          <Button
-            variant="ghost"
-            className="h-7 w-full justify-start gap-2 px-2 text-xs"
-            disabled={destructiveDisabled || actionPending}
-            onClick={onFork}
-          >
-            {actionPending ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <GitFork className="h-3.5 w-3.5" />}
-            {t('Fork')}
-          </Button>
+          {/* 分叉功能暂隐藏:fork 后新会话访问异常,待完整修复后恢复(代码保留)。*/}
+          {false && (
+            <Button
+              variant="ghost"
+              className="h-7 w-full justify-start gap-2 px-2 text-xs"
+              disabled={destructiveDisabled || actionPending}
+              onClick={onFork}
+            >
+              {actionPending ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <GitFork className="h-3.5 w-3.5" />}
+              {t('Fork')}
+            </Button>
+          )}
           {archived && (
             <Button
               variant="ghost"
