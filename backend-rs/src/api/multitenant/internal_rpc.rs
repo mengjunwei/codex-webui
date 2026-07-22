@@ -93,6 +93,7 @@ pub fn build_internal_router(state: AppState) -> Router {
         .route("/internal/approval/respond", post(approval_respond))
         .route("/internal/replicate", post(replicate_receive))
         .route("/internal/filesync", post(receive_files))
+        .route("/internal/ext-fetch", post(ext_fetch))
         .layer(axum::middleware::from_fn_with_state(
             state.clone(),
             require_internal_token_layer,
@@ -307,6 +308,51 @@ async fn receive_files(
         metrics::counter!("filesync_received_total").increment(1);
     }
     Ok(StatusCode::OK)
+}
+
+#[derive(Deserialize)]
+struct ExtFetchReq {
+    #[serde(rename = "extId")]
+    ext_id: String,
+    #[serde(rename = "relPath")]
+    rel_path: String,
+}
+
+/// 节点间扩展文件下载(holder 节点响应文件字节,供同步循环调用)。
+///
+/// 阶段1 仅支持 skill:查 extension 取 name/kind → kind != "skill" 拒 400 →
+/// `<codex_home>/skills/<name>` 为根 → safe_join 校验 rel_path 防穿越 →
+/// tokio::fs::read 读字节 → 200 application/octet-stream。文件缺失返回 404
+/// (不区分"无权限"与"不存在",统一 404 避免信息泄漏)。
+async fn ext_fetch(
+    State(state): State<AppState>,
+    Json(req): Json<ExtFetchReq>,
+) -> Result<axum::response::Response, AppError> {
+    use crate::db::entities::cluster_extension::{Column as ExtCol, Entity as ExtEntity};
+    use sea_orm::{ColumnTrait, EntityTrait, QueryFilter};
+    // 查扩展元数据(取 name + kind)。
+    let m = ExtEntity::find()
+        .filter(ExtCol::Id.eq(req.ext_id.clone()))
+        .one(&state.db)
+        .await
+        .map_err(|e| AppError::internal(format!("db: {e}")))?;
+    let m = m.ok_or_else(|| AppError::status(404))?;
+    // 阶段1 仅支持 skill 下载。
+    if m.kind != "skill" {
+        return Err(AppError::status(400));
+    }
+    // 根目录 = <codex_home>/skills/<name>;safe_join 校验 rel_path 防穿越。
+    let root = crate::services::extensions::apply::skills_dir(&state.codex_home).join(&m.name);
+    let path = safe_join(&root, &req.rel_path).await?;
+    // 读字节;读取失败(文件不存在/无权限)统一 404。
+    let bytes = tokio::fs::read(&path)
+        .await
+        .map_err(|_| AppError::status(404))?;
+    Ok(axum::response::Response::builder()
+        .status(200)
+        .header("content-type", "application/octet-stream")
+        .body(axum::body::Body::from(bytes))
+        .unwrap())
 }
 
 #[derive(Deserialize)]

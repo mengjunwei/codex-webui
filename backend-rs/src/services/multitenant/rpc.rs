@@ -55,6 +55,30 @@ impl WorkerRpcClient {
         }
     }
 
+    /// 原始字节版 POST(不复用 `post` 的 JSON 解码):用于下载文件等返回二进制 body 的端点。
+    /// 复制 `post` 的请求构造 + x-internal-token 注入 + 错误处理,但返回 `resp.bytes()`。
+    async fn post_raw(&self, base: &str, path: &str, body: Value) -> Result<bytes::Bytes, AppError> {
+        let mut req = self.http.post(Self::url(base, path)).json(&body);
+        if let Some(t) = &self.token {
+            req = req.header("x-internal-token", t);
+        }
+        let resp = req
+            .send()
+            .await
+            .map_err(|e| AppError::internal(format!("worker rpc {path} send: {e}")))?;
+        let status = resp.status();
+        if status.is_success() {
+            resp.bytes()
+                .await
+                .map_err(|e| AppError::internal(format!("worker rpc {path} read bytes: {e}")))
+        } else {
+            let text = resp.text().await.unwrap_or_default();
+            Err(AppError::internal(format!(
+                "worker rpc {path} failed: HTTP {status}; body={text}"
+            )))
+        }
+    }
+
     /// 创建会话(转发到远程 worker)。
     pub async fn thread_start(
         &self,
@@ -155,5 +179,17 @@ impl WorkerRpcClient {
         )
         .await?;
         Ok(())
+    }
+
+    /// 下载扩展文件字节(转发到 holder 节点的 `/internal/ext-fetch`)。
+    /// 返回原始 body 字节,交由同步循环落盘;header 校验由 `post_raw` 统一注入 x-internal-token。
+    pub async fn ext_fetch(
+        &self,
+        base: &str,
+        ext_id: &str,
+        rel_path: &str,
+    ) -> Result<bytes::Bytes, AppError> {
+        let body = json!({ "extId": ext_id, "relPath": rel_path });
+        self.post_raw(base, "/internal/ext-fetch", body).await
     }
 }

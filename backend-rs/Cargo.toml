@@ -77,6 +77,8 @@ walkdir = "2"
 base64 = "0.22"
 # 集群扩展分发:skill 上传临时目录(Task 6;亦用于测试)
 tempfile = "3"
+# 集群扩展分发:节点间文件下载 RPC 返回原始字节(Task 7)
+bytes = "1"
 [dev-dependencies]
 tower = { version = "0.5", features = ["util"] }
 http-body-util = "0.1"

@@ -965,6 +965,7 @@ dependencies = [
  "async-trait",
  "axum 0.8.9",
  "base64",
+ "bytes",
  "bzip2-rs",
  "chrono",
  "flate2",
