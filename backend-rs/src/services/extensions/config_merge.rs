@@ -1,0 +1,113 @@
+//! 通用 toml_edit 段合并/移除工具。
+//!
+//! plugin 启用记录写进 `[plugins."id@market"]` 段;未来 MCP 复用 `[mcp_servers."id"]`。
+//! 采用 toml_edit 精确修改:解析整个 config.toml → 只动目标段 → 写回,
+//! 保留其余所有配置(其他段/注释/空行/格式)原样。
+
+use crate::error::AppError;
+use std::path::Path;
+use toml_edit::{DocumentMut, Item, value};
+
+/// 确保 config.toml 有 [section] 段且 key=value;段不存在则建,已存在则更新 key(保留其他 key)。
+/// section 形如 `plugins."foo@bar"` 或 `mcp_servers.xxx`(含引号/点按 TOML 规则)。
+pub async fn ensure_section_kv(cfg_path: &Path, section: &str, key: &str, value: &str) -> Result<(), AppError> {
+    let existing = tokio::fs::read_to_string(cfg_path).await.unwrap_or_default();
+    let mut doc = existing
+        .parse::<DocumentMut>()
+        .map_err(|e| AppError::internal(format!("parse config: {e}")))?;
+    let (parent, leaf) = split_section(section); // `plugins."foo@bar"` -> ("plugins", "foo@bar")
+    let p = doc
+        .entry(parent.as_str())
+        .or_insert_with(|| Item::Table(toml_edit::Table::new()));
+    let tbl = p
+        .as_table_mut()
+        .ok_or_else(|| AppError::internal(format!("config [{parent}] 不是表")))?;
+    let leaf_tbl = tbl
+        .entry(leaf.as_str())
+        .or_insert_with(|| Item::Table(toml_edit::Table::new()));
+    let lt = leaf_tbl
+        .as_table_mut()
+        .ok_or_else(|| AppError::internal(format!("config [{section}] 不是表")))?;
+    set_kv(lt, key, value);
+    let merged = doc.to_string();
+    // 内容未变跳过写盘(避免刷新 mtime / 触发 watcher)。
+    if merged == existing {
+        return Ok(());
+    }
+    tokio::fs::write(cfg_path, merged)
+        .await
+        .map_err(|e| AppError::internal(format!("write config: {e}")))?;
+    Ok(())
+}
+
+/// 移除 config.toml 的 [section] 段;不存在/解析失败视为成功。
+pub async fn remove_section(cfg_path: &Path, section: &str) -> Result<(), AppError> {
+    let existing = match tokio::fs::read_to_string(cfg_path).await {
+        Ok(s) => s,
+        Err(_) => return Ok(()),
+    };
+    let mut doc = match existing.parse::<DocumentMut>() {
+        Ok(d) => d,
+        Err(_) => return Ok(()),
+    };
+    let (parent, leaf) = split_section(section);
+    if let Some(Item::Table(tbl)) = doc.get_mut(parent.as_str()) {
+        tbl.remove(leaf.as_str());
+    }
+    let merged = doc.to_string();
+    if merged != existing {
+        let _ = tokio::fs::write(cfg_path, merged).await;
+    }
+    Ok(())
+}
+
+/// `plugins."foo@bar"` -> ("plugins", "foo@bar");`mcp_servers.xxx` -> ("mcp_servers", "xxx")。
+/// leaf 用 `trim_matches('"')` 去掉 quoted 形式的引号(toml_edit 写回时会按需自动再加引号)。
+fn split_section(section: &str) -> (String, String) {
+    if let Some(dot) = section.find('.') {
+        (
+            section[..dot].to_string(),
+            section[dot + 1..].trim_matches('"').to_string(),
+        )
+    } else {
+        (section.to_string(), String::new())
+    }
+}
+
+/// 设置表中某 string 字段:已有则只更新 value(保留键前后的注释/装饰),不存在则追加。
+fn set_kv(tbl: &mut toml_edit::Table, key: &str, val: &str) {
+    if let Some(item) = tbl.get_mut(key) {
+        if item.is_value() {
+            *item = value(val);
+            return;
+        }
+    }
+    tbl.insert(key, value(val));
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[tokio::test]
+    async fn ensure_creates_and_updates_quoted_section() {
+        let tmp = tempfile::tempdir().unwrap();
+        let p = tmp.path().join("config.toml");
+        tokio::fs::write(&p, "[model_providers.custom]\nname = \"x\"\n").await.unwrap();
+        // 建 [plugins."foo@bar"] enabled="true"
+        ensure_section_kv(&p, "plugins.\"foo@bar\"", "enabled", "true").await.unwrap();
+        let s = tokio::fs::read_to_string(&p).await.unwrap();
+        assert!(s.contains("[plugins.\"foo@bar\"]"));
+        assert!(s.contains("enabled = \"true\""));
+        assert!(s.contains("[model_providers.custom]")); // 原段保留
+    }
+    #[tokio::test]
+    async fn remove_drops_section_keeps_others() {
+        let tmp = tempfile::tempdir().unwrap();
+        let p = tmp.path().join("config.toml");
+        tokio::fs::write(&p, "[plugins.\"a@m\"]\nenabled = \"true\"\n[model_providers.x]\nname=\"y\"\n").await.unwrap();
+        remove_section(&p, "plugins.\"a@m\"").await.unwrap();
+        let s = tokio::fs::read_to_string(&p).await.unwrap();
+        assert!(!s.contains("plugins.\"a@m\""));
+        assert!(s.contains("[model_providers.x]"));
+    }
+}

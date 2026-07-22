@@ -4,6 +4,7 @@
 //! `sync`(集群同步循环:把本地对齐到 PG 清单,缺则从 holder 下载、多则删、变则更新)。
 
 pub mod apply;
+pub mod config_merge;
 pub mod fingerprint;
 pub mod store;
 pub mod sync;
