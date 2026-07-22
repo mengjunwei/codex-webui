@@ -40,6 +40,45 @@ pub async fn ensure_section_kv(cfg_path: &Path, section: &str, key: &str, value:
     Ok(())
 }
 
+/// 同 `ensure_section_kv` 但写 boolean 值(`enabled = true`,无引号)。
+///
+/// plugin 启用段 `[plugins."id@market"] enabled = true` 的 `enabled` 在 codex schema 里是
+/// **boolean**;若用 `ensure_section_kv` 写字符串 `enabled = "true"`,codex 加载 config 会
+/// 报 "invalid type: string \"true\", expected a boolean" 并拒绝整个 config → plugin 不可用。
+pub async fn ensure_section_bool(
+    cfg_path: &Path,
+    section: &str,
+    key: &str,
+    val: bool,
+) -> Result<(), AppError> {
+    let existing = tokio::fs::read_to_string(cfg_path).await.unwrap_or_default();
+    let mut doc = existing
+        .parse::<DocumentMut>()
+        .map_err(|e| AppError::internal(format!("parse config: {e}")))?;
+    let (parent, leaf) = split_section(section);
+    let p = doc
+        .entry(parent.as_str())
+        .or_insert_with(|| Item::Table(toml_edit::Table::new()));
+    let tbl = p
+        .as_table_mut()
+        .ok_or_else(|| AppError::internal(format!("config [{parent}] 不是表")))?;
+    let leaf_tbl = tbl
+        .entry(leaf.as_str())
+        .or_insert_with(|| Item::Table(toml_edit::Table::new()));
+    let lt = leaf_tbl
+        .as_table_mut()
+        .ok_or_else(|| AppError::internal(format!("config [{section}] 不是表")))?;
+    set_kv_bool(lt, key, val);
+    let merged = doc.to_string();
+    if merged == existing {
+        return Ok(());
+    }
+    tokio::fs::write(cfg_path, merged)
+        .await
+        .map_err(|e| AppError::internal(format!("write config: {e}")))?;
+    Ok(())
+}
+
 /// 移除 config.toml 的 [section] 段;不存在/解析失败视为成功。
 pub async fn remove_section(cfg_path: &Path, section: &str) -> Result<(), AppError> {
     let existing = match tokio::fs::read_to_string(cfg_path).await {
@@ -85,6 +124,17 @@ fn set_kv(tbl: &mut toml_edit::Table, key: &str, val: &str) {
     tbl.insert(key, value(val));
 }
 
+/// 同 `set_kv` 但写 boolean(toml_edit `value(bool)` 产裸 `true`/`false`,无引号)。
+fn set_kv_bool(tbl: &mut toml_edit::Table, key: &str, val: bool) {
+    if let Some(item) = tbl.get_mut(key) {
+        if item.is_value() {
+            *item = value(val);
+            return;
+        }
+    }
+    tbl.insert(key, value(val));
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -93,11 +143,12 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let p = tmp.path().join("config.toml");
         tokio::fs::write(&p, "[model_providers.custom]\nname = \"x\"\n").await.unwrap();
-        // 建 [plugins."foo@bar"] enabled="true"
-        ensure_section_kv(&p, "plugins.\"foo@bar\"", "enabled", "true").await.unwrap();
+        // 建 [plugins."foo@bar"] enabled=true (boolean 无引号 —— codex schema 要求)
+        ensure_section_bool(&p, "plugins.\"foo@bar\"", "enabled", true).await.unwrap();
         let s = tokio::fs::read_to_string(&p).await.unwrap();
         assert!(s.contains("[plugins.\"foo@bar\"]"));
-        assert!(s.contains("enabled = \"true\""));
+        assert!(s.contains("enabled = true"));
+        assert!(!s.contains("enabled = \"true\"")); // 必须不是字符串,否则 codex 拒绝加载
         assert!(s.contains("[model_providers.custom]")); // 原段保留
     }
     #[tokio::test]

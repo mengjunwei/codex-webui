@@ -78,7 +78,9 @@ pub async fn enable_plugin_config(
 ) -> Result<(), AppError> {
     let cfg = codex_home.join("config.toml");
     let section = format!("plugins.\"{name}@{market}\"");
-    config_merge::ensure_section_kv(&cfg, &section, "enabled", "true").await
+    // codex 的 plugins.enabled 是 boolean,必须写 `enabled = true`(无引号);
+    // ensure_section_kv 会写字符串 "true" 致 codex 报 "invalid type: string, expected a boolean" 拒绝整个 config。
+    config_merge::ensure_section_bool(&cfg, &section, "enabled", true).await
 }
 
 /// 删除 plugin 时移除启用段 `[plugins."<name>@<market>"]`。
