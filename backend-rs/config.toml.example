@@ -119,3 +119,12 @@ default_turn_quota_hourly = 0
 # [otel]
 # enable = true
 # endpoint = "http://localhost:4317"
+
+# 集群扩展分发(skill/mcp/plugin)
+# 注:enable=false(默认)→ 不启动同步循环;enable=true 才按周期分发。
+[extensions]
+enable = false
+sync_interval_secs = 30
+max_extension_bytes = 10485760   # 单扩展上限 10MB
+max_file_bytes = 1048576         # 单文件上限 1MB
+plugin_enabled = false           # plugin 分发开关(阶段3开启)

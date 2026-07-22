@@ -301,6 +301,50 @@ fn default_snapshot_interval() -> u64 {
     300
 }
 
+/// 集群扩展分发(skill/mcp/plugin)配置。
+/// enable=false(默认)→ 整段忽略,不启动同步循环。
+/// enable=true → 按 sync_interval_secs 周期在节点间分发扩展包。
+#[derive(Clone, Debug, Deserialize)]
+pub struct ExtensionsConfig {
+    /// 总开关(默认 false)。
+    #[serde(default)]
+    pub enable: bool,
+    /// 同步周期秒(默认 30)。
+    #[serde(default = "default_ext_sync_interval")]
+    pub sync_interval_secs: u64,
+    /// 单个扩展包大小上限(默认 10MB)。
+    #[serde(default = "default_ext_max_extension_bytes")]
+    pub max_extension_bytes: u64,
+    /// 扩展内单文件大小上限(默认 1MB)。
+    #[serde(default = "default_ext_max_file_bytes")]
+    pub max_file_bytes: u64,
+    /// plugin 分发开关(默认 false;阶段 3 启用)。
+    #[serde(default)]
+    pub plugin_enabled: bool,
+}
+
+impl Default for ExtensionsConfig {
+    fn default() -> Self {
+        Self {
+            enable: false,
+            sync_interval_secs: default_ext_sync_interval(),
+            max_extension_bytes: default_ext_max_extension_bytes(),
+            max_file_bytes: default_ext_max_file_bytes(),
+            plugin_enabled: false,
+        }
+    }
+}
+
+fn default_ext_sync_interval() -> u64 {
+    30
+}
+fn default_ext_max_extension_bytes() -> u64 {
+    10 * 1024 * 1024
+}
+fn default_ext_max_file_bytes() -> u64 {
+    1024 * 1024
+}
+
 #[derive(Clone, Debug, Deserialize)]
 pub struct QuotaConfig {
     #[serde(default)]
@@ -349,6 +393,9 @@ pub struct Config {
     pub quota: QuotaConfig,
     #[serde(default)]
     pub otel: OtelConfig,
+    /// 集群扩展分发(skill/mcp/plugin)。
+    #[serde(default)]
+    pub extensions: ExtensionsConfig,
 }
 
 // 自定义 Debug(redact 密钥/secret 字段,避免日志泄露)。
@@ -367,6 +414,7 @@ impl std::fmt::Debug for Config {
             .field("snapshot", &self.snapshot)
             .field("quota", &self.quota)
             .field("otel", &self.otel)
+            .field("extensions", &self.extensions)
             .finish()
     }
 }
@@ -541,6 +589,12 @@ impl Config {
         {
             return Err(anyhow!(
                 "auth.master_key_previous.enable = true but `value` is empty"
+            ));
+        }
+        // extensions enable=true 但 sync_interval_secs=0(同步循环周期不能为 0)
+        if self.extensions.enable && self.extensions.sync_interval_secs == 0 {
+            return Err(anyhow!(
+                "extensions.enable = true but sync_interval_secs is 0"
             ));
         }
         Ok(())
