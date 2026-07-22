@@ -81,9 +81,12 @@ pub async fn ensure_section_bool(
 
 /// 移除 config.toml 的 [section] 段;不存在/解析失败视为成功。
 pub async fn remove_section(cfg_path: &Path, section: &str) -> Result<(), AppError> {
+    // NotFound 视作成功(文件不存在=段不存在);其余 IO 错误(权限/磁盘等)向上传播,
+    // 不再静默吞掉。解析失败仍视作成功(本函数契约:尽力移除,缺失即成功)。
     let existing = match tokio::fs::read_to_string(cfg_path).await {
         Ok(s) => s,
-        Err(_) => return Ok(()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(e) => return Err(AppError::internal(format!("read config: {e}"))),
     };
     let mut doc = match existing.parse::<DocumentMut>() {
         Ok(d) => d,
@@ -110,7 +113,12 @@ pub async fn merge_full_section(
     content_toml: &str,
 ) -> Result<(), AppError> {
     // 包头 parse:[parent.leaf] + content_toml → DocumentMut,再取其 [parent][leaf] table。
-    let wrapped = format!("[{parent}.{leaf}]\n{content_toml}\n");
+    // leaf 做 TOML quoting(与 split_section 读路径一致):leaf 含 @/. /空格等非 bare-key 字符时,
+    // bare 形式 `[parent.leaf]` 会产出非法或语义错误 TOML(`a@b` parse 失败、`a.b` 被当成嵌套)。
+    // 这里统一用基本字符串引号包裹 leaf;后续 src.get/ptbl.entry 仍用原始 leaf 字符串
+    // (toml_edit 按内容自动决定写回是否加引号)。
+    let leaf_q = format!("\"{}\"", leaf.replace('\\', "\\\\").replace('"', "\\\""));
+    let wrapped = format!("[{parent}.{leaf_q}]\n{content_toml}\n");
     let src = wrapped
         .parse::<DocumentMut>()
         .map_err(|e| AppError::internal(format!("parse mcp content: {e}")))?;
@@ -121,10 +129,13 @@ pub async fn merge_full_section(
         .and_then(|i| i.as_table())
         .ok_or_else(|| AppError::internal("merge_full_section: 解析后取不到段 table".into()))?;
 
-    // 读现有 config(不存在视作空),解析成 doc。
-    let existing = tokio::fs::read_to_string(cfg_path)
-        .await
-        .unwrap_or_default();
+    // 读现有 config:NotFound 视作空(首次创建段),其余 IO 错误(权限/磁盘等)向上传播,
+    // 避免把读盘失败当成空文件、用空 doc 覆盖写回丢配置。
+    let existing = match tokio::fs::read_to_string(cfg_path).await {
+        Ok(s) => s,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
+        Err(e) => return Err(AppError::internal(format!("read config: {e}"))),
+    };
     let mut doc = existing
         .parse::<DocumentMut>()
         .map_err(|e| AppError::internal(format!("parse config: {e}")))?;
@@ -253,5 +264,31 @@ mod merge_full_tests {
             .unwrap();
         let s = tokio::fs::read_to_string(&p).await.unwrap();
         assert!(s.contains("b"));
+    }
+    #[tokio::test]
+    async fn merge_quoting_leaf_with_special_chars() {
+        // leaf 含 @ 等 non-bare-key 字符时,包头必须 quote,否则产出非法 TOML(parse 失败)
+        // 或语义错误(被当成嵌套/歧义)。验证 quoting 往返:写回后能再 parse 取到值。
+        let tmp = tempfile::tempdir().unwrap();
+        let p = tmp.path().join("config.toml");
+        merge_full_section(&p, "mcp_servers", "a@b", "command = \"x\"\n")
+            .await
+            .unwrap();
+        let s = tokio::fs::read_to_string(&p).await.unwrap();
+        // leaf 被 quote 成 [mcp_servers."a@b"],绝不是 bare 形式 [mcp_servers.a@b](非法 TOML)
+        assert!(s.contains("[mcp_servers.\"a@b\"]"));
+        assert!(!s.contains("[mcp_servers.a@b"));
+        assert!(s.contains("command = \"x\""));
+        // 往返:重新 parse,应能按原始 leaf 字符串 "a@b" 取到 command
+        let doc: toml_edit::DocumentMut = s.parse().unwrap();
+        let cmd = doc
+            .get("mcp_servers")
+            .and_then(|i| i.as_table())
+            .and_then(|t| t.get("a@b"))
+            .and_then(|i| i.as_table())
+            .and_then(|t| t.get("command"))
+            .and_then(|v| v.as_str())
+            .expect("应能取到 mcp_servers.a@b.command");
+        assert_eq!(cmd, "x");
     }
 }
