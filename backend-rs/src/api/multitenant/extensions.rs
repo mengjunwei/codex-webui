@@ -1,14 +1,16 @@
-//! 集群扩展分发 —— skill 上传/plugin 上传/列表/删除 REST API(Task 6 + plugin Task 5)。
+//! 集群扩展分发 —— skill 上传/plugin 上传/mcp 上传/列表/删除 REST API(Task 6 + plugin Task 5 + mcp Task 4)。
 //!
 //! 这是"单一安装入口":
 //! - skill:用户上传文件树(JSON base64),系统落盘本节点 + 入库 + 发事件触发集群同步。
 //! - plugin:后端 spawn `codex plugin add <name>@<market>` 装好,再指纹化 cache + 入库 +
 //!   发事件(其他节点订阅 "extensions:changed" 后走 Task 7 下载 + Task 8 应用)。
+//! - mcp:用户上传 `config_text`(MCP 段内容),后端合并进 config.toml `[mcp_servers.<name>]` +
+//!   入库(config_form=config,无文件指纹)+ 发事件。
 //!
 //! 路由(挂载在 mt_protected,受 require_user_auth 保护):
-//! - POST   /api/mt/extensions        上传 skill 文件树 或 装 plugin
+//! - POST   /api/mt/extensions        上传 skill 文件树 / 装 plugin / 合并 mcp 配置段
 //! - GET    /api/mt/extensions        列出 enabled 扩展
-//! - DELETE /api/mt/extensions/{id}   删除扩展(清本地目录 + 删 DB 行 + 发事件)
+//! - DELETE /api/mt/extensions/{id}   删除扩展(清本地目录/段 + 删 DB 行 + 发事件)
 
 use crate::error::{AppError, ErrorCode};
 use crate::services::extensions::{apply, fingerprint, store};
@@ -32,6 +34,8 @@ pub struct UploadFile {
 /// - skill 分支:`kind="skill"` + `files`(必填,JSON base64 文件树)。
 /// - plugin 分支:`kind="plugin"` + `marketplace`(可选,默认 openai-api-curated),
 ///   无 `files`(后端 spawn codex 装好后自己扫描 cache)。
+/// - mcp 分支:`kind="mcp"` + `config_text`(必填,MCP 段内容原文,如 `command="node"\nargs=[...]`),
+///   无 `files`(配置段直接合并进 config.toml)。
 #[derive(Deserialize)]
 pub struct UploadBody {
     pub kind: String,
@@ -42,6 +46,10 @@ pub struct UploadBody {
     /// plugin 的市场名(skill 不用);缺省时取 "openai-api-curated"。
     #[serde(default)]
     pub marketplace: Option<String>,
+    /// MCP 的配置段内容(段内键值,无段头);skill/plugin 不填。
+    /// 缺省让 skill/plugin 请求可省略该字段,mcp 分支取值时校验非空。
+    #[serde(default)]
+    pub config_text: Option<String>,
 }
 
 /// 上传成功响应。
@@ -76,12 +84,16 @@ pub async fn upload_extension(
     if body.kind == "plugin" {
         return upload_plugin(state, body).await;
     }
+    // mcp 分支:无 files,内联 config_text(段内容),走独立配置段合并 + 入库。
+    if body.kind == "mcp" {
+        return upload_mcp(state, body).await;
+    }
     // 阶段 1 其余只支持 skill。
     if body.kind != "skill" {
         return Err(AppError::business(
             ErrorCode::HttpBadRequest,
             StatusCode::BAD_REQUEST,
-            "阶段1 仅支持 skill / plugin".into(),
+            "阶段1 仅支持 skill / plugin / mcp".into(),
             None,
         ));
     }
@@ -329,6 +341,105 @@ async fn upload_plugin(state: AppState, body: UploadBody) -> Result<Json<ExtResp
     }))
 }
 
+/// POST /api/mt/extensions (kind="mcp") —— 合并 MCP 配置段 + 入库(无文件树)。
+///
+/// 流程:取 `config_text`(段内容,无段头)→ 包头 `[mcp_servers.<name>]` 解析校验为合法 toml
+/// → sha256 算 `content_hash`(对段内容本身算,不含段头,与落盘/同步对齐)→
+/// `enable_mcp_config` 合并进 config.toml → 入库 upsert_extension(files 空,config_text 填充)
+/// → 更新本地状态文件 → 发 "extensions:changed" 事件。
+///
+/// 与 skill/plugin 不同:不入 `add_holder` —— MCP 无独立文件指纹(纯配置段),
+/// 同步侧按 config_text 直接写段即可,不需要 holder 表的"本节点已落盘"登记。
+async fn upload_mcp(state: AppState, body: UploadBody) -> Result<Json<ExtResp>, AppError> {
+    // config_text 必填且非空(MCP 段内容,如 `command="node"\nargs=[...]`)。
+    let content = body.config_text.clone().ok_or_else(|| {
+        AppError::business(
+            ErrorCode::HttpBadRequest,
+            StatusCode::BAD_REQUEST,
+            "MCP 需要 config_text".into(),
+            None,
+        )
+    })?;
+    if body.name.is_empty() || content.trim().is_empty() {
+        return Err(AppError::business(
+            ErrorCode::HttpBadRequest,
+            StatusCode::BAD_REQUEST,
+            "name 和 config_text 不能为空".into(),
+            None,
+        ));
+    }
+    // 1. 校验 content 为合法 toml 段内容:包头 `[mcp_servers.<name>]` 后整体 parse,
+    //    既校验段内语法,也校验 name 作 toml 段名的合法性(如含特殊字符在此暴露)。
+    let wrapped = format!("[mcp_servers.{}]\n{}\n", body.name, content);
+    wrapped.parse::<toml_edit::DocumentMut>().map_err(|e| {
+        AppError::business(
+            ErrorCode::HttpBadRequest,
+            StatusCode::BAD_REQUEST,
+            format!("config_text 非法 toml: {e}"),
+            None,
+        )
+    })?;
+    // 2. content_hash = content(段内容,不含段头)的 sha256,hex 编码。
+    //    与落盘/同步侧口径一致:同步时直接比对 config_text 的指纹,无需段头参与。
+    use sha2::{Digest, Sha256};
+    let mut h = Sha256::new();
+    h.update(content.as_bytes());
+    let content_hash = hex::encode(h.finalize());
+
+    // 3. 合并到本节点 config.toml 的 `[mcp_servers.<name>]` 段(逐 key clone)。
+    apply::enable_mcp_config(&state.codex_home, &body.name, &content).await?;
+
+    // 4. 入库(kind=mcp, content_form=config, config_text 填充, files 空)。
+    //    同名重传复用现有 id(命中 → upsert 走 update;未命中 → new_id() 新建),
+    //    避免 UNIQUE(kind,name) 冲突与旧行残留,local_state 亦按 id 写(key 不变)。
+    let id = store::find_id_by_kind_name(&state.db, "mcp", &body.name)
+        .await?
+        .unwrap_or_else(new_id);
+    let rec = store::ExtRecord {
+        id: id.clone(),
+        kind: "mcp".into(),
+        name: body.name.clone(),
+        content_form: "config".into(),
+        // MCP 以内联配置段存储 → config_text 填充(skill/plugin 此处为 None)。
+        config_text: Some(content.clone()),
+        content_hash: content_hash.clone(),
+        enabled: true,
+        // MCP 无市场/版本概念 → None。
+        marketplace: None,
+        version: None,
+    };
+    store::upsert_extension(&state.db, &rec, &[]).await?; // files 空 Vec
+
+    // 5. 本地状态文件(id → {name, hash, kind=mcp, market/version=None})。
+    //    kind="mcp" 供删除分支按类型分发(走 disable_mcp_config);hash 供同步循环对齐。
+    let mut st = apply::load_local_state(&state.codex_home).await;
+    st.insert(
+        id.clone(),
+        apply::LocalExtEntry {
+            name: body.name.clone(),
+            hash: content_hash.clone(),
+            kind: "mcp".into(),
+            market: None,
+            version: None,
+        },
+    );
+    let _ = apply::save_local_state(&state.codex_home, &st).await;
+
+    // 6. 发事件触发其他节点同步(best-effort,无 bus/订阅者时静默)。
+    if let Some(bus) = &state.mt_event_bus {
+        let _ = bus
+            .publish("extensions:changed", &format!("{{\"id\":\"{id}\"}}"))
+            .await;
+    }
+    metrics::counter!("mt_extension_upload_total").increment(1);
+
+    Ok(Json(ExtResp {
+        id,
+        name: body.name,
+        content_hash,
+    }))
+}
+
 /// 从 plugin cache 目录(`plugins/cache/<market>/<name>/`)选取 version 子目录。
 ///
 /// - 唯一子目录:直接取之。
@@ -416,6 +527,11 @@ pub async fn delete_extension(
                     .await;
                     let _ = apply::disable_plugin_config(&state.codex_home, &m.name, &market).await;
                 }
+            }
+            "mcp" => {
+                // MCP 无文件树,仅移除 config.toml 的 `[mcp_servers.<name>]` 段
+                // (段不存在视为成功,best-effort)。
+                let _ = apply::disable_mcp_config(&state.codex_home, &m.name).await;
             }
             _ => {}
         }
