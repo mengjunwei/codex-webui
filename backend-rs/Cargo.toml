@@ -71,6 +71,10 @@ rust-embed = "8"
 mime_guess = "2"
 memberlist = { version = "0.8.5", default-features = false }
 nodecraft = { version = "0.9", default-features = false, features = ["default"] }
+# 集群扩展分发:递归目录扫描
+walkdir = "2"
 [dev-dependencies]
 tower = { version = "0.5", features = ["util"] }
 http-body-util = "0.1"
+# 测试临时目录
+tempfile = "3"
