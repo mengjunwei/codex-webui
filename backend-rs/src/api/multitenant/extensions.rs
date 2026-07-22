@@ -181,14 +181,17 @@ pub async fn upload_extension(
     store::upsert_extension(&state.db, &rec, &fps).await?;
     store::add_holder(&state.db, &id, &state.node_id).await?;
 
-    // 5. 更新本地状态文件(id → {name, hash})：name 供副本删除分支定位目录(不查 PG),
-    //    hash 供同步循环对齐。同名重传 id 复用,key 不变,值全量替换。
+    // 5. 更新本地状态文件(id → {name, hash, kind, market, version})：name+kind+market+version
+    //    供副本删除分支定位目录(不查 PG),hash 供同步循环对齐。同名重传 id 复用,key 不变,值全量替换。
     let mut st = apply::load_local_state(&state.codex_home).await;
     st.insert(
         id.clone(),
         apply::LocalExtEntry {
             name: body.name.clone(),
             hash: content_hash.clone(),
+            kind: "skill".into(),
+            market: None,
+            version: None,
         },
     );
     apply::save_local_state(&state.codex_home, &st).await?;
@@ -292,14 +295,17 @@ async fn upload_plugin(state: AppState, body: UploadBody) -> Result<Json<ExtResp
     store::upsert_extension(&state.db, &rec, &fps).await?;
     store::add_holder(&state.db, &id, &state.node_id).await?;
 
-    // 6. 本地状态文件(id → {name, hash})。
-    //    Task 6 会扩 LocalExtEntry 加 kind/market/version;本 task 先用现有结构。
+    // 6. 本地状态文件(id → {name, hash, kind, market, version})。
+    //    kind/market/version 供副本删除分支构造 plugin 路径(不查 PG),hash 供同步循环对齐。
     let mut st = apply::load_local_state(&state.codex_home).await;
     st.insert(
         id.clone(),
         apply::LocalExtEntry {
             name: body.name.clone(),
             hash: content_hash.clone(),
+            kind: "plugin".into(),
+            market: Some(market.clone()),
+            version: Some(version.clone()),
         },
     );
     apply::save_local_state(&state.codex_home, &st).await?;
@@ -380,7 +386,8 @@ pub async fn delete_extension(
     State(state): State<AppState>,
     axum::extract::Path(id): axum::extract::Path<String>,
 ) -> Result<StatusCode, AppError> {
-    // 查 name 以便清本地 skill 目录;查不到也继续走 DB 删(幂等)。
+    // 查 name/kind/marketplace 以便清本地目录(本节点先物理删 PG 行、再发事件,
+    // 副本侧靠本地 state 清;本节点此时 PG 行还在,可直接读)。查不到也继续走 DB 删(幂等)。
     use crate::db::entities::cluster_extension::{Column as ExtCol, Entity as ExtEntity};
     use sea_orm::{ColumnTrait, EntityTrait, QueryFilter};
     let m = ExtEntity::find()
@@ -389,8 +396,24 @@ pub async fn delete_extension(
         .await
         .map_err(|e| AppError::internal(format!("db: {e}")))?;
     if let Some(m) = m {
-        if m.kind == "skill" {
-            let _ = apply::remove_dir_safe(&apply::skills_dir(&state.codex_home), &m.name).await;
+        match m.kind.as_str() {
+            "skill" => {
+                let _ = apply::remove_dir_safe(&apply::skills_dir(&state.codex_home), &m.name).await;
+            }
+            "plugin" => {
+                // plugin 删整个 plugins/cache/<market>/<name>/(含所有 version),
+                // 再移除 config.toml 的启用段(段不存在视为成功,best-effort)。
+                let market = m.marketplace.clone().unwrap_or_default();
+                if !market.is_empty() {
+                    let _ = apply::remove_dir_safe(
+                        &apply::plugins_cache_dir(&state.codex_home).join(&market),
+                        &m.name,
+                    )
+                    .await;
+                    let _ = apply::disable_plugin_config(&state.codex_home, &m.name, &market).await;
+                }
+            }
+            _ => {}
         }
     }
 

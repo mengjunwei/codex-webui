@@ -1,9 +1,10 @@
-//! 集群扩展同步循环:把本地落盘的 skills 对齐到 PG 清单。
+//! 集群扩展同步循环:把本地落盘的 skills / plugins 对齐到 PG 清单。
 //!
 //! 每节点跑一个周期 task + 一个 "extensions:changed" 事件订阅 task。
 //! - 缺(PG 有本地无/hash 变):从任一 alive holder 逐文件下载 → 落盘 → **基于落盘字节
-//!   重算指纹**校验整体 hash → 更新本地状态 + add_holder(自己) 完成扩散。
-//! - 多(本地有 PG 无):删目录 + 清本地状态。
+//!   重算指纹**校验整体 hash → 更新本地状态 + add_holder(自己)完成扩散。
+//!   plugin 额外写 `[plugins."<name>@<market>"] enabled=true` 启用段。
+//! - 多(本地有 PG 无):按本地 state 的 kind/market/version 删目录 + 清启用段 + 清本地状态。
 //! - 变(hash 不同):等同缺,重下覆盖。
 //!
 //! `run_round` 中单个扩展失败(get_files / 下载 / 写盘等异常)不影响其他扩展:包进
@@ -14,13 +15,13 @@ use crate::error::AppError;
 use crate::services::extensions::{apply, fingerprint, store};
 use crate::state::AppState;
 use std::collections::{HashMap, HashSet};
-use std::path::Path;
 
 /// 单轮同步:把本地扩展对齐到 PG 清单。
 ///
 /// 步骤:
 /// 1. 读 PG `list_enabled`(期望集合)+ 本地 `.cluster-extensions.json`(实际集合)。
-/// 2. 本地有、PG 无 → 用本地 state 里登记的 name 删 `skills/{name}/` 目录 + 清本地状态
+/// 2. 本地有、PG 无 → 用本地 state 里登记的 kind/market/version/name 构造路径删目录
+///    (skill:`skills/{name}/`;plugin:`plugins/cache/{market}/{name}/` + 移除启用段)+ 清本地状态
 ///    (不查 PG,避免发起节点物理删行后副本查不到 name → 孤儿目录)。
 /// 3. PG 有、本地无/hash 变 → 调 `sync_one_extension` 独立 try;单扩展失败仅 warn 跳过,
 ///    不影响其他扩展(下轮重试)。
@@ -28,7 +29,6 @@ use std::path::Path;
 pub async fn run_round(state: &AppState) -> Result<(), AppError> {
     let desired = store::list_enabled(&state.db).await?;
     let mut local = apply::load_local_state(&state.codex_home).await;
-    let skills_root = apply::skills_dir(&state.codex_home);
 
     let desired_ids: HashSet<&String> = desired.iter().map(|r| &r.id).collect();
     // 删除:本地有、PG 无(扩展被禁用或删除)。
@@ -38,12 +38,13 @@ pub async fn run_round(state: &AppState) -> Result<(), AppError> {
         .cloned()
         .collect();
     for id in &stale {
-        // 删除目录用**本地状态里存的 name**,不查 PG。
+        // 删除目录用**本地状态里存的 kind/market/version/name**,不查 PG。
         // 发起节点 delete_extension 先物理删 PG 行、再发事件,副本收到事件时 PG 已无该行,
-        // 若靠 name_of(id) 查 PG 会返回 None → 目录成孤儿。本地 state 在 upload/sync 时已登记 name。
+        // 若靠 name_of(id) 查 PG 会返回 None → 目录成孤儿。本地 state 在 upload/sync 时已登记完整路径信息。
         // remove 同时取出条目并清理 local_state,幂等(id 不在 map 时返回 None)。
         if let Some(e) = local.remove(id) {
-            if let Err(err) = apply::remove_dir_safe(&skills_root, &e.name).await {
+            let clean = cleanup_local_extension(&state.codex_home, &e).await;
+            if let Err(err) = clean {
                 tracing::warn!(ext = %id, error = %err, "删除孤儿目录失败,跳过");
             }
         }
@@ -51,8 +52,9 @@ pub async fn run_round(state: &AppState) -> Result<(), AppError> {
 
     // 新增/更新:每个扩展独立 try,单扩展失败不影响其他。
     for rec in &desired {
-        if rec.kind != "skill" {
-            continue; // 阶段1 仅同步 skill
+        // 阶段1 仅同步 skill / plugin(其他 kind 如 MCP 留后续)。
+        if rec.kind != "skill" && rec.kind != "plugin" {
+            continue;
         }
         // 比对 hash:本地条目 hash 与 PG content_hash 一致则跳过,否则需更新(新增/变更)。
         let need = match local.get(&rec.id) {
@@ -63,7 +65,7 @@ pub async fn run_round(state: &AppState) -> Result<(), AppError> {
             continue;
         }
         // 单扩展失败:warn 跳过,下轮/事件重试;不让一个扩展的异常中断整轮。
-        if let Err(e) = sync_one_extension(state, rec, &skills_root, &mut local).await {
+        if let Err(e) = sync_one_extension(state, rec, &mut local).await {
             tracing::warn!(ext = %rec.id, error = %e, "扩展同步失败,跳过(下轮重试)");
             continue;
         }
@@ -73,6 +75,39 @@ pub async fn run_round(state: &AppState) -> Result<(), AppError> {
     Ok(())
 }
 
+/// 按本地条目的 kind 清理落盘产物(删目录 + 移除 plugin 启用段)。
+///
+/// 用于 stale 删除分支(本地有、PG 无)及 delete_extension handler 失败回退路径。
+/// **不查 PG**——PG 行可能已被发起节点删掉,完全依赖本地 state 的 kind/market/version/name。
+///
+/// - skill:删 `skills/{name}/`。
+/// - plugin:删 `plugins/cache/{market}/{name}/`(整个 name 目录,含所有 version)
+///   + `disable_plugin_config`(移除 `[plugins."{name}@{market}"]` 段,best-effort)。
+/// - 未知 kind / market 缺失:仅尝试按 name 删 skills/(兼容旧 state)。
+async fn cleanup_local_extension(
+    codex_home: &std::path::Path,
+    e: &apply::LocalExtEntry,
+) -> Result<(), AppError> {
+    match e.kind.as_str() {
+        "plugin" => {
+            let market = e.market.clone().unwrap_or_default();
+            if market.is_empty() {
+                return Ok(()); // 无 market 无法定位 plugin 目录,放弃(避免误删 skills)
+            }
+            let res = apply::remove_dir_safe(
+                &apply::plugins_cache_dir(codex_home).join(&market),
+                &e.name,
+            )
+            .await;
+            // 启用段移除 best-effort:段不存在视为成功,失败不阻断目录删除主流程。
+            let _ = apply::disable_plugin_config(codex_home, &e.name, &market).await;
+            res
+        }
+        // skill 及未知 kind(含旧 state 无 kind 字段)默认按 name 删 skills/。
+        _ => apply::remove_dir_safe(&apply::skills_dir(codex_home), &e.name).await,
+    }
+}
+
 /// bootstrap:启动时全量对齐一次(等同 run_round,语义别名)。
 pub async fn bootstrap(state: &AppState) -> Result<(), AppError> {
     run_round(state).await
@@ -80,16 +115,21 @@ pub async fn bootstrap(state: &AppState) -> Result<(), AppError> {
 
 /// 同步单个扩展:查候选 holder → 拉文件清单 → 清旧目录 → 逐文件从 holder 下载落盘 →
 /// **基于落盘实际字节 scan_dir 重算指纹** → aggregate_hash 与 PG content_hash 比对:
-/// - 匹配 → 登记 local_state + add_holder(自己)扩散。
+/// - 匹配 → plugin 额外写启用段 → 登记 local_state(含 kind/market/version) + add_holder(自己)扩散。
 /// - 不匹配 → 清半成品目录 + 结构化 warn(ext/expected/got) + 不登记、不 add_holder,
 ///   返回 Ok(())(本轮已处理,local 未更新 → 下轮自然重试;不走 Err 避免与 run_round
 ///   外层 warn 重复打日志)。
+///
+/// 落盘根目录按 `rec.kind` 分发:
+/// - skill:`skills/{name}/`,清旧 `remove_dir_safe(skills_dir, name)`。
+/// - plugin:`plugins/cache/{market}/{name}/{version}/`(段校验在 `plugin_dest`),
+///   清旧删整个 `plugins/cache/{market}/{name}/`(含所有 version),root=`plugins/cache/{market}`,
+///   name=plugin 名。
 ///
 /// 下载 / 写盘 / DB 等异常返回 Err,由 run_round 外层 warn 记录后跳过。
 async fn sync_one_extension(
     state: &AppState,
     rec: &store::ExtRecord,
-    skills_root: &Path,
     local: &mut HashMap<String, apply::LocalExtEntry>,
 ) -> Result<(), AppError> {
     // 候选 holder 列表:本扩展查一次(list_holders ∩ alive_nodes 排除自己),供本轮所有
@@ -105,9 +145,29 @@ async fn sync_one_extension(
     // 拉文件清单(仅用于知道有哪些 rel_path 要下载;hash 校验改用落盘后 scan_dir 重算,
     // 不再用这份 PG 指纹算 aggregate_hash —— 它与 rec.content_hash 同源,比对恒真)。
     let files = store::get_files(&state.db, &rec.id).await?;
+
+    // 落盘目标 dest + 清旧 (root, name) 按 kind 分发。
+    // 注意 plugin 的清旧要删 cache/<market>/<name>/ 整个 name 目录(含所有 version),
+    // 而非只删 version 子目录 —— 故 root=cache/<market>, name=plugin 名。
+    let (dest, clean_root, clean_name): (std::path::PathBuf, std::path::PathBuf, String) =
+        match rec.kind.as_str() {
+            "skill" => {
+                let root = apply::skills_dir(&state.codex_home);
+                (root.join(&rec.name), root, rec.name.clone())
+            }
+            "plugin" => {
+                let market = rec.marketplace.clone().unwrap_or_default();
+                let version = rec.version.clone().unwrap_or_default();
+                // plugin_dest 带段校验(market/name/version 拒空 / 绝对 / `..` / 反斜杠)。
+                let dest = apply::plugin_dest(&state.codex_home, &market, &rec.name, &version)?;
+                let clean_root = apply::plugins_cache_dir(&state.codex_home).join(&market);
+                (dest, clean_root, rec.name.clone())
+            }
+            _ => return Ok(()), // 未知 kind(如 MCP)跳过,留后续阶段
+        };
+
     // 清旧目录(含上次失败残留的半成品)→ 建空目录。
-    apply::remove_dir_safe(skills_root, &rec.name).await?;
-    let dest = skills_root.join(&rec.name);
+    apply::remove_dir_safe(&clean_root, &clean_name).await?;
     tokio::fs::create_dir_all(&dest)
         .await
         .map_err(|e| AppError::internal(format!("mkdir {}: {e}", dest.display())))?;
@@ -121,12 +181,21 @@ async fn sync_one_extension(
     let landed = fingerprint::scan_dir(&dest).await?;
     let got = fingerprint::aggregate_hash(&landed);
     if got == rec.content_hash {
-        // 登记 {name, hash}:name 供后续删除分支定位目录(不查 PG),hash 供下轮对齐。
+        // plugin 落盘成功后额外写启用段 [plugins."<name>@<market>"] enabled=true。
+        if rec.kind == "plugin" {
+            let market = rec.marketplace.clone().unwrap_or_default();
+            apply::enable_plugin_config(&state.codex_home, &rec.name, &market).await?;
+        }
+        // 登记 {name, hash, kind, market, version}:name+kind+market+version 供后续删除分支
+        // 定位目录(不查 PG),hash 供下轮对齐。
         local.insert(
             rec.id.clone(),
             apply::LocalExtEntry {
                 name: rec.name.clone(),
                 hash: rec.content_hash.clone(),
+                kind: rec.kind.clone(),
+                market: rec.marketplace.clone(),
+                version: rec.version.clone(),
             },
         );
         // 扩散:自己也成 holder,后续其他新节点可从本节点下载。
@@ -135,7 +204,7 @@ async fn sync_one_extension(
     } else {
         // hash 不匹配:清半成品目录(避免下次 scan_dir 误读残留 / 用户看到坏文件);
         // 不登记、不 add_holder,返回 Ok(()) —— local 未更新,下轮 need=true 自然重试。
-        let _ = apply::remove_dir_safe(skills_root, &rec.name).await;
+        let _ = apply::remove_dir_safe(&clean_root, &clean_name).await;
         tracing::warn!(
             ext = %rec.id,
             expected = %rec.content_hash,

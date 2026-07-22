@@ -6,17 +6,28 @@ use std::path::{Path, PathBuf};
 /// 本地状态文件名：id → 本地扩展条目(name+hash) 映射，用于集群扩展同步对齐。
 const STATE_FILE: &str = ".cluster-extensions.json";
 
-/// 本地扩展条目：同时记录 name 与 content_hash。
+/// 本地扩展条目：记录 name / hash / kind / market / version。
 ///
-/// 设计：name 用于删除分支定位 `skills/{name}/` 目录 —— **不依赖 PG 查询**，
+/// 设计：name + kind + market + version 用于删除分支定位落盘目录 —— **不依赖 PG 查询**，
 /// 避免发起节点物理删 PG 行后、副本收到事件时 PG 已无该行 → `name_of(id)` 返回 None
 /// → 目录成孤儿。hash 用于同步循环判断是否需要更新(与 PG content_hash 比对)。
+///
+/// - skill 目录:`skills/{name}/`
+/// - plugin 目录:`plugins/cache/{market}/{name}/{version}/`(删除时清整个 `{name}/`)
+///
+/// `kind` 恒为 "skill" / "plugin"(未知类型不登记);`market`/`version` 仅 plugin 有值。
 #[derive(serde::Serialize, serde::Deserialize, Clone, Debug, Default)]
 pub struct LocalExtEntry {
-    /// 扩展名(skill 目录名)，删除时定位目录用。
+    /// 扩展名(skill 目录名 / plugin 名),删除时定位目录用。
     pub name: String,
-    /// 内容指纹，同步对齐用。
+    /// 内容指纹,同步对齐用。
     pub hash: String,
+    /// 扩展类型:"skill" / "plugin"(MCP 留后续)。删除/落盘分支按此分发根目录。
+    pub kind: String,
+    /// plugin 的市场名(skill 为 None);plugin 删除时拼 `plugins/cache/{market}/` 用。
+    pub market: Option<String>,
+    /// plugin 的版本号(skill 为 None);plugin 落盘时拼 version 子目录用。
+    pub version: Option<String>,
 }
 
 /// skills 目录：`<codex_home>/skills`，存放每个扩展落盘后的文件树。
@@ -180,6 +191,20 @@ mod tests {
             LocalExtEntry {
                 name: "skill-1".into(),
                 hash: "deadbeef".into(),
+                kind: "skill".into(),
+                market: None,
+                version: None,
+            },
+        );
+        // plugin 条目:覆盖 market/version 序列化往返。
+        m.insert(
+            "ext_2".into(),
+            LocalExtEntry {
+                name: "foo".into(),
+                hash: "cafef00d".into(),
+                kind: "plugin".into(),
+                market: Some("openai-api-curated".into()),
+                version: Some("1.2.3".into()),
             },
         );
         save_local_state(tmp.path(), &m).await.unwrap();
@@ -187,6 +212,11 @@ mod tests {
         let e = loaded.get("ext_1").expect("ext_1 应存在");
         assert_eq!(e.name, "skill-1");
         assert_eq!(e.hash, "deadbeef");
+        assert_eq!(e.kind, "skill");
+        let p = loaded.get("ext_2").expect("ext_2 应存在");
+        assert_eq!(p.kind, "plugin");
+        assert_eq!(p.market.as_deref(), Some("openai-api-curated"));
+        assert_eq!(p.version.as_deref(), Some("1.2.3"));
     }
 
     /// plugin_dest 路径拼接(用 temp_dir 避免硬编码绝对路径) + 段穿越拒绝校验。
