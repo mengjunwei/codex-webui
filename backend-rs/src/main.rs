@@ -355,10 +355,16 @@ async fn main() -> anyhow::Result<()> {
         }
     });
 
-    // 集群扩展同步(周期 task + 事件订阅)。声明在外层作用域,shutdown 段 abort
-    // (同 replica_maintenance 理由:loop task 持 state.clone() 含 audit_writer sender,
-    // 不 abort → audit_writer rx 永不 None → flush 死锁)。
+    // 集群扩展同步(周期 task + 事件订阅)。两个 handle 都声明在外层作用域,shutdown 段
+    // 均需 abort(同 replica_maintenance 理由:loop task 持 state.clone() 含 audit_writer
+    // sender,不 abort → audit_writer rx 永不 None → flush 死锁)。
     let mut ext_sync_handle: Option<tokio::task::JoinHandle<()>> = None;
+    // 事件订阅 task 同样持 mt_event_bus Arc + state.clone()(含 audit_writer sender);
+    // 不保存 handle 时,shutdown 靠 bus drop 后 broadcast Closed 自然退出,但 bus 可能被
+    // 其他持有方延迟 drop → task 滞留 → sender 不释放 → audit flush 只能靠 5s 超时放弃
+    // (丢审计日志)。保存 handle 并显式 abort:task 在 recv().await 处被取消,释放 sender,
+    // audit flush 正常完成。
+    let mut ext_event_handle: Option<tokio::task::JoinHandle<()>> = None;
     if cfg.extensions.enable {
         // bootstrap:启动全量对齐(把本地 skills 拉齐到 PG 清单)。non-fatal:失败仅 warn,
         // 不阻断启动(下轮周期 task / 事件会重试)。
@@ -381,7 +387,7 @@ async fn main() -> anyhow::Result<()> {
         // 下一次事件或周期仍会补齐);Closed(bus 被 drop)才退出。
         if let Some(bus) = mt_event_bus.clone() {
             let st2 = state.clone();
-            tokio::spawn(async move {
+            ext_event_handle = Some(tokio::spawn(async move {
                 let mut rx = match bus.subscribe("extensions:changed").await {
                     Ok(rx) => rx,
                     Err(e) => {
@@ -405,7 +411,7 @@ async fn main() -> anyhow::Result<()> {
                         Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
                     }
                 }
-            });
+            }));
         }
     }
 
@@ -469,9 +475,13 @@ async fn main() -> anyhow::Result<()> {
     // abort 副本维护 loop task:释放其持有的 state.clone()(audit_writer sender),
     // 否则 audit_writer 的 rx 永不返回 None → flush 永久阻塞(死锁)。
     replica_maintenance_handle.abort();
-    // abort 扩展周期同步 loop task(同上理由:释放 state.clone())。事件订阅 task 不保存
-    // handle:依赖 bus drop 后 broadcast Closed 自然退出,且有下方 5s audit flush 超时兜底。
+    // abort 扩展周期同步 loop task(同上理由:释放 state.clone())。同时 abort 事件订阅
+    // task:它持 mt_event_bus Arc + state.clone()(含 audit_writer sender),abort 后 task
+    // 在 recv().await 处被取消,释放 sender,audit flush 不必靠下方 5s 超时兜底(避免丢日志)。
     if let Some(h) = ext_sync_handle.take() {
+        h.abort();
+    }
+    if let Some(h) = ext_event_handle.take() {
         h.abort();
     }
     // drop state 释放 audit_writer 的 mpsc sender(本节点最后一份,除非有 promote_resume_thread
