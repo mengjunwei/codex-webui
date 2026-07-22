@@ -11,6 +11,7 @@ mod m20260719_000001_combined_schema;
 mod m20260720_000001_rbac_permissions;
 mod m20260721_000001_session_replicas_per_thread;
 mod m20260722_000001_cluster_extensions;
+mod m20260722_000002_cluster_extensions_unique;
 
 pub struct Migrator;
 
@@ -21,6 +22,7 @@ impl MigratorTrait for Migrator {
             Box::new(m20260720_000001_rbac_permissions::Migration),
             Box::new(m20260721_000001_session_replicas_per_thread::Migration),
             Box::new(m20260722_000001_cluster_extensions::Migration),
+            Box::new(m20260722_000002_cluster_extensions_unique::Migration),
         ]
     }
 }
