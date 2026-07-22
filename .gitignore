@@ -132,3 +132,7 @@ TODO.local.md
 NOTES.local.md
 scratch/
 .playwright-mcp/
+
+# ── 本地集群测试环境 / 测试截图(不入库)─────────────────
+.superpowers/
+test-conversation-*.png
