@@ -828,6 +828,10 @@ pub async fn mt_delete_thread(
     use crate::db::entity::{pending_server_request, token_usage_snapshot, turn_diff, turn_error};
     use crate::db::entities::thread_resume_cache;
     let _ = ThreadEntity::delete_by_id(thread_id.clone()).exec(db).await;
+    // 清 session_replicas 主副本记录(此前漏删 → 死 thread 残留污染负载统计 + reclaim 反复认领)。
+    let _ = crate::db::entities::session_replica::Entity::delete_by_id(thread_id.clone())
+        .exec(db)
+        .await;
     let _ = thread_resume_cache::Entity::delete_by_id(thread_id.clone()).exec(db).await;
     let _ = token_usage_snapshot::Entity::delete_many()
         .filter(token_usage_snapshot::Column::ThreadId.eq(thread_id.clone())).exec(db).await;
@@ -838,10 +842,13 @@ pub async fn mt_delete_thread(
     let _ = pending_server_request::Entity::delete_many()
         .filter(pending_server_request::Column::ThreadId.eq(thread_id.clone())).exec(db).await;
 
-    // 5. 清 sticky 绑定 + 本地 active_rollout 记录 + filesync 进程内 offset。
+    // 5. 清 sticky 绑定 + 本地 active_rollout 记录 + filesync 进程内 offset + codex_tid 映射。
     let _ = state.sticky.clear(&thread_id).await;
     state.active_rollout.lock().await.remove(&thread_id);
     crate::services::workspace::file_sync::clear_thread_offsets(&thread_id).await;
+    // 清 codex_tid 双向映射(进程内 + Redis),防 thread 删除后映射残留。
+    crate::services::multitenant::replication::del_codex_tid(state.mt_redis.as_ref(), &thread_id)
+        .await;
 
     tracing::info!(thread_id = %thread_id, team_id = %team_id, "thread deleted");
     Ok(StatusCode::NO_CONTENT)

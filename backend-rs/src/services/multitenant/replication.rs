@@ -96,6 +96,45 @@ pub async fn set_codex_tid(redis: Option<&redis::Client>, thread_id: &str, codex
         .insert(codex_tid.to_string(), thread_id.to_string());
 }
 
+/// 删除 codex_tid 映射(thread/delete 时调):清进程内 + Redis(codex:tid / codex:tid_rev / codex:primary)。
+/// 自包含:先读正向映射拿 codex_tid(删反向),再删全部。幂等(无记录返回 None/0,无副作用)。
+pub async fn del_codex_tid(redis: Option<&redis::Client>, thread_id: &str) {
+    // 进程内:先取 codex_tid(用于删反向 map),再删正向。
+    let local_codex_tid = CODEX_TID_MAP.lock().await.remove(thread_id);
+    if let Some(ctid) = &local_codex_tid {
+        CODEX_TID_REV_MAP.lock().await.remove(ctid);
+    }
+    let Some(c) = redis else {
+        return;
+    };
+    let Ok(mut conn) = c.get_multiplexed_async_connection().await else {
+        return;
+    };
+    // Redis:GET 正向拿 codex_tid(进程内可能无,如转发到 target 节点删除时),用于删反向映射。
+    let redis_codex_tid: Option<String> = redis::cmd("GET")
+        .arg(format!("codex:tid:{thread_id}"))
+        .query_async(&mut conn)
+        .await
+        .ok()
+        .flatten();
+    // DEL codex:tid + codex:primary(主租约,thread 已删不再需要)。
+    let _: i64 = redis::cmd("DEL")
+        .arg(format!("codex:tid:{thread_id}"))
+        .arg(format!("codex:primary:{thread_id}"))
+        .query_async(&mut conn)
+        .await
+        .unwrap_or(0);
+    // DEL 反向映射 codex:tid_rev(优先 Redis 读到的 codex_tid,回退进程内)。
+    let ctid_for_rev = redis_codex_tid.or(local_codex_tid);
+    if let Some(ctid) = ctid_for_rev {
+        let _: i64 = redis::cmd("DEL")
+            .arg(format!("codex:tid_rev:{ctid}"))
+            .query_async(&mut conn)
+            .await
+            .unwrap_or(0);
+    }
+}
+
 /// 读取 codex_tid 映射:进程内优先 → Redis(命中回填进程内加速后续命中)→ None。
 /// 调用方对 None 应 fallback 系统 thread_id(向后兼容,不 panic)。
 pub async fn get_codex_tid(redis: Option<&redis::Client>, thread_id: &str) -> Option<String> {
