@@ -1,4 +1,5 @@
 use crate::error::AppError;
+use crate::services::extensions::config_merge;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
@@ -21,6 +22,44 @@ pub struct LocalExtEntry {
 /// skills 目录：`<codex_home>/skills`，存放每个扩展落盘后的文件树。
 pub fn skills_dir(codex_home: &Path) -> PathBuf {
     codex_home.join("skills")
+}
+
+/// plugin 缓存根目录：`<codex_home>/plugins/cache`，所有 marketplace plugin 落盘于此。
+pub fn plugins_cache_dir(codex_home: &Path) -> PathBuf {
+    codex_home.join("plugins").join("cache")
+}
+
+/// plugin 落盘目标目录：`<codex_home>/plugins/cache/<market>/<name>/<version>`。
+/// 按 market/name/version 三级隔离,支持同 name 多 market、多版本并存。
+pub fn plugin_dest(codex_home: &Path, market: &str, name: &str, version: &str) -> PathBuf {
+    plugins_cache_dir(codex_home)
+        .join(market)
+        .join(name)
+        .join(version)
+}
+
+/// plugin 落盘后写启用段到 config.toml：`[plugins."<name>@<market>"] enabled = "true"`。
+/// 复用 config_merge 的段合并,保留其余配置原样。
+pub async fn enable_plugin_config(
+    codex_home: &Path,
+    name: &str,
+    market: &str,
+) -> Result<(), AppError> {
+    let cfg = codex_home.join("config.toml");
+    let section = format!("plugins.\"{name}@{market}\"");
+    config_merge::ensure_section_kv(&cfg, &section, "enabled", "true").await
+}
+
+/// 删除 plugin 时移除启用段 `[plugins."<name>@<market>"]`。
+/// 段不存在视为成功(容错),其余配置保留。
+pub async fn disable_plugin_config(
+    codex_home: &Path,
+    name: &str,
+    market: &str,
+) -> Result<(), AppError> {
+    let cfg = codex_home.join("config.toml");
+    let section = format!("plugins.\"{name}@{market}\"");
+    config_merge::remove_section(&cfg, &section).await
 }
 
 /// 安全拼路径：拒绝空 / 绝对 / 含 `..` / 含反斜杠的相对路径；
@@ -128,5 +167,35 @@ mod tests {
         let e = loaded.get("ext_1").expect("ext_1 应存在");
         assert_eq!(e.name, "skill-1");
         assert_eq!(e.hash, "deadbeef");
+    }
+
+    /// plugin_dest 路径拼接：<codex_home>/plugins/cache/<market>/<name>/<version>
+    #[test]
+    fn plugin_dest_path() {
+        let h = Path::new("/home/x");
+        assert_eq!(
+            plugin_dest(h, "mkt", "foo", "1.2.3"),
+            Path::new("/home/x/plugins/cache/mkt/foo/1.2.3")
+        );
+    }
+
+    /// enable 写入 [plugins."<name>@<market>"] 段;disable 后该段被移除。
+    #[tokio::test]
+    async fn plugin_config_enable_disable_roundtrip() {
+        let tmp = tempfile::tempdir().unwrap();
+        enable_plugin_config(tmp.path(), "foo", "mkt")
+            .await
+            .unwrap();
+        let s = tokio::fs::read_to_string(tmp.path().join("config.toml"))
+            .await
+            .unwrap();
+        assert!(s.contains("[plugins.\"foo@mkt\"]"));
+        disable_plugin_config(tmp.path(), "foo", "mkt")
+            .await
+            .unwrap();
+        let s2 = tokio::fs::read_to_string(tmp.path().join("config.toml"))
+            .await
+            .unwrap();
+        assert!(!s2.contains("foo@mkt"));
     }
 }
