@@ -1,11 +1,15 @@
-//! 集群扩展同步循环:把本地落盘的 skills / plugins 对齐到 PG 清单。
+//! 集群扩展同步循环:把本地落盘的 skills / plugins / mcp 配置段对齐到 PG 清单。
 //!
 //! 每节点跑一个周期 task + 一个 "extensions:changed" 事件订阅 task。
-//! - 缺(PG 有本地无/hash 变):从任一 alive holder 逐文件下载 → 落盘 → **基于落盘字节
-//!   重算指纹**校验整体 hash → 更新本地状态 + add_holder(自己)完成扩散。
-//!   plugin 额外写 `[plugins."<name>@<market>"] enabled=true` 启用段。
-//! - 多(本地有 PG 无):按本地 state 的 kind/market/version 删目录 + 清启用段 + 清本地状态。
-//! - 变(hash 不同):等同缺,重下覆盖。
+//! - 缺(PG 有本地无/hash 变):
+//!   - skill/plugin:从任一 alive holder 逐文件下载 → 落盘 → **基于落盘字节重算指纹**
+//!     校验整体 hash → 更新本地状态 + add_holder(自己)完成扩散。plugin 额外写
+//!     `[plugins."<name>@<market>"] enabled=true` 启用段。
+//!   - mcp:无文件,直接用 PG `config_text` 写 `[mcp_servers.<name>]` 段 → 更新本地状态。
+//!     不查 holder / 不下载 / 不 add_holder(MCP 无文件指纹,holder 对 MCP 无意义),
+//!     在 `sync_one_extension` 顶部短路(早于 holder_candidates,否则空候选 Err 卡死)。
+//! - 多(本地有 PG 无):按本地 state 的 kind/market/version/name 删目录 + 清启用段 + 清本地状态。
+//! - 变(hash 不同):等同缺,重下覆盖(skill/plugin) / 重写段(mcp)。
 //!
 //! `run_round` 中单个扩展失败(get_files / 下载 / 写盘等异常)不影响其他扩展:包进
 //! `sync_one_extension` 独立 try,失败仅 warn 跳过,下轮重试;已成功登记的 local_state
@@ -52,8 +56,8 @@ pub async fn run_round(state: &AppState) -> Result<(), AppError> {
 
     // 新增/更新:每个扩展独立 try,单扩展失败不影响其他。
     for rec in &desired {
-        // 阶段1 仅同步 skill / plugin(其他 kind 如 MCP 留后续)。
-        if rec.kind != "skill" && rec.kind != "plugin" {
+        // 同步 skill / plugin / mcp;其他未知 kind 跳过。MCP 在 sync_one_extension 顶部短路处理。
+        if rec.kind != "skill" && rec.kind != "plugin" && rec.kind != "mcp" {
             continue;
         }
         // 比对 hash:本地条目 hash 与 PG content_hash 一致则跳过,否则需更新(新增/变更)。
@@ -83,6 +87,7 @@ pub async fn run_round(state: &AppState) -> Result<(), AppError> {
 /// - skill:删 `skills/{name}/`。
 /// - plugin:删 `plugins/cache/{market}/{name}/`(整个 name 目录,含所有 version)
 ///   + `disable_plugin_config`(移除 `[plugins."{name}@{market}"]` 段,best-effort)。
+/// - mcp:无目录,仅 `disable_mcp_config`(移除 `[mcp_servers.{name}]` 段,best-effort)。
 /// - 未知 kind / market 缺失:仅尝试按 name 删 skills/(兼容旧 state)。
 async fn cleanup_local_extension(
     codex_home: &std::path::Path,
@@ -103,6 +108,12 @@ async fn cleanup_local_extension(
             let _ = apply::disable_plugin_config(codex_home, &e.name, &market).await;
             res
         }
+        "mcp" => {
+            // MCP 无目录可删,仅移除 config.toml `[mcp_servers.<name>]` 段
+            // (best-effort,段不存在视为成功)。返回 Ok 与其他分支类型对齐。
+            let _ = apply::disable_mcp_config(codex_home, &e.name).await;
+            Ok(())
+        }
         // skill 及未知 kind(含旧 state 无 kind 字段)默认按 name 删 skills/。
         _ => apply::remove_dir_safe(&apply::skills_dir(codex_home), &e.name).await,
     }
@@ -113,7 +124,14 @@ pub async fn bootstrap(state: &AppState) -> Result<(), AppError> {
     run_round(state).await
 }
 
-/// 同步单个扩展:查候选 holder → 拉文件清单 → 清旧目录 → 逐文件从 holder 下载落盘 →
+/// 同步单个扩展。
+///
+/// **MCP 短路**:`rec.kind == "mcp"` 时在 holder 检查**之前**直接返回 —— MCP 无文件,
+/// 直接用 PG `config_text` 写 `[mcp_servers.<name>]` 段 + 登记 local_state(kind="mcp"),
+/// 不查 holder / 不下载 / 不 add_holder(holder 对 MCP 无意义)。必须短路在 `holder_candidates`
+/// 之前,否则 MCP 无 holder 行 → 空候选 Err → 永远到不了 kind 分支。
+///
+/// skill/plugin 走文件流程:查候选 holder → 拉文件清单 → 清旧目录 → 逐文件从 holder 下载落盘 →
 /// **基于落盘实际字节 scan_dir 重算指纹** → aggregate_hash 与 PG content_hash 比对:
 /// - 匹配 → plugin 额外写启用段 → 登记 local_state(含 kind/market/version) + add_holder(自己)扩散。
 /// - 不匹配 → 清半成品目录 + 结构化 warn(ext/expected/got) + 不登记、不 add_holder,
@@ -132,6 +150,26 @@ async fn sync_one_extension(
     rec: &store::ExtRecord,
     local: &mut HashMap<String, apply::LocalExtEntry>,
 ) -> Result<(), AppError> {
+    // MCP 短路:必须在 holder_candidates **之前** —— MCP 无文件 / 无 holder 行,
+    // 若走到下面的 holder 空候选检查会直接 Err,永远到不了 kind 分支。
+    // config_text 直接从 PG 读(PG 权威),完整性由 PG 保证,不重算 hash。
+    if rec.kind == "mcp" {
+        let content = rec.config_text.clone().unwrap_or_default();
+        apply::enable_mcp_config(&state.codex_home, &rec.name, &content).await?;
+        local.insert(
+            rec.id.clone(),
+            apply::LocalExtEntry {
+                name: rec.name.clone(),
+                hash: rec.content_hash.clone(),
+                kind: "mcp".into(),
+                market: None,
+                version: None,
+            },
+        );
+        // MCP 无文件,不调 add_holder(holder 对 MCP 无意义)。
+        return Ok(());
+    }
+
     // 候选 holder 列表:本扩展查一次(list_holders ∩ alive_nodes 排除自己),供本轮所有
     // 文件复用,避免每文件重复查 DB(原 download_from_holder 每文件查一次)。
     let holders = holder_candidates(state, &rec.id).await?;
@@ -163,7 +201,7 @@ async fn sync_one_extension(
                 let clean_root = apply::plugins_cache_dir(&state.codex_home).join(&market);
                 (dest, clean_root, rec.name.clone())
             }
-            _ => return Ok(()), // 未知 kind(如 MCP)跳过,留后续阶段
+            _ => return Ok(()), // 真正的未知 kind 跳过(MCP 已在函数顶部短路,不会到此)
         };
 
     // 清旧目录(含上次失败残留的半成品)→ 建空目录。
