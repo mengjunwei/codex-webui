@@ -8,6 +8,7 @@ import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { showSnackbar } from '@/stores/snackbar-store';
+import { useUserStore } from '@/stores/user-store';
 
 interface Props {
   open: boolean;
@@ -34,6 +35,9 @@ export function AccountLoginDialog({ open, onClose }: Props) {
       const data = await res.json() as { accessToken: string; refreshToken: string };
       sessionStorage.setItem('codex.webui.jwt', data.accessToken);
       sessionStorage.setItem('codex.webui.refreshToken', data.refreshToken);
+      // 登录成功后补拉 /me,刷新 useIsPlatformAdmin / usePermission 驱动的 UI 显隐
+      // (AuthenticatedLayout 仅在挂载且 me 为空时拉一次,这里不补则权限态恒为旧值)。
+      void useUserStore.getState().loadMe();
       showSnackbar(t('Login successful'), 'success');
       onClose();
     } catch {

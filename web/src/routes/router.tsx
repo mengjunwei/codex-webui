@@ -21,9 +21,9 @@ import { SettingsPage } from '@/components/settings/settings-page';
 import { IntegrationsPage } from '@/components/integrations/integrations-page';
 
 export type LoginSearch = { redirect: string };
-export type IntegrationsSearch = { tab: 'plugins' | 'apps' | 'mcps' };
+export type IntegrationsSearch = { tab: 'plugins' | 'apps' | 'mcps' | 'extensions' };
 
-const INTEGRATION_TABS = ['plugins', 'apps', 'mcps'] as const;
+const INTEGRATION_TABS = ['plugins', 'apps', 'mcps', 'extensions'] as const;
 
 function sanitizeIntegrationsSearch(search: Record<string, unknown>): IntegrationsSearch {
   const tab = search.tab;

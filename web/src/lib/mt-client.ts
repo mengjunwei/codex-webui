@@ -336,3 +336,53 @@ export const turnErrorApi = {
     mtFetch<TurnErrorDto[]>(`/threads/${threadId}/turn-errors`),
 };
 export interface InvitationDto { id: string; code: string; created_at: number; expires_at: number; max_uses: number; used_count: number; }
+
+// ── Extensions API(集群扩展分发:列表/上传 skill|plugin|mcp/删除)──────────
+// 对齐 backend-rs/src/api/multitenant/extensions.rs:
+// - GET    /extensions        → ListItem[](登录可读)
+// - POST   /extensions        上传 skill 文件树 / 装 plugin / 合并 mcp 配置段(platform admin)
+// - DELETE /extensions/{id}   删除扩展(admin)
+
+/** 后端 ListItem:{ id, kind, name, enabled }。 */
+export interface ExtensionListItem {
+  id: string;
+  kind: string;
+  name: string;
+  enabled: boolean;
+}
+
+/** 后端 ExtResp:{ id, name, content_hash }。 */
+export interface ExtensionResp {
+  id: string;
+  name: string;
+  content_hash: string;
+}
+
+/** 上传请求内的单个文件:相对路径 + base64 内容(skill 用)。 */
+export interface UploadFile {
+  rel_path: string;
+  content_base64: string;
+}
+
+/** 上传请求体(kind 分发;skill 必填 files,plugin 可选 marketplace,mcp 必填 config_text)。 */
+export interface UploadExtensionBody {
+  kind: 'skill' | 'plugin' | 'mcp';
+  name: string;
+  /** skill 必填(JSON base64 文件树)。 */
+  files?: UploadFile[];
+  /** plugin 可选,默认 openai-api-curated。 */
+  marketplace?: string;
+  /** mcp 必填(MCP 段内容,无段头)。 */
+  config_text?: string;
+}
+
+export const extensionsApi = {
+  /** 列出所有 enabled 扩展(登录可读)。 */
+  list: () => mtFetch<ExtensionListItem[]>('/extensions'),
+  /** 上传扩展(platform admin):按 kind 分发 skill/plugin/mcp。 */
+  upload: (body: UploadExtensionBody) =>
+    mtFetch<ExtensionResp>('/extensions', 'POST', body),
+  /** 删除扩展(admin):清本地目录/段 + 删 DB 行 + 发事件。 */
+  remove: (id: string) =>
+    mtFetch<void>(`/extensions/${encodeURIComponent(id)}`, 'DELETE'),
+};

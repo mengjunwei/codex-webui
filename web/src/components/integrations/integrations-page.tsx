@@ -9,13 +9,15 @@ import { Button } from '@/components/ui/button';
 import { Separator } from '@/components/ui/separator';
 import { useTimelineStore } from '@/stores/timeline-store';
 import { AppsTab } from './apps-tab';
+import { ExtensionsTab } from './extensions-tab';
 
-const TABS = ['apps'] as const;
+const TABS = ['apps', 'extensions'] as const;
 type IntegrationTab = (typeof TABS)[number];
 
 function tabLabel(tab: IntegrationTab): string {
   const labels: Record<IntegrationTab, string> = {
     apps: 'Apps',
+    extensions: 'Extensions',
   };
   return labels[tab];
 }
@@ -69,6 +71,7 @@ export function IntegrationsPage() {
         <Separator />
 
         {tab === 'apps' && <AppsTab />}
+        {tab === 'extensions' && <ExtensionsTab />}
         {/* Plugins and MCP tabs removed - endpoints deprecated */}
       </div>
     </div>
