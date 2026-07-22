@@ -99,6 +99,14 @@ impl CodexProcessManager {
         }
     }
 
+    /// 当前 codex 二进制路径(spawn `codex plugin add` 等子命令时复用)。
+    ///
+    /// 调用方应配合 `build_codex_command` 构造 Command(自动处理 Windows npm
+    /// 垫片的 node 直启问题),而非 `tokio::process::Command::new` 直接启动。
+    pub fn codex_bin(&self) -> &str {
+        &self.codex_bin
+    }
+
     /// 当前 generation（首次成功初始化之前为 0）。
     /// 使用 Relaxed:generation 只在日志和事件中使用,不用于同步。
     pub fn generation(&self) -> u64 {

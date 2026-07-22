@@ -32,6 +32,9 @@ pub struct ExtRecord {
     pub enabled: bool,
     /// plugin 的市场名(skill/mcp 为 None)。plugin 上传时由 API 填入,同步/下载侧按此列检索。
     pub marketplace: Option<String>,
+    /// plugin 的版本号(取自 cache/<market>/<name>/ 下 version 子目录名)。
+    /// skill/mcp 为 None。原 cluster_extensions.version 列一直存在,此处业务视图补上。
+    pub version: Option<String>,
 }
 
 impl From<ExtModel> for ExtRecord {
@@ -44,6 +47,7 @@ impl From<ExtModel> for ExtRecord {
             content_hash: m.content_hash,
             enabled: m.enabled,
             marketplace: m.marketplace,
+            version: m.version,
         }
     }
 }
@@ -128,7 +132,7 @@ pub async fn upsert_extension(
                 name: Set(rec.name.clone()),
                 display_name: Set(None),
                 description: Set(None),
-                version: Set(None),
+                version: Set(rec.version.clone()),
                 content_form: Set(rec.content_form.clone()),
                 config_text: Set(None),
                 content_hash: Set(rec.content_hash.clone()),
@@ -279,10 +283,10 @@ mod tests {
     // 且含 db 字段,全局开 mock 会让 cargo test 编译整个 lib 失败。故改用纯函数测试覆盖
     // ExtRecord 映射(list_enabled 内部依赖)与 file id 生成,SQL 形态留 Task 9 端到端验证。
 
-    /// 校验 list_enabled 内部依赖的 ExtModel→ExtRecord 转换:不 panic + 6 业务字段对齐 +
-    /// 展示字段(display_name/description/version/config_text/created_by)被正确剥离。
+    /// 校验 list_enabled 内部依赖的 ExtModel→ExtRecord 转换:不 panic + 8 业务字段对齐 +
+    /// 展示字段(display_name/description/config_text/created_by)被正确剥离(version/marketplace 保留)。
     #[test]
-    fn ext_record_from_maps_six_business_fields() {
+    fn ext_record_from_maps_eight_business_fields() {
         let m = ExtModel {
             id: "ext-1".into(),
             kind: "skill".into(),
@@ -307,7 +311,8 @@ mod tests {
         assert_eq!(r.content_hash, "abc123");
         assert!(r.enabled);
         assert_eq!(r.marketplace, None, "skill 行 marketplace 应为 None");
-        // ExtRecord 仅 7 字段,不含 display_name/description/version 等 → 无从断言它们。
+        assert_eq!(r.version.as_deref(), Some("1.2.3"), "version 列应映射到 ExtRecord");
+        // ExtRecord 仅 8 字段,不含 display_name/description/config_text/created_by → 无从断言它们。
     }
 
     /// next_file_id 必须严格单调递增 → 同毫秒并发 / 批次内 / 跨批次 id 均唯一,不碰主键。
