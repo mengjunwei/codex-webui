@@ -320,8 +320,11 @@ struct ExtFetchReq {
 
 /// 节点间扩展文件下载(holder 节点响应文件字节,供同步循环调用)。
 ///
-/// 阶段1 仅支持 skill:查 extension 取 name/kind → kind != "skill" 拒 400 →
-/// `<codex_home>/skills/<name>` 为根 → safe_join 校验 rel_path 防穿越 →
+/// 支持 skill 与 plugin 两类:
+/// - skill:根目录 = `<codex_home>/skills/<name>`。
+/// - plugin:根目录 = `<codex_home>/plugins/cache/<market>/<name>/<version>`
+///   (market/version 取自 cluster_extensions 列;plugin_dest 自带段校验防穿越)。
+/// 其它 kind 拒 400。选定根后统一 safe_join 校验 rel_path 防穿越 →
 /// tokio::fs::read 读字节 → 200 application/octet-stream。文件缺失返回 404
 /// (不区分"无权限"与"不存在",统一 404 避免信息泄漏)。
 async fn ext_fetch(
@@ -330,19 +333,31 @@ async fn ext_fetch(
 ) -> Result<axum::response::Response, AppError> {
     use crate::db::entities::cluster_extension::{Column as ExtCol, Entity as ExtEntity};
     use sea_orm::{ColumnTrait, EntityTrait, QueryFilter};
-    // 查扩展元数据(取 name + kind)。
+    // 查扩展元数据(取 name + kind + plugin 所需 market/version)。
     let m = ExtEntity::find()
         .filter(ExtCol::Id.eq(req.ext_id.clone()))
         .one(&state.db)
         .await
         .map_err(|e| AppError::internal(format!("db: {e}")))?;
     let m = m.ok_or_else(|| AppError::status(404))?;
-    // 阶段1 仅支持 skill 下载。
-    if m.kind != "skill" {
+    // 按 kind 选根目录:skill 直拼 skills/<name>;plugin 走 plugin_dest(market/name/version 三级,
+    // 段校验拒绝空/绝对/含 `..` 或反斜杠)。其余 kind 拒 400。
+    let root = if m.kind == "skill" {
+        crate::services::extensions::apply::skills_dir(&state.codex_home).join(&m.name)
+    } else if m.kind == "plugin" {
+        // plugin 记录理应有 marketplace + version;缺失则 unwrap_or("") 交由 plugin_dest 段校验拒绝。
+        let market = m.marketplace.as_deref().unwrap_or("");
+        let version = m.version.as_deref().unwrap_or("");
+        crate::services::extensions::apply::plugin_dest(
+            &state.codex_home,
+            market,
+            &m.name,
+            version,
+        )?
+    } else {
         return Err(AppError::status(400));
-    }
-    // 根目录 = <codex_home>/skills/<name>;safe_join 校验 rel_path 防穿越。
-    let root = crate::services::extensions::apply::skills_dir(&state.codex_home).join(&m.name);
+    };
+    // safe_join 校验 rel_path 防穿越。
     let path = safe_join(&root, &req.rel_path).await?;
     // 读字节;读取失败(文件不存在/无权限)统一 404。
     let bytes = tokio::fs::read(&path)
