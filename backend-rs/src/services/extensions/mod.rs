@@ -2,4 +2,5 @@
 //!
 //! 本模块按 task 逐步补齐，当前仅 `fingerprint`（Task 3）。
 
+pub mod apply;
 pub mod fingerprint;
