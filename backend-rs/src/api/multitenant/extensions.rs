@@ -75,6 +75,18 @@ pub async fn upload_extension(
             None,
         ));
     }
+    // 上传总量上限:防滥用。解码后内容全驻内存,仅限制单文件不足以阻挡超大上传,
+    // 故追加文件数上限与解码后总字节数上限。
+    const MAX_FILE_COUNT: usize = 200;
+    const MAX_TOTAL_BYTES: usize = 50 * 1024 * 1024; // 50 MB
+    if body.files.len() > MAX_FILE_COUNT {
+        return Err(AppError::business(
+            ErrorCode::HttpBadRequest,
+            StatusCode::BAD_REQUEST,
+            format!("文件数 {} 超过上限 {}", body.files.len(), MAX_FILE_COUNT),
+            None,
+        ));
+    }
 
     let max_file_bytes = state.cfg_extensions_max_file_bytes;
 
@@ -86,6 +98,7 @@ pub async fn upload_extension(
     let tmp = tempfile::tempdir().map_err(|e| AppError::internal(format!("tmp: {e}")))?;
     // 预先把所有文件内容解码好(校验 + 供后续正式落盘复用,避免二次解码)。
     let mut decoded: Vec<(String, Vec<u8>)> = Vec::with_capacity(body.files.len());
+    let mut total_bytes: usize = 0;
     for f in &body.files {
         let bytes = base64_decode(&f.content_base64).map_err(|e| {
             AppError::business(
@@ -100,6 +113,19 @@ pub async fn upload_extension(
                 ErrorCode::HttpBadRequest,
                 StatusCode::BAD_REQUEST,
                 format!("文件 {} 超过单文件上限", f.rel_path),
+                None,
+            ));
+        }
+        // 累计解码后总字节,超上限即拒绝(防止内存被超大上传耗尽)。
+        total_bytes = total_bytes.saturating_add(bytes.len());
+        if total_bytes > MAX_TOTAL_BYTES {
+            return Err(AppError::business(
+                ErrorCode::HttpBadRequest,
+                StatusCode::BAD_REQUEST,
+                format!(
+                    "上传总字节数 {} 超过上限 {}",
+                    total_bytes, MAX_TOTAL_BYTES
+                ),
                 None,
             ));
         }
@@ -118,7 +144,11 @@ pub async fn upload_extension(
     }
 
     // 4. 入库 + 本节点登记 holder。
-    let id = new_id();
+    //    同名重传复用现有 id:命中 → upsert 走 update 分支(created_at 保留、content_hash + files 全量替换);
+    //    未命中 → new_id() 新建。避免 UNIQUE(kind,name) 冲突与旧行残留,local_state 亦按 id 写(key 不变)。
+    let id = store::find_id_by_kind_name(&state.db, &body.kind, &body.name)
+        .await?
+        .unwrap_or_else(new_id);
     let rec = store::ExtRecord {
         id: id.clone(),
         kind: body.kind.clone(),

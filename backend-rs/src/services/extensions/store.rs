@@ -73,6 +73,26 @@ fn next_file_id() -> i64 {
     FILE_ID_SEQ.fetch_add(1, Ordering::Relaxed)
 }
 
+/// 按 (kind, name) 查现有扩展 id —— 同名重传复用主键,避免 UNIQUE(kind,name) 冲突与旧行残留。
+///
+/// `cluster_extensions` 上有 `UNIQUE(kind,name)` 约束:若每次上传都用 `new_id()` 生成新主键,
+/// 同名 skill 重传会因 insert 冲突失败;即便没有约束也会残留多行旧记录。
+/// 命中现有行 → 复用其 id,后续 `upsert_extension` 走 update 分支(created_at 保留、
+/// content_hash + files 全量替换);未命中 → 返回 None,由调用方 `new_id()` 新建。
+pub async fn find_id_by_kind_name(
+    db: &DatabaseConnection,
+    kind: &str,
+    name: &str,
+) -> Result<Option<String>, AppError> {
+    let row = ExtEntity::find()
+        .filter(ExtCol::Kind.eq(kind.to_string()))
+        .filter(ExtCol::Name.eq(name.to_string()))
+        .one(db)
+        .await
+        .map_err(|e| AppError::internal(format!("db: {e}")))?;
+    Ok(row.map(|m| m.id))
+}
+
 /// 插入或更新扩展（连同文件指纹全量替换）。
 ///
 /// - 扩展存在：update，保留原 created_at；
