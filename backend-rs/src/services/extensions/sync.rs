@@ -20,7 +20,8 @@ use std::path::Path;
 ///
 /// 步骤:
 /// 1. 读 PG `list_enabled`(期望集合)+ 本地 `.cluster-extensions.json`(实际集合)。
-/// 2. 本地有、PG 无 → 删目录 + 清本地状态(name 查不到则仅清 state,孤儿目录留待后续)。
+/// 2. 本地有、PG 无 → 用本地 state 里登记的 name 删 `skills/{name}/` 目录 + 清本地状态
+///    (不查 PG,避免发起节点物理删行后副本查不到 name → 孤儿目录)。
 /// 3. PG 有、本地无/hash 变 → 调 `sync_one_extension` 独立 try;单扩展失败仅 warn 跳过,
 ///    不影响其他扩展(下轮重试)。
 /// 4. 落盘整份本地状态(无论 step 3 是否全部成功,已成功的必须落盘登记)。
@@ -37,21 +38,15 @@ pub async fn run_round(state: &AppState) -> Result<(), AppError> {
         .cloned()
         .collect();
     for id in &stale {
-        // name 从 PG 查(扩展可能仅 enabled=false,行仍在 → name 可查到)。
-        // name 查询本身失败或行已物理删除时,仅清本地 state,不阻断其他 stale 的处理。
-        match name_of(state, id).await {
-            Ok(Some(name)) => {
-                if let Err(e) = apply::remove_dir_safe(&skills_root, &name).await {
-                    tracing::warn!(ext = %id, error = %e, "删除孤儿目录失败,跳过");
-                }
+        // 删除目录用**本地状态里存的 name**,不查 PG。
+        // 发起节点 delete_extension 先物理删 PG 行、再发事件,副本收到事件时 PG 已无该行,
+        // 若靠 name_of(id) 查 PG 会返回 None → 目录成孤儿。本地 state 在 upload/sync 时已登记 name。
+        // remove 同时取出条目并清理 local_state,幂等(id 不在 map 时返回 None)。
+        if let Some(e) = local.remove(id) {
+            if let Err(err) = apply::remove_dir_safe(&skills_root, &e.name).await {
+                tracing::warn!(ext = %id, error = %err, "删除孤儿目录失败,跳过");
             }
-            Ok(None) => tracing::warn!(
-                ext = %id,
-                "扩展 name 查不到(已物理删除?),孤儿目录暂留,仅清本地状态"
-            ),
-            Err(e) => tracing::warn!(ext = %id, error = %e, "查 name 失败,跳过删除"),
         }
-        local.remove(id);
     }
 
     // 新增/更新:每个扩展独立 try,单扩展失败不影响其他。
@@ -59,8 +54,9 @@ pub async fn run_round(state: &AppState) -> Result<(), AppError> {
         if rec.kind != "skill" {
             continue; // 阶段1 仅同步 skill
         }
+        // 比对 hash:本地条目 hash 与 PG content_hash 一致则跳过,否则需更新(新增/变更)。
         let need = match local.get(&rec.id) {
-            Some(h) if h == &rec.content_hash => false,
+            Some(e) if e.hash == rec.content_hash => false,
             _ => true,
         };
         if !need {
@@ -94,7 +90,7 @@ async fn sync_one_extension(
     state: &AppState,
     rec: &store::ExtRecord,
     skills_root: &Path,
-    local: &mut HashMap<String, String>,
+    local: &mut HashMap<String, apply::LocalExtEntry>,
 ) -> Result<(), AppError> {
     // 候选 holder 列表:本扩展查一次(list_holders ∩ alive_nodes 排除自己),供本轮所有
     // 文件复用,避免每文件重复查 DB(原 download_from_holder 每文件查一次)。
@@ -125,7 +121,14 @@ async fn sync_one_extension(
     let landed = fingerprint::scan_dir(&dest).await?;
     let got = fingerprint::aggregate_hash(&landed);
     if got == rec.content_hash {
-        local.insert(rec.id.clone(), rec.content_hash.clone());
+        // 登记 {name, hash}:name 供后续删除分支定位目录(不查 PG),hash 供下轮对齐。
+        local.insert(
+            rec.id.clone(),
+            apply::LocalExtEntry {
+                name: rec.name.clone(),
+                hash: rec.content_hash.clone(),
+            },
+        );
         // 扩散:自己也成 holder,后续其他新节点可从本节点下载。
         store::add_holder(&state.db, &rec.id, &state.node_id).await?;
         Ok(())
@@ -150,19 +153,6 @@ async fn holder_candidates(state: &AppState, ext_id: &str) -> Result<Vec<String>
     let alive = state.cluster.alive_nodes().await;
     let me = &state.node_id;
     Ok(alive.into_iter().filter(|n| n != me && holders.contains(n)).collect())
-}
-
-/// 按 id 查扩展 name(删除目录时需要 name 拼路径)。
-/// 返回 None:扩展行已不存在(被物理删除)→ 跳过删目录。
-async fn name_of(state: &AppState, id: &str) -> Result<Option<String>, AppError> {
-    use crate::db::entities::cluster_extension::{Column as ExtCol, Entity as ExtEntity};
-    use sea_orm::{ColumnTrait, EntityTrait, QueryFilter};
-    let m = ExtEntity::find()
-        .filter(ExtCol::Id.eq(id.to_string()))
-        .one(&state.db)
-        .await
-        .map_err(|e| AppError::internal(format!("db: {e}")))?;
-    Ok(m.map(|m| m.name))
 }
 
 /// 从候选 holder 列表中逐个尝试下载单个文件;全失败则报错(本轮跳过该扩展,下一轮/事件重试)。

@@ -160,9 +160,16 @@ pub async fn upload_extension(
     store::upsert_extension(&state.db, &rec, &fps).await?;
     store::add_holder(&state.db, &id, &state.node_id).await?;
 
-    // 5. 更新本地状态文件(id → content_hash,供同步循环对齐)。
+    // 5. 更新本地状态文件(id → {name, hash})：name 供副本删除分支定位目录(不查 PG),
+    //    hash 供同步循环对齐。同名重传 id 复用,key 不变,值全量替换。
     let mut st = apply::load_local_state(&state.codex_home).await;
-    st.insert(id.clone(), content_hash.clone());
+    st.insert(
+        id.clone(),
+        apply::LocalExtEntry {
+            name: body.name.clone(),
+            hash: content_hash.clone(),
+        },
+    );
     apply::save_local_state(&state.codex_home, &st).await?;
 
     // 6. 发事件触发其他节点同步(无订阅者/无 bus 时静默,best-effort)。
@@ -216,7 +223,7 @@ pub async fn delete_extension(
 
     store::delete_extension(&state.db, &id).await?;
 
-    // 从本地状态文件移除该扩展条目(upload 时写入了 id→hash),
+    // 从本地状态文件移除该扩展条目(upload 时写入了 id→{name,hash}),
     // 否则 Task 8 同步循环对齐时 local_state 会残留已删扩展。幂等:id 不在 map 也安全。
     let mut st = apply::load_local_state(&state.codex_home).await;
     st.remove(&id);
