@@ -31,11 +31,31 @@ pub fn plugins_cache_dir(codex_home: &Path) -> PathBuf {
 
 /// plugin 落盘目标目录：`<codex_home>/plugins/cache/<market>/<name>/<version>`。
 /// 按 market/name/version 三级隔离,支持同 name 多 market、多版本并存。
-pub fn plugin_dest(codex_home: &Path, market: &str, name: &str, version: &str) -> PathBuf {
-    plugins_cache_dir(codex_home)
+///
+/// 段校验:逐段拒绝空 / 绝对路径 / 含 `..` / 含反斜杠,防穿越。
+/// 关口自带校验——Task 5 upload 等用户输入会灌入 market/name/version,
+/// 而 `write_file_safe` 只校验 `rel_path` 不校验 `root`,若任一段为 `..` 等,
+/// 算出的 root 会逸出 `plugins/cache`。
+pub fn plugin_dest(
+    codex_home: &Path,
+    market: &str,
+    name: &str,
+    version: &str,
+) -> Result<PathBuf, AppError> {
+    for seg in [market, name, version] {
+        if seg.is_empty()
+            || seg.starts_with('/')
+            || seg.starts_with('\\')
+            || seg.contains("..")
+            || seg.contains('\\')
+        {
+            return Err(AppError::internal(format!("invalid plugin segment: {seg}")));
+        }
+    }
+    Ok(plugins_cache_dir(codex_home)
         .join(market)
         .join(name)
-        .join(version)
+        .join(version))
 }
 
 /// plugin 落盘后写启用段到 config.toml：`[plugins."<name>@<market>"] enabled = "true"`。
@@ -169,14 +189,15 @@ mod tests {
         assert_eq!(e.hash, "deadbeef");
     }
 
-    /// plugin_dest 路径拼接：<codex_home>/plugins/cache/<market>/<name>/<version>
+    /// plugin_dest 路径拼接(用 temp_dir 避免硬编码绝对路径) + 段穿越拒绝校验。
     #[test]
-    fn plugin_dest_path() {
-        let h = Path::new("/home/x");
-        assert_eq!(
-            plugin_dest(h, "mkt", "foo", "1.2.3"),
-            Path::new("/home/x/plugins/cache/mkt/foo/1.2.3")
-        );
+    fn plugin_dest_path_and_traversal_rejected() {
+        let base = std::env::temp_dir();
+        let got = plugin_dest(&base, "mkt", "foo", "1.2.3").unwrap();
+        assert!(got.ends_with("plugins/cache/mkt/foo/1.2.3"));
+        // 段含 .. 被拒
+        assert!(plugin_dest(&base, "mkt", "../pwned", "1.2.3").is_err());
+        assert!(plugin_dest(&base, "mkt", "foo", "/abs").is_err());
     }
 
     /// enable 写入 [plugins."<name>@<market>"] 段;disable 后该段被移除。
