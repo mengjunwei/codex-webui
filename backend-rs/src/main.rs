@@ -355,6 +355,60 @@ async fn main() -> anyhow::Result<()> {
         }
     });
 
+    // 集群扩展同步(周期 task + 事件订阅)。声明在外层作用域,shutdown 段 abort
+    // (同 replica_maintenance 理由:loop task 持 state.clone() 含 audit_writer sender,
+    // 不 abort → audit_writer rx 永不 None → flush 死锁)。
+    let mut ext_sync_handle: Option<tokio::task::JoinHandle<()>> = None;
+    if cfg.extensions.enable {
+        // bootstrap:启动全量对齐(把本地 skills 拉齐到 PG 清单)。non-fatal:失败仅 warn,
+        // 不阻断启动(下轮周期 task / 事件会重试)。
+        if let Err(e) = codex_webui::services::extensions::sync::bootstrap(&state).await {
+            tracing::warn!(error = %e, "extension bootstrap failed (non-fatal)");
+        }
+        // 周期同步 task:sleep sync_interval_secs → run_round。
+        let st = state.clone();
+        let interval = cfg.extensions.sync_interval_secs;
+        ext_sync_handle = Some(tokio::spawn(async move {
+            loop {
+                tokio::time::sleep(Duration::from_secs(interval)).await;
+                if let Err(e) = codex_webui::services::extensions::sync::run_round(&st).await {
+                    tracing::warn!(error = %e, "extension sync round failed");
+                }
+            }
+        }));
+        // 事件订阅:extensions:changed(skill 上传/删除时 Task 6 发布)→ 立即 run_round,
+        // 把分钟级周期收敛到秒级事件驱动。Lagged 必须 continue(丢弃部分事件可接受,
+        // 下一次事件或周期仍会补齐);Closed(bus 被 drop)才退出。
+        if let Some(bus) = mt_event_bus.clone() {
+            let st2 = state.clone();
+            tokio::spawn(async move {
+                let mut rx = match bus.subscribe("extensions:changed").await {
+                    Ok(rx) => rx,
+                    Err(e) => {
+                        tracing::warn!(error = %e, "subscribe extensions:changed failed");
+                        return;
+                    }
+                };
+                loop {
+                    match rx.recv().await {
+                        Ok(_) => {
+                            if let Err(e) =
+                                codex_webui::services::extensions::sync::run_round(&st2).await
+                            {
+                                tracing::warn!(error = %e, "extension sync round (event) failed");
+                            }
+                        }
+                        Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
+                            tracing::warn!(lagged = n, "extensions:changed subscriber lagged");
+                            continue;
+                        }
+                        Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+                    }
+                }
+            });
+        }
+    }
+
     // 内网 RPC server(所有节点都开;承接转发请求 + 副本 receive rollout)。
     // 保存 JoinHandle:shutdown 时 main 等其 graceful 退出,避免进程退出中断正在写的
     // rollout(receive_rollout 的 seek+write 非原子,中断可损坏副本文件)。
@@ -415,6 +469,11 @@ async fn main() -> anyhow::Result<()> {
     // abort 副本维护 loop task:释放其持有的 state.clone()(audit_writer sender),
     // 否则 audit_writer 的 rx 永不返回 None → flush 永久阻塞(死锁)。
     replica_maintenance_handle.abort();
+    // abort 扩展周期同步 loop task(同上理由:释放 state.clone())。事件订阅 task 不保存
+    // handle:依赖 bus drop 后 broadcast Closed 自然退出,且有下方 5s audit flush 超时兜底。
+    if let Some(h) = ext_sync_handle.take() {
+        h.abort();
+    }
     // drop state 释放 audit_writer 的 mpsc sender(本节点最后一份,除非有 promote_resume_thread
     // 短命 task 仍在跑 —— 短命,退出后释放);后台 task flush 剩余 buf 后退出。
     drop(state);
