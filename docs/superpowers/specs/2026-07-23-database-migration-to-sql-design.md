@@ -116,6 +116,7 @@ COMMENT ON TABLE users IS '...';
 |---|---|
 | `backend-rs/src/db/migration/` | 整目录删除（7 个 `m2026*.rs` + `mod.rs`） |
 | `backend-rs/src/db/mod.rs:5` | 删除 `pub mod migration;`（保留 `pub mod entity;` 和 `pub mod entities;`） |
+| `backend-rs/src/main.rs:13` | 删除 `db::migration::Migrator,` 整行（import 块中） |
 | `backend-rs/src/main.rs:28` | 删除 `use sea_orm_migration::MigratorTrait;` |
 | `backend-rs/src/main.rs:57-59` | 删除 `Migrator::up(&db, None).await?;`（3 行） |
 | `backend-rs/Cargo.toml:57` | 删除 `sea-orm-migration = { ... }` 整行 |
