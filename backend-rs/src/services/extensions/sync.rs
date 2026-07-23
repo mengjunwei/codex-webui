@@ -12,8 +12,9 @@
 //! - 变(hash 不同):等同缺,重下覆盖(skill/plugin) / 重写段(mcp)。
 //!
 //! `run_round` 中单个扩展失败(get_files / 下载 / 写盘等异常)不影响其他扩展:包进
-//! `sync_one_extension` 独立 try,失败仅 warn 跳过,下轮重试;已成功登记的 local_state
-//! 在循环结束后统一落盘。整轮致命错误(如 DB 断)由调用方记日志,下一轮或下一次事件重试。
+//! `sync_one_extension` 独立 try,失败仅 warn 跳过,下轮重试;local_state 每次成功即时
+//! 受锁登记(`with_local_state` load→改→save),save 失败也 warn 跳过(与 sync 主体粒度一致)。
+//! 整轮致命错误(如 DB 断)由调用方记日志,下一轮或下一次事件重试。
 
 use crate::error::AppError;
 use crate::services::extensions::{apply, fingerprint, store};
@@ -60,9 +61,15 @@ pub async fn run_round(state: &AppState) -> Result<(), AppError> {
 
     // 阶段 2a:stale 清理。受锁 remove + 不持锁 cleanup。
     for (id, entry) in &stale {
-        let _: Option<apply::LocalExtEntry> =
-            apply::with_local_state(&state.ext_state_lock, &state.codex_home, |m| m.remove(id))
-                .await?;
+        // local_state remove 受锁;save 失败(磁盘满/权限等)warn 跳过该条 + 跳过本次 cleanup
+        // (local 未删则盘也不删,保持一致;下轮该 id 仍 stale → 重试)。粒度与 sync 主体一致。
+        if apply::with_local_state(&state.ext_state_lock, &state.codex_home, |m| m.remove(id))
+            .await
+            .is_err()
+        {
+            tracing::warn!(ext = %id, "local_state remove 失败,跳过本次清理(下轮重试)");
+            continue;
+        }
         if let Err(err) = cleanup_local_extension(&state.codex_home, entry).await {
             tracing::warn!(ext = %id, error = %err, "删除孤儿目录失败,跳过");
         }
@@ -73,10 +80,16 @@ pub async fn run_round(state: &AppState) -> Result<(), AppError> {
         match sync_one_extension(state, rec).await {
             Ok(Some(entry)) => {
                 let id = rec.id.clone();
-                apply::with_local_state(&state.ext_state_lock, &state.codex_home, |m| {
-                    m.insert(id, entry);
-                })
-                .await?;
+                // 已成功落盘 + add_holder,local insert 的 save 失败不连累后续扩展:
+                // warn 跳过,下轮该扩展 need=true(local 无/旧)→ 重试同步。粒度与 sync 主体一致。
+                if let Err(e) =
+                    apply::with_local_state(&state.ext_state_lock, &state.codex_home, |m| {
+                        m.insert(id, entry);
+                    })
+                    .await
+                {
+                    tracing::warn!(ext = %rec.id, error = %e, "local_state insert 失败,跳过(下轮重试)");
+                }
             }
             Ok(None) => {} // hash 不匹配等,不登记,下轮重试
             Err(e) => tracing::warn!(ext = %rec.id, error = %e, "扩展同步失败,跳过(下轮重试)"),
@@ -89,6 +102,11 @@ pub async fn run_round(state: &AppState) -> Result<(), AppError> {
 ///
 /// 用于 stale 删除分支(本地有、PG 无)及 delete_extension handler 失败回退路径。
 /// **不查 PG**——PG 行可能已被发起节点删掉,完全依赖本地 state 的 kind/market/version/name。
+///
+/// **TOCTOU 边界**:`name` 取自 run_round 阶段 1 快照,删盘按 name 匹配。极端竞态下
+/// (PG 删除产生 stale 与同名扩展重传紧邻发生),可能删到刚重传的同名目录。该竞态预先存在
+/// (原实现同样有),M2 仅修了 local_state 侧(2a 的 with_local_state 重 load,新 id 不被误删),
+/// 磁盘侧按 name 删无法区分新旧。可接受:同名扩展罕见,且重传会经 need 分支再次同步补回。
 ///
 /// - skill:删 `skills/{name}/`。
 /// - plugin:删 `plugins/cache/{market}/{name}/`(整个 name 目录,含所有 version)

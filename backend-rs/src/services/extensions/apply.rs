@@ -338,15 +338,27 @@ pub async fn load_local_state(codex_home: &Path) -> HashMap<String, LocalExtEntr
     }
 }
 
-/// 写入本地状态文件(覆盖)。
+/// 写入本地状态文件(原子覆盖:先写 .tmp 再 rename)。
+///
+/// 原子写:进程崩溃 / 断电 / 磁盘满中途若直接覆盖写,文件可能截断或损坏,而
+/// `load_local_state` 对解析失败静默返回空 map(节点误以为"无任何扩展" → 全量重下 +
+/// stale 旧条目丢失 → 孤儿目录不再被清理)。M2 把每轮 save 次数从 1 放大到 N 次,
+/// 损坏暴露窗口同比放大,故用 temp + rename 收口。tmp 与目标同目录 → 同文件系统,
+/// rename 在 Linux/Windows 均为原子替换。tmp 残留(rename 失败时)无害:下次同名覆盖,
+/// load 只读正式文件。
 pub async fn save_local_state(
     codex_home: &Path,
     map: &HashMap<String, LocalExtEntry>,
 ) -> Result<(), AppError> {
     let bytes = serde_json::to_vec(map).map_err(|e| AppError::internal(format!("json: {e}")))?;
-    tokio::fs::write(codex_home.join(STATE_FILE), &bytes)
+    let final_path = codex_home.join(STATE_FILE);
+    let tmp_path = codex_home.join(format!("{STATE_FILE}.tmp"));
+    tokio::fs::write(&tmp_path, &bytes)
         .await
-        .map_err(|e| AppError::internal(format!("write state: {e}")))?;
+        .map_err(|e| AppError::internal(format!("write state tmp: {e}")))?;
+    tokio::fs::rename(&tmp_path, &final_path)
+        .await
+        .map_err(|e| AppError::internal(format!("rename state: {e}")))?;
     Ok(())
 }
 
@@ -591,5 +603,33 @@ mod tests {
                 "key {id} 在并发写入后应存在"
             );
         }
+    }
+
+    /// save_local_state 原子写:save 后正式文件存在且可解析;.tmp 不残留。
+    /// (无法在单测里中途 kill 进程验证半截,这里验证正常路径的 temp+rename 收尾干净。)
+    #[tokio::test]
+    async fn save_local_state_atomic_no_tmp_residue() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut m = HashMap::new();
+        m.insert(
+            "ext_x".into(),
+            LocalExtEntry {
+                name: "s".into(),
+                hash: "h".into(),
+                kind: "skill".into(),
+                market: None,
+                version: None,
+            },
+        );
+        save_local_state(tmp.path(), &m).await.unwrap();
+        // 正式文件存在 + 可解析。
+        assert!(tmp.path().join(STATE_FILE).exists());
+        let loaded = load_local_state(tmp.path()).await;
+        assert!(loaded.contains_key("ext_x"));
+        // .tmp 不应残留(rename 成功后已移走)。
+        assert!(
+            !tmp.path().join(format!("{STATE_FILE}.tmp")).exists(),
+            "save 后 .tmp 不应残留"
+        );
     }
 }
