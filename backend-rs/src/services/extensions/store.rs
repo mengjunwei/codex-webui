@@ -232,16 +232,27 @@ pub async fn add_holder(
     ext_id: &str,
     node_id: &str,
 ) -> Result<(), AppError> {
-    HolderEntity::insert(HolderActive {
+    // ON CONFLICT DO NOTHING(不指定冲突目标):本节点已登记时忽略,不报错。
+    // 注意:`.exec().await` 返回的 Err 必是真实 DB 错误(连接断开等)——主键/唯一冲突
+    // 已被 on_conflict 处理,不会以 Err 形式上抛。故不再用 `.ok()` 全吞(会掩盖 DB 持续
+    // 不可达导致扩展无法扩散且无日志),改为 warn 留痕;best-effort:单次失败不阻断同步
+    // 主流程(下轮重试)。
+    if let Err(e) = HolderEntity::insert(HolderActive {
         extension_id: Set(ext_id.to_string()),
         node_id: Set(node_id.to_string()),
         held_since: Set(now_ms()),
     })
-    // ON CONFLICT DO NOTHING（不指定冲突目标，PG 下对复合主键重复也忽略）。
     .on_conflict(OnConflict::new().do_nothing().to_owned())
     .exec(db)
     .await
-    .ok();
+    {
+        tracing::warn!(
+            ext_id = %ext_id,
+            node_id = %node_id,
+            error = %e,
+            "add_holder 登记失败(best-effort,下轮重试)"
+        );
+    }
     Ok(())
 }
 

@@ -174,6 +174,16 @@ async fn sync_one_extension(
     // 文件复用,避免每文件重复查 DB(原 download_from_holder 每文件查一次)。
     let holders = holder_candidates(state, &rec.id).await?;
     if holders.is_empty() {
+        // 单点风险观测(M5):该扩展在所有 alive 节点上都没有(可能仅存在于已下线节点),
+        // 本节点无法获取。记 metrics + 结构化 warn 便于运维发现扩散不足/单点失效。
+        // 逻辑不变(仍 Err → run_round 外层 warn 跳过,下轮重试),仅增强可观测性。
+        metrics::counter!("ext_no_alive_holder_total").increment(1);
+        tracing::warn!(
+            ext_id = %rec.id,
+            name = %rec.name,
+            kind = %rec.kind,
+            "扩展无可用 alive holder(单点风险:可能仅在已下线节点,本节点无法获取)"
+        );
         return Err(AppError::internal(format!(
             "无可用 alive holder 下载扩展 name={} (ext_id={})",
             rec.name, rec.id

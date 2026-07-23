@@ -343,7 +343,14 @@ async fn ext_fetch(
     // 按 kind 选根目录:skill 直拼 skills/<name>;plugin 走 plugin_dest(market/name/version 三级,
     // 段校验拒绝空/绝对/含 `..` 或反斜杠)。其余 kind 拒 400。
     let root = if m.kind == "skill" {
-        crate::services::extensions::apply::skills_dir(&state.codex_home).join(&m.name)
+        // skill 根 = skills/<name>。name 来自 PG,upload 虽已校验,此处仍过 safe_join_local
+        // 复核(与 plugin 分支 plugin_dest 段校验同口径),防 DB 被直接篡改注入恶意 name
+        // (如 `../x`)致根逸出 skills/。
+        crate::services::extensions::apply::safe_join_local(
+            &crate::services::extensions::apply::skills_dir(&state.codex_home),
+            &m.name,
+        )
+        .await?
     } else if m.kind == "plugin" {
         // plugin 记录理应有 marketplace + version;缺失则 unwrap_or("") 交由 plugin_dest 段校验拒绝。
         let market = m.marketplace.as_deref().unwrap_or("");

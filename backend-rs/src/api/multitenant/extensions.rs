@@ -21,6 +21,8 @@ use axum::http::StatusCode;
 use axum::Json;
 use serde::{Deserialize, Serialize};
 use std::path::Path;
+use std::process::Stdio;
+use std::time::Duration;
 
 /// 上传请求内的单个文件:相对路径 + base64 内容。
 #[derive(Deserialize)]
@@ -105,20 +107,8 @@ pub async fn upload_extension(
             None,
         ));
     }
-    // skill name 合法性校验:防 skills_dir.join(name) 穿越到 skills 根之外。
-    //   与 safe_join_local 口径一致:非空、无 `..`、无反斜杠、无正斜杠段分隔。
-    if body.name.is_empty()
-        || body.name.contains("..")
-        || body.name.contains('\\')
-        || body.name.contains('/')
-    {
-        return Err(AppError::business(
-            ErrorCode::HttpBadRequest,
-            StatusCode::BAD_REQUEST,
-            "skill name 非法".into(),
-            None,
-        ));
-    }
+    // skill name 合法性校验(防 skills_dir.join(name) 穿越到 skills 根之外)。
+    validate_ext_name(&body.name)?;
     // zip_base64 必填(skill 压缩包,替代旧的 files 数组)。
     let zip_b64 = match body.zip_base64.as_deref() {
         Some(s) if !s.trim().is_empty() => s,
@@ -171,6 +161,12 @@ pub async fn upload_extension(
     // 1b. 校验通过:正式落盘 skills/{name}/(再解压一次,unzip_to_dest 开头清旧同名目录,
     //     保证全量替换),返回落盘后指纹供入库。tmp 留待 scope 结束 drop(非热路径)。
     let fps = apply::unzip_to_dest(&zip_bytes, &dest).await?;
+    // 1c. 扩展总字节 / 单文件字节上限校验(config max_extension_bytes / max_file_bytes)。
+    //     超限清已落盘的 skills/{name}/ + 返 400(不入库,不留半成品)。
+    if let Err(e) = check_extension_size_limits(&fps, &state) {
+        let _ = apply::remove_dir_safe(&skills_root, &body.name).await;
+        return Err(e);
+    }
     // 2. 聚合 hash(与遍历顺序无关)。
     let content_hash = fingerprint::aggregate_hash(&fps);
 
@@ -237,36 +233,75 @@ pub async fn upload_extension(
 /// 的 node 直启),而非 `Command::new(codex_bin)` —— 否则 npm 全局安装的 codex 会因
 /// `.cmd` 垫片 + CreateProcess 不补 `.cmd` 扩展名而失败。
 async fn upload_plugin(state: AppState, body: UploadBody) -> Result<Json<ExtResp>, AppError> {
-    // name 非法校验:空 / 含 @ 会破坏 codex plugin add 的 `name@market` 参数解析。
-    if body.name.is_empty() || body.name.contains('@') {
+    // plugin 分发开关:config [extensions] plugin_enabled=false 时拒(plugin 含可执行
+    // 产物,默认关闭,需显式开启)。早于其它处理返回。
+    if !state.cfg_extensions_plugin_enabled {
         return Err(AppError::business(
             ErrorCode::HttpBadRequest,
             StatusCode::BAD_REQUEST,
-            "plugin name 非法(空或含 @)".into(),
+            "plugin 分发未启用(config [extensions] plugin_enabled=false)".into(),
             None,
         ));
     }
-    // market:缺省取 openai-api-curated;非空且不含 @ 才采纳,否则回退默认。
+    // name 合法性校验(与 skill 同口径:拒空/..\/\) + 额外拒 @(破坏 name@market 解析)。
+    validate_ext_name(&body.name)?;
+    if body.name.contains('@') {
+        return Err(AppError::business(
+            ErrorCode::HttpBadRequest,
+            StatusCode::BAD_REQUEST,
+            "plugin name 非法(含 @)".into(),
+            None,
+        ));
+    }
+    // market:缺省取 openai-api-curated;非空且不含穿越字符 / @ 才采纳,否则回退默认。
+    // (非法 market 回退默认而非报错——安全方向,避免用非法 market 拼路径;plugin_dest 段校验兜底。)
     let market = body
         .marketplace
         .as_deref()
-        .filter(|s| !s.is_empty() && !s.contains('@'))
+        .filter(|s| {
+            !s.is_empty() && !s.contains('@') && !s.contains("..") && !s.contains('\\') && !s.contains('/')
+        })
         .map(|s| s.to_string())
         .unwrap_or_else(|| "openai-api-curated".to_string());
 
     // 1. spawn codex plugin add <name>@<market>,装到本节点 CODEX_HOME。
-    //    .output().await 等待退出(codex 下载可能较慢,本 task 不加超时)。
+    //    超时保护:codex plugin add 联网下载,网络异常/registry 挂起会长期不退出 →
+    //    timeout 包 wait_with_output → 超时返 Elapsed,内部 future(含已 move 的 child)被 drop。
+    //    配 kill_on_drop(true):child drop 时自动 kill 子进程,防孤儿(正常完成时进程已退出,kill 无害)。
+    //    stdout/stderr piped 以捕获错误输出。
+    const PLUGIN_ADD_TIMEOUT_SECS: u64 = 300;
     let codex_bin = state.codex.codex_bin();
     let mut cmd = crate::codex::process::build_codex_command(codex_bin);
     cmd.arg("plugin")
         .arg("add")
         .arg(format!("{}@{}", body.name, market))
         .env("CODEX_HOME", &state.codex_home)
-        .current_dir(&state.codex_home);
-    let out = cmd
-        .output()
-        .await
+        .current_dir(&state.codex_home)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .kill_on_drop(true);
+    let child = cmd
+        .spawn()
         .map_err(|e| AppError::internal(format!("spawn codex plugin add: {e}")))?;
+    let out = match tokio::time::timeout(
+        Duration::from_secs(PLUGIN_ADD_TIMEOUT_SECS),
+        child.wait_with_output(),
+    )
+    .await
+    {
+        Ok(r) => r.map_err(|e| AppError::internal(format!("codex plugin add wait: {e}")))?,
+        Err(_) => {
+            // 超时:wait_with_output future 已 drop → child drop → kill_on_drop 已杀子进程。
+            // 清理可能已写入的 cache/启用段 + 返 504。
+            let _ = apply::remove_dir_safe(
+                &apply::plugins_cache_dir(&state.codex_home).join(&market),
+                &body.name,
+            )
+            .await;
+            let _ = apply::disable_plugin_config(&state.codex_home, &body.name, &market).await;
+            return Err(AppError::status(504));
+        }
+    };
     if !out.status.success() {
         // 失败清理:codex plugin add 可能已把部分文件写进 cache/<market>/<name>/ 但最终退出非 0,
         // 清掉残留目录 + 移除可能已写的启用段,确保不留半装 plugin(幂等:目录/段不存在也安全)。
@@ -296,6 +331,16 @@ async fn upload_plugin(state: AppState, body: UploadBody) -> Result<Json<ExtResp
     // 3. 指纹化 cache/<market>/<name>/<version>/(段校验在 plugin_dest 内)。
     let dest = apply::plugin_dest(&state.codex_home, &market, &body.name, &version)?;
     let fps = fingerprint::scan_dir(&dest).await?;
+    // 扩展总字节 / 单文件字节上限校验;超限清理 cache + 启用段 + 400(不入库不留半成品)。
+    if let Err(e) = check_extension_size_limits(&fps, &state) {
+        let _ = apply::remove_dir_safe(
+            &apply::plugins_cache_dir(&state.codex_home).join(&market),
+            &body.name,
+        )
+        .await;
+        let _ = apply::disable_plugin_config(&state.codex_home, &body.name, &market).await;
+        return Err(e);
+    }
     let content_hash = fingerprint::aggregate_hash(&fps);
 
     // 4. 写启用段 [plugins."<name>@<market>"] enabled=true。
@@ -562,10 +607,86 @@ pub async fn delete_extension(
     Ok(StatusCode::NO_CONTENT)
 }
 
+/// 校验扩展 name 段合法性:非空,不含 `..` / `\` / `/`(防目录穿越与段分隔)。
+/// skill 目录名、plugin 名共用(与 apply::safe_join_local 口径一致)。
+fn validate_ext_name(name: &str) -> Result<(), AppError> {
+    if name.is_empty() || name.contains("..") || name.contains('\\') || name.contains('/') {
+        return Err(AppError::business(
+            ErrorCode::HttpBadRequest,
+            StatusCode::BAD_REQUEST,
+            "扩展 name 非法(空或含 .. \\ /)".into(),
+            None,
+        ));
+    }
+    Ok(())
+}
+
+/// 校验扩展文件指纹的总字节 / 单文件字节是否超 config 上限(max_extension_bytes / max_file_bytes)。
+/// 超限返回 400 业务错误;调用方负责清理已落盘产物(本函数只判不删)。
+/// MCP 无文件,不调用本函数。
+fn check_extension_size_limits(
+    fps: &[fingerprint::FileFingerprint],
+    state: &AppState,
+) -> Result<(), AppError> {
+    let total: u64 = fps.iter().map(|f| f.size as u64).sum();
+    if total > state.cfg_extensions_max_extension_bytes {
+        return Err(AppError::business(
+            ErrorCode::HttpBadRequest,
+            StatusCode::BAD_REQUEST,
+            format!(
+                "扩展总字节 {total} 超过上限 {}",
+                state.cfg_extensions_max_extension_bytes
+            ),
+            None,
+        ));
+    }
+    if let Some(f) = fps
+        .iter()
+        .find(|f| (f.size as u64) > state.cfg_extensions_max_file_bytes)
+    {
+        return Err(AppError::business(
+            ErrorCode::HttpBadRequest,
+            StatusCode::BAD_REQUEST,
+            format!(
+                "单文件 {} 字节 {} 超过上限 {}",
+                f.rel_path, f.size, state.cfg_extensions_max_file_bytes
+            ),
+            None,
+        ));
+    }
+    Ok(())
+}
+
 /// base64 标准解码。
 fn base64_decode(s: &str) -> Result<Vec<u8>, String> {
     use base64::Engine;
     base64::engine::general_purpose::STANDARD
         .decode(s)
         .map_err(|e| e.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::validate_ext_name;
+    use crate::error::AppError;
+
+    /// validate_ext_name:合法 name 通过(skill 目录名 / plugin 名共用,与 safe_join_local 同口径)。
+    #[test]
+    fn validate_ext_name_accepts_legal() {
+        assert!(validate_ext_name("ui-skill").is_ok());
+        assert!(validate_ext_name("linear").is_ok());
+        assert!(validate_ext_name("a.b.c").is_ok()); // 含点合法(段名 quoting 处理)
+    }
+
+    /// validate_ext_name:空 / `..` / `\` / `/` 一律拒(防目录穿越与段分隔)。
+    #[test]
+    fn validate_ext_name_rejects_traversal_and_empty() {
+        for bad in ["", "..", "a/b", "a\\b", "../x", "a..b", "/abs"] {
+            let err = validate_ext_name(bad).unwrap_err();
+            assert!(
+                matches!(err, AppError::Business { .. }),
+                "name={bad:?} 应返 400 业务错误"
+            );
+        }
+    }
 }

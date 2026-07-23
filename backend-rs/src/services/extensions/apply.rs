@@ -118,7 +118,10 @@ pub async fn disable_mcp_config(codex_home: &Path, name: &str) -> Result<(), App
 
 /// 安全拼路径：拒绝空 / 绝对 / 含 `..` / 含反斜杠的相对路径；
 /// 归一化（反斜杠→正斜杠、小写）后校验 candidate 必以 root 开头，防穿越。
-async fn safe_join_local(root: &Path, rel: &str) -> Result<PathBuf, AppError> {
+///
+/// `pub(crate)`:ext-fetch(internal_rpc) 对 skill 根的 m.name 复核也复用本函数,
+/// 与 plugin 分支的 plugin_dest 段校验同口径。
+pub(crate) async fn safe_join_local(root: &Path, rel: &str) -> Result<PathBuf, AppError> {
     if rel.is_empty()
         || rel.starts_with('/')
         || rel.starts_with('\\')
@@ -211,11 +214,16 @@ pub async fn unzip_to_dest(
                 continue;
             }
             rel = apply_strip(entry.name(), strip.as_deref());
-            // 元数据级 zip bomb 防护:解压前按 entry.size() 累计,超限立即报错。
-            total_uncompressed = total_uncompressed.saturating_add(entry.size());
+            // zip bomb 双层防护:
+            //   1) 元数据级预检:entry.size() 是 zip 声明的未压缩大小,解压前按它累计,
+            //      超限立即报错(快速失败,不为明显超大 entry 预分配/读取)。
+            //   2) 实际字节级:声明值可被恶意伪造(声明 1 实际 GB 的 zip bomb),故 read_to_end
+            //      后按真实解出字节 v.len() 再补判一次——实际 > 声明时补回差额重判,堵住绕过。
+            let declared = entry.size();
+            total_uncompressed = total_uncompressed.saturating_add(declared);
             if total_uncompressed > MAX_UNCOMPRESSED_TOTAL {
                 return Err(AppError::internal(format!(
-                    "解压后总字节数 {total_uncompressed} 超过上限 {MAX_UNCOMPRESSED_TOTAL}"
+                    "解压后总字节数(声明) {total_uncompressed} 超过上限 {MAX_UNCOMPRESSED_TOTAL}"
                 )));
             }
             file_count += 1;
@@ -224,10 +232,21 @@ pub async fn unzip_to_dest(
                     "zip 内文件数 {file_count} 超过上限 {MAX_ENTRY_COUNT}"
                 )));
             }
-            let mut v = Vec::with_capacity(entry.size() as usize);
+            // 预分配按声明值(已过预检 → declared ≤ 剩余配额 ≤ MAX),防声明超大值意外撑内存。
+            let mut v = Vec::with_capacity(declared.min(MAX_UNCOMPRESSED_TOTAL) as usize);
             entry
                 .read_to_end(&mut v)
                 .map_err(|e| AppError::internal(format!("zip read: {e}")))?;
+            // 实际字节二次校验:实际解出 > 声明(声明被伪造)时,补回差额并重判总配额。
+            let real = v.len() as u64;
+            if real > declared {
+                total_uncompressed = total_uncompressed.saturating_add(real - declared);
+                if total_uncompressed > MAX_UNCOMPRESSED_TOTAL {
+                    return Err(AppError::internal(format!(
+                        "解压后总字节数(实际) {total_uncompressed} 超过上限 {MAX_UNCOMPRESSED_TOTAL}"
+                    )));
+                }
+            }
             buf = v;
         }
         write_file_safe(dest, &rel, &buf).await?;
@@ -442,6 +461,45 @@ mod tests {
             .await
             .unwrap();
         assert!(!s2.contains("foo@mkt"));
+    }
+
+    /// 验证 C1 候选:MCP name 含 "." 时 enable/disable 是否对称(是否删错段)。
+    /// enable 写 [mcp_servers."my.server"];disable 应精确移除该段,
+    /// 且不误伤可能存在的 [mcp_servers.my] 段。
+    #[tokio::test]
+    async fn mcp_config_dotted_name_enable_disable_roundtrip() {
+        let tmp = tempfile::tempdir().unwrap();
+        // 预置一个独立的 [mcp_servers.my] 段(C1 候选说 disable 会误删它)。
+        tokio::fs::write(
+            tmp.path().join("config.toml"),
+            "[mcp_servers.my]\ncommand = \"keep\"\n",
+        )
+        .await
+        .unwrap();
+        // enable 含点 name
+        enable_mcp_config(tmp.path(), "my.server", "command = \"node\"\n")
+            .await
+            .unwrap();
+        let after_enable = tokio::fs::read_to_string(tmp.path().join("config.toml"))
+            .await
+            .unwrap();
+        // disable 含点 name
+        disable_mcp_config(tmp.path(), "my.server").await.unwrap();
+        let after_disable = tokio::fs::read_to_string(tmp.path().join("config.toml"))
+            .await
+            .unwrap();
+        eprintln!("=== after_enable ===\n{after_enable}");
+        eprintln!("=== after_disable ===\n{after_disable}");
+        // 目标段 my.server 必须被移除
+        assert!(
+            !after_disable.contains("my.server"),
+            "disable 后 my.server 段仍残留(卸载失效)"
+        );
+        // 预置的 my 段必须保留(若被误删 = C1 真 bug)
+        assert!(
+            after_disable.contains("keep"),
+            "disable 误删了无关的 [mcp_servers.my] 段(C1 确认)"
+        );
     }
 
     /// MCP 启用:enable 后 config.toml 含 [mcp_servers.mysrv] 及 command 字段;

@@ -13,6 +13,7 @@ mod m20260721_000001_session_replicas_per_thread;
 mod m20260722_000001_cluster_extensions;
 mod m20260722_000002_cluster_extensions_unique;
 mod m20260722_000003_cluster_extensions_marketplace;
+mod m20260722_000004_cluster_extensions_holder_pk;
 
 pub struct Migrator;
 
@@ -25,6 +26,7 @@ impl MigratorTrait for Migrator {
             Box::new(m20260722_000001_cluster_extensions::Migration),
             Box::new(m20260722_000002_cluster_extensions_unique::Migration),
             Box::new(m20260722_000003_cluster_extensions_marketplace::Migration),
+            Box::new(m20260722_000004_cluster_extensions_holder_pk::Migration),
         ]
     }
 }

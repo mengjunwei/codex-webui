@@ -326,6 +326,8 @@ async fn main() -> anyhow::Result<()> {
         active_rollout,
         local_offsets,
         cfg_extensions_max_file_bytes: cfg.extensions.max_file_bytes,
+        cfg_extensions_plugin_enabled: cfg.extensions.plugin_enabled,
+        cfg_extensions_max_extension_bytes: cfg.extensions.max_extension_bytes,
         mt_event_bus: mt_event_bus.clone(),
     };
 
