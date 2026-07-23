@@ -17,6 +17,9 @@ impl WorkerRpcClient {
     pub fn new(token: Option<String>) -> Self {
         let http = reqwest::Client::builder()
             .timeout(Duration::from_secs(120))
+            // 连接级超时:目标不可达/挂起时快速失败(5s)而非 hang 到整体 120s。
+            // 防御性:删除等 non-fatal 转发遇死节点不应长时间阻塞主流程。
+            .connect_timeout(Duration::from_secs(5))
             .build()
             .unwrap_or_else(|_| reqwest::Client::new());
         Self { http, token }
