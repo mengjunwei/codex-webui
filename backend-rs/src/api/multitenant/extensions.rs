@@ -154,13 +154,22 @@ pub async fn upload_extension(
         ));
     }
 
-    // 1. 解压到正式 skills/{name}/(unzip_to_dest 内部:清旧同名目录 + 剥单一顶层 +
-    //    防 zip-slip + zip bomb 安全阀,一步到位,无需临时目录中转)。
+    // 1. 先解压到临时目录校验合法性,通过后才落盘正式目录(事务性:非法包不污染 skills/)。
+    //    临时目录由 TempDir 在函数返回时 drop 自动清理;校验失败 `?` 上抛 → 既不入库,
+    //    也不在 skills/ 下留残渣。
     let skills_root = apply::skills_dir(&state.codex_home);
     tokio::fs::create_dir_all(&skills_root)
         .await
         .map_err(|e| AppError::internal(format!("mkdir skills root: {e}")))?;
     let dest = skills_root.join(&body.name);
+    // 1a. 临时解压 + skill 合法性校验(必须有非空 SKILL.md)。
+    //     unzip_to_dest 内部:剥单一顶层 + 防 zip-slip + zip bomb 阀。
+    let tmp = tempfile::tempdir()
+        .map_err(|e| AppError::internal(format!("tempdir: {e}")))?;
+    apply::unzip_to_dest(&zip_bytes, tmp.path()).await?;
+    apply::validate_skill(tmp.path()).await?;
+    // 1b. 校验通过:正式落盘 skills/{name}/(再解压一次,unzip_to_dest 开头清旧同名目录,
+    //     保证全量替换),返回落盘后指纹供入库。tmp 留待 scope 结束 drop(非热路径)。
     let fps = apply::unzip_to_dest(&zip_bytes, &dest).await?;
     // 2. 聚合 hash(与遍历顺序无关)。
     let content_hash = fingerprint::aggregate_hash(&fps);
@@ -259,6 +268,14 @@ async fn upload_plugin(state: AppState, body: UploadBody) -> Result<Json<ExtResp
         .await
         .map_err(|e| AppError::internal(format!("spawn codex plugin add: {e}")))?;
     if !out.status.success() {
+        // 失败清理:codex plugin add 可能已把部分文件写进 cache/<market>/<name>/ 但最终退出非 0,
+        // 清掉残留目录 + 移除可能已写的启用段,确保不留半装 plugin(幂等:目录/段不存在也安全)。
+        let _ = apply::remove_dir_safe(
+            &apply::plugins_cache_dir(&state.codex_home).join(&market),
+            &body.name,
+        )
+        .await;
+        let _ = apply::disable_plugin_config(&state.codex_home, &body.name, &market).await;
         return Err(AppError::business(
             ErrorCode::HttpBadRequest,
             StatusCode::BAD_REQUEST,

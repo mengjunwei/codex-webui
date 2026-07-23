@@ -1,5 +1,6 @@
-use crate::error::AppError;
+use crate::error::{AppError, ErrorCode};
 use crate::services::extensions::config_merge;
+use axum::http::StatusCode;
 use std::collections::HashMap;
 use std::io::Read;
 use std::path::{Path, PathBuf};
@@ -235,6 +236,43 @@ pub async fn unzip_to_dest(
     crate::services::extensions::fingerprint::scan_dir(dest).await
 }
 
+/// 校验解压后的目录是否为合法 skill:根目录必须有 `SKILL.md`,且是文件、且非空。
+///
+/// codex skill 的入口标准是目录根存在 `SKILL.md`(描述 skill 元信息,类似 README)。
+/// 缺失 / 是目录 / 空文件均视为非法 skill 包,上传时应在落盘正式目录前用此函数拦截。
+///
+/// 校验失败返回 400 业务错误(中文消息),调用方 `?` 上抛即可;若解压在临时目录中转,
+/// 由 `tempfile::TempDir` drop 自动清理,不留残渣、不入库。
+pub async fn validate_skill(dest: &Path) -> Result<(), AppError> {
+    let skill_md = dest.join("SKILL.md");
+    // metadata 取不到(文件不存在/无权限)→ 视为缺 SKILL.md。
+    let meta = tokio::fs::metadata(&skill_md).await.map_err(|_| {
+        AppError::business(
+            ErrorCode::HttpBadRequest,
+            StatusCode::BAD_REQUEST,
+            "不是合法 skill:缺少 SKILL.md".into(),
+            None,
+        )
+    })?;
+    if !meta.is_file() {
+        return Err(AppError::business(
+            ErrorCode::HttpBadRequest,
+            StatusCode::BAD_REQUEST,
+            "不是合法 skill:SKILL.md 不是文件".into(),
+            None,
+        ));
+    }
+    if meta.len() == 0 {
+        return Err(AppError::business(
+            ErrorCode::HttpBadRequest,
+            StatusCode::BAD_REQUEST,
+            "不是合法 skill:SKILL.md 为空".into(),
+            None,
+        ));
+    }
+    Ok(())
+}
+
 /// 检测所有文件是否共享单一顶层目录;返回该顶层(含尾 `/`)或 None。
 ///
 /// 仅当所有 entry 都以同一 `topdir/` 开头(即都含 `/`)时才剥 —— 避免误剥无公共顶层
@@ -359,6 +397,31 @@ mod tests {
         // 段含 .. 被拒
         assert!(plugin_dest(&base, "mkt", "../pwned", "1.2.3").is_err());
         assert!(plugin_dest(&base, "mkt", "foo", "/abs").is_err());
+    }
+
+    /// validate_skill:有非空 SKILL.md → Ok。
+    #[tokio::test]
+    async fn validate_skill_ok_when_skill_md_present_nonempty() {
+        let tmp = tempfile::tempdir().unwrap();
+        tokio::fs::write(tmp.path().join("SKILL.md"), "# my skill\n")
+            .await
+            .unwrap();
+        validate_skill(tmp.path()).await.unwrap();
+    }
+
+    /// validate_skill:缺 SKILL.md / SKILL.md 为空 → Err(400 业务错误)。
+    #[tokio::test]
+    async fn validate_skill_errors_when_missing_or_empty() {
+        // 缺 SKILL.md
+        let tmp = tempfile::tempdir().unwrap();
+        let err = validate_skill(tmp.path()).await.unwrap_err();
+        assert!(matches!(err, AppError::Business { .. }));
+        // 空文件
+        tokio::fs::write(tmp.path().join("SKILL.md"), "")
+            .await
+            .unwrap();
+        let err = validate_skill(tmp.path()).await.unwrap_err();
+        assert!(matches!(err, AppError::Business { .. }));
     }
 
     /// enable 写入 [plugins."<name>@<market>"] 段;disable 后该段被移除。
