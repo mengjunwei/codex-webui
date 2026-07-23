@@ -16,6 +16,7 @@ use codex_webui::{
     services::multitenant::replication,
     services::multitenant::rpc::WorkerRpcClient,
     services::multitenant::sticky::{NoopSticky, RedisSticky, StickyStore},
+    services::policy_engine::PolicyStore,
     services::settings::{self, reconcile_settings},
     services::terminal::{TerminalConfig, TerminalService},
     services::threads::ThreadResumeRegistry,
@@ -288,6 +289,7 @@ async fn main() -> anyhow::Result<()> {
     }
 
     let status_service = codex_webui::services::codex_status::CodexStatusService::new(codex.clone());
+    let policy_store = PolicyStore::new(db.clone());
 
     let active_rollout = Arc::new(tokio::sync::Mutex::new(HashMap::new()));
     let local_offsets = Arc::new(tokio::sync::Mutex::new(HashMap::new()));
@@ -318,6 +320,7 @@ async fn main() -> anyhow::Result<()> {
         hook_token: cfg.security.internal_hook_token.clone(),
         audit_writer: audit_writer.clone(),
         http_bind_port: cfg.server.port,
+        policy_store: policy_store.clone(),
         active_rollout,
         local_offsets,
         cfg_extensions_max_file_bytes: cfg.extensions.max_file_bytes,

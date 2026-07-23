@@ -5,6 +5,7 @@ pub mod codex_status_config;
 pub mod extensions;
 pub mod files;
 pub mod multitenant;
+pub mod policy_engine;
 pub mod settings;
 pub mod terminal;
 pub mod threads;

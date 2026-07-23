@@ -8,6 +8,7 @@ use crate::services::multitenant::rpc::WorkerRpcClient;
 use crate::services::multitenant::sticky::StickyStore;
 use crate::services::workspace::audit_writer::AuditWriter;
 use metrics_exporter_prometheus::PrometheusHandle;
+use crate::services::policy_engine::PolicyStore;
 use crate::services::settings::ValueSource;
 use crate::services::terminal::TerminalService;
 use crate::services::threads::ThreadResumeRegistry;
@@ -40,6 +41,9 @@ pub struct AppState {
     pub dynamic_files_roots: Arc<Mutex<HashSet<String>>>,
     /// settings 内存缓存（对齐 TS SettingsService.cache）。
     pub settings_cache: SettingsCache,
+    /// 策略引擎缓存/存储层（命令审查 + skill/plugin/mcp 限制）。
+    pub policy_store: PolicyStore,
+
     // ── 多副本 HA(全局 CODEX_HOME + session 复制)─────────────────────────
     /// codex CLI 的 CODEX_HOME(sessions/ config.toml auth.json 写入位置)。
     /// 只用于:spawn codex 子进程 env、rollout 读写、hooks config 写入、
