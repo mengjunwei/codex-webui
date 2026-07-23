@@ -350,9 +350,33 @@ pub async fn save_local_state(
     Ok(())
 }
 
+/// 在 ext_state_lock 保护下执行 local_state 的读-改-写(防并发丢失更新)。
+///
+/// 闭包 f 收到 load 出的 HashMap 可变引用,做 insert/remove 等修改;返回后 save 回盘。
+/// 锁由调用方从 AppState.ext_state_lock 传入。锁粒度精确到单次 load→改→save(几 ms),
+/// 不阻塞 run_round 的同步主体(DB/RPC/文件落盘)。
+///
+/// 所有 local_state 修改(run_round 的 stale 清理/同步登记、upload/delete handler)都应走
+/// 本函数,与其它写者互斥 → 不丢更新。返回闭包结果(如 remove 取出的 entry),save 失败返 Err。
+pub async fn with_local_state<R, F>(
+    lock: &tokio::sync::Mutex<()>,
+    codex_home: &Path,
+    f: F,
+) -> Result<R, AppError>
+where
+    F: FnOnce(&mut HashMap<String, LocalExtEntry>) -> R,
+{
+    let _guard = lock.lock().await;
+    let mut map = load_local_state(codex_home).await;
+    let result = f(&mut map);
+    save_local_state(codex_home, &map).await?;
+    Ok(result)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Arc;
 
     #[tokio::test]
     async fn write_file_safe_creates_nested_and_content() {
@@ -521,5 +545,51 @@ mod tests {
             .await
             .unwrap();
         assert!(!s2.contains("mysrv"));
+    }
+
+    /// with_local_state 并发写测试:多 task 同时 insert 不同 key,
+    /// 若锁粒度不足或保存覆盖,最终会出现丢 key。验证 M2 不丢更新。
+    #[tokio::test]
+    async fn with_local_state_no_lost_update() {
+        let tmp = tempfile::tempdir().unwrap();
+        let lock = Arc::new(tokio::sync::Mutex::new(()));
+        let home = tmp.path().to_path_buf();
+        const N: usize = 8;
+        let mut handles = Vec::with_capacity(N);
+        for i in 0..N {
+            let lock = lock.clone();
+            let home_t = home.clone();
+            let h = tokio::spawn(async move {
+                let id = format!("ext_{i}");
+                let name = format!("name_{i}");
+                with_local_state(&lock, &home_t, |m| {
+                    m.insert(
+                        id,
+                        LocalExtEntry {
+                            name,
+                            hash: format!("hash_{i}"),
+                            kind: "skill".into(),
+                            market: None,
+                            version: None,
+                        },
+                    );
+                })
+                .await
+                .unwrap();
+            });
+            handles.push(h);
+        }
+        for h in handles {
+            h.await.unwrap();
+        }
+        let loaded = load_local_state(&home).await;
+        assert_eq!(loaded.len(), N, "并发写入后 key 数量不符(丢失更新?)");
+        for i in 0..N {
+            let id = format!("ext_{i}");
+            assert!(
+                loaded.contains_key(&id),
+                "key {id} 在并发写入后应存在"
+            );
+        }
     }
 }

@@ -81,6 +81,10 @@ pub struct AppState {
     pub cfg_extensions_plugin_enabled: bool,
     /// 单个扩展包大小上限(来自 cfg.extensions.max_extension_bytes;上传校验用)。
     pub cfg_extensions_max_extension_bytes: u64,
+    /// local_state(.cluster-extensions.json)并发读写互斥锁。
+    /// run_round 与 upload/delete handler 都改 local_state,此锁防丢失更新(后写覆盖先写)。
+    /// 锁粒度精确到单次 load→改→save(几 ms),不阻塞同步主体(DB/RPC/文件落盘)。
+    pub ext_state_lock: Arc<tokio::sync::Mutex<()>>,
     /// 多租户事件总线(skill 上传/删除后发 "extensions:changed" 触发其他节点同步;
     /// None = 未注入,事件丢弃,单节点仍可工作)。由 main 构造时注入。
     pub mt_event_bus: Option<Arc<dyn crate::services::multitenant::event_bus::EventBus>>,

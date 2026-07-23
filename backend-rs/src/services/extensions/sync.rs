@@ -18,64 +18,70 @@
 use crate::error::AppError;
 use crate::services::extensions::{apply, fingerprint, store};
 use crate::state::AppState;
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 
 /// 单轮同步:把本地扩展对齐到 PG 清单。
 ///
-/// 步骤:
-/// 1. 读 PG `list_enabled`(期望集合)+ 本地 `.cluster-extensions.json`(实际集合)。
-/// 2. 本地有、PG 无 → 用本地 state 里登记的 kind/market/version/name 构造路径删目录
-///    (skill:`skills/{name}/`;plugin:`plugins/cache/{market}/{name}/` + 移除启用段)+ 清本地状态
-///    (不查 PG,避免发起节点物理删行后副本查不到 name → 孤儿目录)。
-/// 3. PG 有、本地无/hash 变 → 调 `sync_one_extension` 独立 try;单扩展失败仅 warn 跳过,
-///    不影响其他扩展(下轮重试)。
-/// 4. 落盘整份本地状态(无论 step 3 是否全部成功,已成功的必须落盘登记)。
+/// 两阶段 + 精确锁(防 local_state 并发丢失更新):
+/// 1. **阶段 1(持短锁 ~ms)**:load 全量 local → 算 stale(本地有 PG 无)与 need(hash 变/新增)。
+///    持锁仅覆盖这一次 load,不阻塞同步主体。
+/// 2. **阶段 2(不持锁)**:
+///    - stale:每个用 `with_local_state` 受锁 remove(防并发覆盖)→ 不持锁做目录 cleanup(秒级)。
+///      cleanup 用阶段 1 拿到的 entry(kind/market/version/name,不查 PG,避免发起节点删行后副本孤儿)。
+///    - need:每个不持锁 `sync_one_extension`(下载/落盘/写 config,秒级)→ 成功后 `with_local_state`
+///      受锁 insert。单扩展失败 warn 跳过(下轮重试)。
+///
+/// 每次修改即时 save(with_local_state 内部 load→改→save),不再结尾全量 save。
+/// upload/delete handler 也走 `with_local_state`,与本轮的短锁互斥 → 不丢更新。
 pub async fn run_round(state: &AppState) -> Result<(), AppError> {
     let desired = store::list_enabled(&state.db).await?;
-    let mut local = apply::load_local_state(&state.codex_home).await;
 
-    let desired_ids: HashSet<&String> = desired.iter().map(|r| &r.id).collect();
-    // 删除:本地有、PG 无(扩展被禁用或删除)。
-    let stale: Vec<String> = local
-        .keys()
-        .filter(|k| !desired_ids.contains(*k))
-        .cloned()
-        .collect();
-    for id in &stale {
-        // 删除目录用**本地状态里存的 kind/market/version/name**,不查 PG。
-        // 发起节点 delete_extension 先物理删 PG 行、再发事件,副本收到事件时 PG 已无该行,
-        // 若靠 name_of(id) 查 PG 会返回 None → 目录成孤儿。本地 state 在 upload/sync 时已登记完整路径信息。
-        // remove 同时取出条目并清理 local_state,幂等(id 不在 map 时返回 None)。
-        if let Some(e) = local.remove(id) {
-            let clean = cleanup_local_extension(&state.codex_home, &e).await;
-            if let Err(err) = clean {
-                tracing::warn!(ext = %id, error = %err, "删除孤儿目录失败,跳过");
+    // 阶段 1(持短锁):load 全量 local,算 stale + need。
+    let (stale, need): (Vec<(String, apply::LocalExtEntry)>, Vec<store::ExtRecord>) = {
+        let _g = state.ext_state_lock.lock().await;
+        let local = apply::load_local_state(&state.codex_home).await;
+        let desired_ids: HashSet<&String> = desired.iter().map(|r| &r.id).collect();
+        let stale = local
+            .iter()
+            .filter(|(k, _)| !desired_ids.contains(*k))
+            .map(|(k, v)| (k.clone(), v.clone()))
+            .collect();
+        let need = desired
+            .iter()
+            .filter(|rec| rec.kind == "skill" || rec.kind == "plugin" || rec.kind == "mcp")
+            .filter(|rec| match local.get(&rec.id) {
+                Some(e) if e.hash == rec.content_hash => false,
+                _ => true,
+            })
+            .cloned()
+            .collect();
+        (stale, need)
+    };
+
+    // 阶段 2a:stale 清理。受锁 remove + 不持锁 cleanup。
+    for (id, entry) in &stale {
+        let _: Option<apply::LocalExtEntry> =
+            apply::with_local_state(&state.ext_state_lock, &state.codex_home, |m| m.remove(id))
+                .await?;
+        if let Err(err) = cleanup_local_extension(&state.codex_home, entry).await {
+            tracing::warn!(ext = %id, error = %err, "删除孤儿目录失败,跳过");
+        }
+    }
+
+    // 阶段 2b:need 同步。不持锁 sync + 成功后受锁 insert。
+    for rec in &need {
+        match sync_one_extension(state, rec).await {
+            Ok(Some(entry)) => {
+                let id = rec.id.clone();
+                apply::with_local_state(&state.ext_state_lock, &state.codex_home, |m| {
+                    m.insert(id, entry);
+                })
+                .await?;
             }
+            Ok(None) => {} // hash 不匹配等,不登记,下轮重试
+            Err(e) => tracing::warn!(ext = %rec.id, error = %e, "扩展同步失败,跳过(下轮重试)"),
         }
     }
-
-    // 新增/更新:每个扩展独立 try,单扩展失败不影响其他。
-    for rec in &desired {
-        // 同步 skill / plugin / mcp;其他未知 kind 跳过。MCP 在 sync_one_extension 顶部短路处理。
-        if rec.kind != "skill" && rec.kind != "plugin" && rec.kind != "mcp" {
-            continue;
-        }
-        // 比对 hash:本地条目 hash 与 PG content_hash 一致则跳过,否则需更新(新增/变更)。
-        let need = match local.get(&rec.id) {
-            Some(e) if e.hash == rec.content_hash => false,
-            _ => true,
-        };
-        if !need {
-            continue;
-        }
-        // 单扩展失败:warn 跳过,下轮/事件重试;不让一个扩展的异常中断整轮。
-        if let Err(e) = sync_one_extension(state, rec, &mut local).await {
-            tracing::warn!(ext = %rec.id, error = %e, "扩展同步失败,跳过(下轮重试)");
-            continue;
-        }
-    }
-    // 循环结束后统一落盘:已成功登记的扩展必须持久化,否则下轮会重复下载。
-    apply::save_local_state(&state.codex_home, &local).await?;
     Ok(())
 }
 
@@ -148,26 +154,21 @@ pub async fn bootstrap(state: &AppState) -> Result<(), AppError> {
 async fn sync_one_extension(
     state: &AppState,
     rec: &store::ExtRecord,
-    local: &mut HashMap<String, apply::LocalExtEntry>,
-) -> Result<(), AppError> {
+) -> Result<Option<apply::LocalExtEntry>, AppError> {
     // MCP 短路:必须在 holder_candidates **之前** —— MCP 无文件 / 无 holder 行,
     // 若走到下面的 holder 空候选检查会直接 Err,永远到不了 kind 分支。
     // config_text 直接从 PG 读(PG 权威),完整性由 PG 保证,不重算 hash。
     if rec.kind == "mcp" {
         let content = rec.config_text.clone().unwrap_or_default();
         apply::enable_mcp_config(&state.codex_home, &rec.name, &content).await?;
-        local.insert(
-            rec.id.clone(),
-            apply::LocalExtEntry {
-                name: rec.name.clone(),
-                hash: rec.content_hash.clone(),
-                kind: "mcp".into(),
-                market: None,
-                version: None,
-            },
-        );
-        // MCP 无文件,不调 add_holder(holder 对 MCP 无意义)。
-        return Ok(());
+        // MCP 无文件:写段后返回 entry,由 run_round 用 with_local_state 受锁登记(不 add_holder)。
+        return Ok(Some(apply::LocalExtEntry {
+            name: rec.name.clone(),
+            hash: rec.content_hash.clone(),
+            kind: "mcp".into(),
+            market: None,
+            version: None,
+        }));
     }
 
     // 候选 holder 列表:本扩展查一次(list_holders ∩ alive_nodes 排除自己),供本轮所有
@@ -211,7 +212,7 @@ async fn sync_one_extension(
                 let clean_root = apply::plugins_cache_dir(&state.codex_home).join(&market);
                 (dest, clean_root, rec.name.clone())
             }
-            _ => return Ok(()), // 真正的未知 kind 跳过(MCP 已在函数顶部短路,不会到此)
+            _ => return Ok(None), // 真正的未知 kind 跳过(MCP 已在函数顶部短路,不会到此)
         };
 
     // 清旧目录(含上次失败残留的半成品)→ 建空目录。
@@ -234,24 +235,21 @@ async fn sync_one_extension(
             let market = rec.marketplace.clone().unwrap_or_default();
             apply::enable_plugin_config(&state.codex_home, &rec.name, &market).await?;
         }
-        // 登记 {name, hash, kind, market, version}:name+kind+market+version 供后续删除分支
-        // 定位目录(不查 PG),hash 供下轮对齐。
-        local.insert(
-            rec.id.clone(),
-            apply::LocalExtEntry {
-                name: rec.name.clone(),
-                hash: rec.content_hash.clone(),
-                kind: rec.kind.clone(),
-                market: rec.marketplace.clone(),
-                version: rec.version.clone(),
-            },
-        );
-        // 扩散:自己也成 holder,后续其他新节点可从本节点下载。
+        // 扩散:自己也成 holder(DB 写,不涉及 local_state 锁)。add_holder 是 best-effort
+        // (I7 后真实错误 warn 但返 Ok,不阻断)。
         store::add_holder(&state.db, &rec.id, &state.node_id).await?;
-        Ok(())
+        // 返回 entry:由 run_round 用 with_local_state 受锁登记(name+kind+market+version 供
+        // 后续删除分支定位目录,hash 供下轮对齐)。不在此直接写 local_state(避免无锁写)。
+        Ok(Some(apply::LocalExtEntry {
+            name: rec.name.clone(),
+            hash: rec.content_hash.clone(),
+            kind: rec.kind.clone(),
+            market: rec.marketplace.clone(),
+            version: rec.version.clone(),
+        }))
     } else {
         // hash 不匹配:清半成品目录(避免下次 scan_dir 误读残留 / 用户看到坏文件);
-        // 不登记、不 add_holder,返回 Ok(()) —— local 未更新,下轮 need=true 自然重试。
+        // 返回 None(不登记、不 add_holder),下轮 need=true 自然重试。
         let _ = apply::remove_dir_safe(&clean_root, &clean_name).await;
         tracing::warn!(
             ext = %rec.id,
@@ -259,7 +257,7 @@ async fn sync_one_extension(
             got = %got,
             "扩展落盘 hash 不匹配,清半成品,本轮跳过(下轮重试)"
         );
-        Ok(())
+        Ok(None)
     }
 }
 

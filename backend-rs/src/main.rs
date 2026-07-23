@@ -328,6 +328,7 @@ async fn main() -> anyhow::Result<()> {
         cfg_extensions_max_file_bytes: cfg.extensions.max_file_bytes,
         cfg_extensions_plugin_enabled: cfg.extensions.plugin_enabled,
         cfg_extensions_max_extension_bytes: cfg.extensions.max_extension_bytes,
+        ext_state_lock: Arc::new(tokio::sync::Mutex::new(())),
         mt_event_bus: mt_event_bus.clone(),
     };
 
