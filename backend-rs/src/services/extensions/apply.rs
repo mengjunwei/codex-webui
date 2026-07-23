@@ -255,10 +255,13 @@ pub async fn unzip_to_dest(
     crate::services::extensions::fingerprint::scan_dir(dest).await
 }
 
-/// 校验解压后的目录是否为合法 skill:根目录必须有 `SKILL.md`,且是文件、且非空。
+/// 校验解压后的目录是否为合法 skill:根目录必须有 `SKILL.md`,且是文件、且非空,
+/// 且以 YAML frontmatter 起始(codex skill 加载器要求)。
 ///
-/// codex skill 的入口标准是目录根存在 `SKILL.md`(描述 skill 元信息,类似 README)。
-/// 缺失 / 是目录 / 空文件均视为非法 skill 包,上传时应在落盘正式目录前用此函数拦截。
+/// codex skill 的入口标准是目录根存在 `SKILL.md`(描述 skill 元信息,类似 README),
+/// 且首部须有 `---` 分隔的 YAML frontmatter(否则 codex 运行时报
+/// "missing YAML frontmatter delimited by ---")。缺失/是目录/空/无 frontmatter 均
+/// 视为非法 skill 包,上传时应在落盘正式目录前用此函数拦截。
 ///
 /// 校验失败返回 400 业务错误(中文消息),调用方 `?` 上抛即可;若解压在临时目录中转,
 /// 由 `tempfile::TempDir` drop 自动清理,不留残渣、不入库。
@@ -289,7 +292,33 @@ pub async fn validate_skill(dest: &Path) -> Result<(), AppError> {
             None,
         ));
     }
+    // 校验 YAML frontmatter(codex 要求 SKILL.md 以 --- 起始并闭合)。
+    let content = tokio::fs::read_to_string(&skill_md)
+        .await
+        .map_err(|e| AppError::internal(format!("read SKILL.md: {e}")))?;
+    if !has_yaml_frontmatter(&content) {
+        return Err(AppError::business(
+            ErrorCode::HttpBadRequest,
+            StatusCode::BAD_REQUEST,
+            "不是合法 skill:SKILL.md 缺少 YAML frontmatter(须以 `---` 起始并有闭合 `---`)"
+                .into(),
+            None,
+        ));
+    }
     Ok(())
+}
+
+/// SKILL.md 是否以合法 YAML frontmatter 起始(codex skill 加载要求):
+/// 首行(去 BOM/空白后)为 `---`,且后续 64 行内存在第二个 `---` 闭合。
+fn has_yaml_frontmatter(content: &str) -> bool {
+    let mut lines = content.lines();
+    let first = lines
+        .next()
+        .map(|l| l.trim_start_matches('\u{feff}').trim());
+    if first != Some("---") {
+        return false;
+    }
+    lines.take(64).any(|l| l.trim() == "---")
 }
 
 /// 检测所有文件是否共享单一顶层目录;返回该顶层(含尾 `/`)或 None。
@@ -454,13 +483,16 @@ mod tests {
         assert!(plugin_dest(&base, "mkt", "foo", "/abs").is_err());
     }
 
-    /// validate_skill:有非空 SKILL.md → Ok。
+    /// validate_skill:有非空 SKILL.md + 合法 YAML frontmatter → Ok。
     #[tokio::test]
     async fn validate_skill_ok_when_skill_md_present_nonempty() {
         let tmp = tempfile::tempdir().unwrap();
-        tokio::fs::write(tmp.path().join("SKILL.md"), "# my skill\n")
-            .await
-            .unwrap();
+        tokio::fs::write(
+            tmp.path().join("SKILL.md"),
+            "---\nname: my-skill\ndescription: test\n---\n# my skill\n",
+        )
+        .await
+        .unwrap();
         validate_skill(tmp.path()).await.unwrap();
     }
 
@@ -473,6 +505,24 @@ mod tests {
         assert!(matches!(err, AppError::Business { .. }));
         // 空文件
         tokio::fs::write(tmp.path().join("SKILL.md"), "")
+            .await
+            .unwrap();
+        let err = validate_skill(tmp.path()).await.unwrap_err();
+        assert!(matches!(err, AppError::Business { .. }));
+    }
+
+    /// validate_skill:SKILL.md 缺 YAML frontmatter → Err(对齐 codex 加载器要求)。
+    #[tokio::test]
+    async fn validate_skill_errors_when_missing_frontmatter() {
+        // 纯 markdown 正文,无 --- frontmatter(ui-skill 类问题)
+        let tmp = tempfile::tempdir().unwrap();
+        tokio::fs::write(tmp.path().join("SKILL.md"), "# UI 模拟\n正文内容\n")
+            .await
+            .unwrap();
+        let err = validate_skill(tmp.path()).await.unwrap_err();
+        assert!(matches!(err, AppError::Business { .. }));
+        // 有起始 --- 但无闭合 --- 同样非法
+        tokio::fs::write(tmp.path().join("SKILL.md"), "---\nname: x\n无闭合\n")
             .await
             .unwrap();
         let err = validate_skill(tmp.path()).await.unwrap_err();
