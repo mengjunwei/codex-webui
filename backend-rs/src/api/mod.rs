@@ -7,6 +7,7 @@ pub mod hooks;
 pub mod logs;
 pub mod multitenant;
 pub mod onlyoffice;
+pub mod policy;
 pub mod realtime;
 pub mod settings;
 
@@ -92,6 +93,15 @@ use utoipa_swagger_ui::SwaggerUi;
         crate::api::onlyoffice::get_config,
         crate::api::onlyoffice::handle_callback,
         crate::api::chat::upload_attachment,
+        // 策略管理
+        crate::api::policy::list_global_policies,
+        crate::api::policy::create_global_policy,
+        crate::api::policy::update_global_policy,
+        crate::api::policy::delete_global_policy,
+        crate::api::policy::list_team_policies,
+        crate::api::policy::create_team_policy,
+        crate::api::policy::update_team_policy,
+        crate::api::policy::delete_team_policy,
     ),
     tags(
         (name = "system", description = "健康检查 / 探针"),
@@ -316,6 +326,31 @@ pub async fn build_router(state: AppState) -> Router {
         .route(
             "/extensions/{id}",
             delete(mt_ext::delete_extension).layer(admin_layer.clone()),
+        )
+        // ── 策略管理（spec 2026-07-23-policy-engine-design）──
+        // 全局策略（平台管理员独占）：GET list / POST create / PATCH/DELETE。
+        .route(
+            "/policies/global",
+            get(crate::api::policy::list_global_policies)
+                .merge(post(crate::api::policy::create_global_policy))
+                .layer(admin_layer.clone()),
+        )
+        .route(
+            "/policies/global/{id}",
+            patch(crate::api::policy::update_global_policy)
+                .merge(delete(crate::api::policy::delete_global_policy))
+                .layer(admin_layer.clone()),
+        )
+        // 团队策略（team owner / admin）：handler 内 require_team_admin 校验。
+        .route(
+            "/teams/{teamId}/policies",
+            get(crate::api::policy::list_team_policies)
+                .merge(post(crate::api::policy::create_team_policy)),
+        )
+        .route(
+            "/teams/{teamId}/policies/{id}",
+            patch(crate::api::policy::update_team_policy)
+                .merge(delete(crate::api::policy::delete_team_policy)),
         )
         .layer(axum::middleware::from_fn_with_state(
             state.clone(),

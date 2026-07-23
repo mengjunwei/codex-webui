@@ -4,6 +4,7 @@
 //! 失败语义:任何内部异常 → 200 + continue=true(fail-open,不阻断 codex)。
 
 use crate::error::AppError;
+use crate::services::policy_engine::{PolicyDecision, PolicyInput};
 use crate::services::workspace as ws;
 use crate::services::workspace::decision::{decide_pre_tool_use, Decision};
 use crate::state::AppState;
@@ -129,11 +130,33 @@ async fn handle_inner(state: &AppState, payload: HookPayload) -> Result<HookResp
             raw_target
         };
 
+        // 策略引擎(spec 2026-07-23):先于原决策表,命中 Deny 直接 deny,异常 fail-open。
+        let mut policy_block: Option<(String, String)> = None;
+        match state.policy_store.engine().await.evaluate(
+            PolicyInput {
+                team_id: &team,
+                user_id: &user,
+                role: &role,
+                tool_name: &tool_name,
+                tool_input: payload.tool_input.as_ref(),
+            },
+            |_tid, _uid, required_role| role == required_role,
+        ) {
+            PolicyDecision::Allow => {}
+            PolicyDecision::Deny { rule_id, reason } => {
+                policy_block = Some((rule_id, reason));
+            }
+        }
+
         let decision = decide_pre_tool_use(&role, &tool_name, &target, &state.workspace_root);
-        let perm = match decision {
-            Decision::Allow => "allow",
-            Decision::Deny => "deny",
-            Decision::Ask => "ask",
+        let perm = if policy_block.is_some() {
+            "deny"
+        } else {
+            match decision {
+                Decision::Allow => "allow",
+                Decision::Deny => "deny",
+                Decision::Ask => "ask",
+            }
         };
 
         state.audit_writer.submit(ws::audit_writer::AuditEvent {

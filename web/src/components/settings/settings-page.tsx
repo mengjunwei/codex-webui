@@ -18,8 +18,11 @@ import { AccountSettings } from './account/account-settings';
 import { PlatformAdminPanel } from './platform-admin-panel';
 import { TeamMembersDialog } from '../team/team-members';
 import { TeamSettingsDialog } from '../team/team-settings';
+import { PolicyPanel } from './policy-panel';
+import { useTeamStore } from '@/stores/team-store';
+import { useCurrentRole } from '@/hooks/use-permission';
 
-const SECTIONS = ['general', 'account', 'team', 'platform'] as const;
+const SECTIONS = ['general', 'account', 'team', 'platform', 'policies'] as const;
 
 type SettingsSection = (typeof SECTIONS)[number];
 
@@ -30,8 +33,12 @@ export function SettingsPage() {
   const toggleDark = useThemeStore((s) => s.toggleDark);
   const threadId = useTimelineStore((s) => s.threadId);
   const isPlatformAdmin = useIsPlatformAdmin();
+  const currentTeamId = useTeamStore((s) => s.currentTeamId);
+  const currentRole = useCurrentRole();
+  const canManageTeamPolicy = currentRole === 'owner' || currentRole === 'admin';
   const [section, setSection] = useState<SettingsSection>('general');
-  // general/platform 仅平台管理员;当前 section 对用户不可见时,落到首个可见 tab。
+  // general/platform/policies(global) 仅平台管理员;team/policies(team) 仅 owner/admin。
+  // 简化:policies tab 始终展示（内部分 global/team 两块由角色决定可见）。
   const visibleSections = SECTIONS.filter(
     (s) => !((s === 'general' || s === 'platform') && !isPlatformAdmin),
   );
@@ -120,6 +127,28 @@ export function SettingsPage() {
           </div>
         )}
         {active === 'platform' && isPlatformAdmin && <PlatformAdminPanel />}
+        {active === 'policies' && (
+          <div className="space-y-6">
+            {isPlatformAdmin && (
+              <section>
+                <PolicyPanel scope="global" />
+              </section>
+            )}
+            {canManageTeamPolicy && currentTeamId && (
+              <section>
+                <Separator />
+                <div className="pt-4">
+                  <PolicyPanel scope="team" teamId={currentTeamId} />
+                </div>
+              </section>
+            )}
+            {!isPlatformAdmin && !canManageTeamPolicy && (
+              <p className="text-sm text-muted-foreground">
+                {t('需要平台管理员或团队 owner / admin 才能查看策略。')}
+              </p>
+            )}
+          </div>
+        )}
       </div>
     </div>
   );

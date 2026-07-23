@@ -68,6 +68,7 @@ export function sectionLabel(section: string): string {
     security: 'Security',
     team: 'Team',
     platform: '平台管理',
+    policies: '策略',
   };
   return labels[section] ?? section;
 }

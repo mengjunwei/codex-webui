@@ -388,3 +388,80 @@ export const extensionsApi = {
   remove: (id: string) =>
     mtFetch<void>(`/extensions/${encodeURIComponent(id)}`, 'DELETE'),
 };
+
+// ── 策略管理 API(spec 2026-07-23-policy-engine-design)─────────────────────
+// - GET    /policies/global                 → PolicyRuleListResponse(平台管理员)
+// - POST   /policies/global                 → PolicyRuleResponse
+// - PATCH  /policies/global/{id}            → PolicyRuleResponse
+// - DELETE /policies/global/{id}            → 204
+// - GET    /teams/{teamId}/policies         → PolicyRuleListResponse(team owner/admin)
+// - POST   /teams/{teamId}/policies         → PolicyRuleResponse
+// - PATCH  /teams/{teamId}/policies/{id}    → PolicyRuleResponse
+// - DELETE /teams/{teamId}/policies/{id}    → 204
+
+export type PolicyRuleType = 'command' | 'tool' | 'skill' | 'plugin' | 'mcp';
+export type PolicyMatchMode = 'blacklist' | 'whitelist' | 'regex' | 'exact';
+export type PolicyAction = 'allow' | 'deny';
+export type PolicyScope = 'global' | 'team';
+export type PolicyRoleFilter = 'owner' | 'admin' | 'member';
+
+export interface PolicyRule {
+  id: string;
+  scope: PolicyScope;
+  team_id: string | null;
+  role: PolicyRoleFilter | null;
+  rule_type: PolicyRuleType;
+  match_mode: PolicyMatchMode;
+  pattern: string;
+  action: PolicyAction;
+  priority: number;
+  enabled: boolean;
+  description: string | null;
+  created_at: number;
+  updated_at: number;
+}
+
+export interface CreatePolicyRuleBody {
+  scope: PolicyScope;
+  team_id?: string;
+  role?: PolicyRoleFilter;
+  rule_type: PolicyRuleType;
+  match_mode: PolicyMatchMode;
+  pattern: string;
+  action: PolicyAction;
+  priority?: number;
+  enabled?: boolean;
+  description?: string;
+}
+
+export type UpdatePolicyRuleBody = Partial<Omit<CreatePolicyRuleBody, 'scope' | 'team_id'>>;
+
+export const policyApi = {
+  listGlobal: () => mtFetch<{ items: PolicyRule[] }>('/policies/global'),
+  createGlobal: (body: CreatePolicyRuleBody) =>
+    mtFetch<{ rule: PolicyRule }>('/policies/global', 'POST', body),
+  updateGlobal: (id: string, body: UpdatePolicyRuleBody) =>
+    mtFetch<{ rule: PolicyRule }>(`/policies/global/${encodeURIComponent(id)}`, 'PATCH', body),
+  deleteGlobal: (id: string) =>
+    mtFetch<void>(`/policies/global/${encodeURIComponent(id)}`, 'DELETE'),
+
+  listTeam: (teamId: string) =>
+    mtFetch<{ items: PolicyRule[] }>(`/teams/${encodeURIComponent(teamId)}/policies`),
+  createTeam: (teamId: string, body: CreatePolicyRuleBody) =>
+    mtFetch<{ rule: PolicyRule }>(
+      `/teams/${encodeURIComponent(teamId)}/policies`,
+      'POST',
+      body,
+    ),
+  updateTeam: (teamId: string, id: string, body: UpdatePolicyRuleBody) =>
+    mtFetch<{ rule: PolicyRule }>(
+      `/teams/${encodeURIComponent(teamId)}/policies/${encodeURIComponent(id)}`,
+      'PATCH',
+      body,
+    ),
+  deleteTeam: (teamId: string, id: string) =>
+    mtFetch<void>(
+      `/teams/${encodeURIComponent(teamId)}/policies/${encodeURIComponent(id)}`,
+      'DELETE',
+    ),
+};
