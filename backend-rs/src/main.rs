@@ -290,6 +290,33 @@ async fn main() -> anyhow::Result<()> {
 
     let status_service = codex_webui::services::codex_status::CodexStatusService::new(codex.clone());
     let policy_store = PolicyStore::new(db.clone());
+    // 策略引擎缓存同步(spec 2026-07-23):订阅 policies:changed,任何节点写入策略后
+    // 本节点立即 invalidate 缓存(下一请求触发回源)。Local edit 同样广播(失效自身无副作用)。
+    if let Some(bus) = mt_event_bus.clone() {
+        let policy_store_for_event = policy_store.clone();
+        tokio::spawn(async move {
+            let mut rx = match bus.subscribe("policies:changed").await {
+                Ok(rx) => rx,
+                Err(e) => {
+                    tracing::warn!(error = %e, "subscribe policies:changed failed");
+                    return;
+                }
+            };
+            loop {
+                match rx.recv().await {
+                    Ok(_) => {
+                        policy_store_for_event.invalidate().await;
+                    }
+                    Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
+                        tracing::warn!(lagged = n, "policies:changed subscriber lagged");
+                        policy_store_for_event.invalidate().await;
+                        continue;
+                    }
+                    Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+                }
+            }
+        });
+    }
 
     let active_rollout = Arc::new(tokio::sync::Mutex::new(HashMap::new()));
     let local_offsets = Arc::new(tokio::sync::Mutex::new(HashMap::new()));
