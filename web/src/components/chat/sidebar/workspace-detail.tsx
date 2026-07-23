@@ -3,7 +3,8 @@ import { ChevronLeft } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { Button } from '@/components/ui/button';
 import { Skeleton } from '@/components/ui/skeleton';
-import type { ThreadDto } from '@/generated/api';
+// TODO: ThreadDto 来自旧 OpenAPI SDK,已下线,从 sidebar-types 引入本地别名
+import type { ThreadDto } from './sidebar-types';
 import type { SidebarView } from './sidebar-types';
 import { workspaceLabel } from './sidebar-types';
 

@@ -4,24 +4,18 @@
 //! 集成测试（`tests/*.rs`）共同使用。每个模块在此声明为 `pub`，
 //! 测试即可通过 `use codex_webui::<module>::*` 导入。
 
-pub mod auth;
-pub mod chat;
-pub mod codex;
-pub mod codex_status;
-pub mod codex_status_config;
+// ── 基础设施 ──────────────────────────────────────────────────────────
 pub mod config;
-pub mod db;
 pub mod error;
-pub mod event_subscribers;
-pub mod files;
-pub mod logs;
 pub mod logging;
-pub mod onlyoffice;
-pub mod proxies;
-pub mod realtime;
-pub mod routes;
-pub mod settings;
-pub mod sqlite_handlers;
 pub mod state;
-pub mod terminal;
-pub mod threads;
+
+// ── 三层架构 ──────────────────────────────────────────────────────────
+pub mod api;       // Handler 层：HTTP 路由、请求解析、响应构建
+pub mod services;  // Service 层：业务逻辑编排
+pub mod db;        // DB 层：SeaORM Entity + Migration
+
+// ── 领域模块 ──────────────────────────────────────────────────────────
+pub mod auth;        // 认证中间件（JWT/API key 校验）
+pub mod codex;       // Codex RPC 客户端（进程管理 + JSON-RPC）
+pub mod multitenant; // 多租户中间件 + 工具函数（now_ms / new_id）

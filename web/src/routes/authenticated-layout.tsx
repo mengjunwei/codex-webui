@@ -15,7 +15,6 @@ import {
 import { ChatHeader } from '@/components/chat/chat-header';
 import { ThreadSidebar } from '@/components/chat/thread-sidebar';
 import { SnackbarContainer } from '@/components/snackbar/snackbar-container';
-import { CodexStatusBanner } from '@/components/codex-status-banner';
 import { useBreakpoint } from '@/hooks/use-breakpoint';
 import { useCodexSocket } from '@/hooks/use-codex-socket';
 import { useFilesStore } from '@/stores/files-store';
@@ -25,51 +24,86 @@ import { useThemeStore } from '@/stores/theme-store';
 import { cn } from '@/lib/utils';
 import { clearApiToken } from '@/auth-token';
 import { getSocket, resetSocket } from '@/socket';
-import { filesGetRoots, filesAddRoot } from '@/generated/api';
+import { getRoots } from '@/generated/api';
 import {
-  pendingApprovalsListPending,
-  settingsListSettings,
-  threadsListLoadedThreads,
-  threadsResumeThread,
+  list as settingsListSettings,
 } from '@/generated/api/sdk.gen';
-import { settingsListSettingsQueryKey } from '@/generated/api/@tanstack/react-query.gen';
-import type { PendingServerRequestDto } from '@/generated/api';
-import type { ApprovalRequest } from '@/types/approval';
-import { parseAvailableDecisions, parseStringArray, parseNetworkAmendments } from '@/lib/approval-parsers';
-import { userInputFromPending } from '@/lib/user-input-parsers';
+import { listQueryKey as settingsListSettingsQueryKey } from '@/generated/api/@tanstack/react-query.gen';
+import { useTeamStore } from '@/stores/team-store';
+import { useUserStore } from '@/stores/user-store';
+import { approvalsApi, threadsApi, type PendingApproval } from '@/lib/mt-client';
+import type { ApprovalRequest, NetworkPolicyAmendment, RawCommandDecision } from '@/types/approval';
 
 const MAX_IDLE_SUBSCRIPTIONS_KEY = 'general.maxIdleSubscriptions';
 const DEFAULT_MAX_IDLE_SUBSCRIPTIONS = 30;
 const IDLE_SUBSCRIPTION_CLEANUP_INTERVAL_MS = 5 * 60 * 1000;
 
-function approvalFromPending(request: PendingServerRequestDto): ApprovalRequest | null {
-  const params = request.params;
-  const turnId = typeof params.turnId === 'string' ? params.turnId : request.turnId;
-  const itemId = typeof params.itemId === 'string' ? params.itemId : request.itemId;
-  if (!turnId || !itemId || request.status !== 'pending') return null;
+/**
+ * ResumeThreadResponse: threadsApi.invoke(tid, {method:'thread/resume'}) 的响应形状。
+ * 兼容两种情况：直接返回或 { data: ... } 包装。
+ */
+interface ResumeThreadResponse {
+  cwd?: string;
+  thread: {
+    turns?: Array<{ id?: string; status?: string }>;
+    cwd?: string;
+    name?: string;
+    preview?: string;
+    status?: string;
+  };
+}
 
-  if (request.method === 'item/commandExecution/requestApproval') {
+/**
+ * pendingApprovalToRequest: 新多租户 PendingApproval → ApprovalRequest。
+ *
+ * PendingApproval.params_json 是 JSON 字符串，字段名是 camelCase。
+ * 旧 approvalFromPending 接受 PendingServerRequestDto（已下线）。
+ */
+interface PendingApprovalDto extends PendingApproval {
+  /** 服务端可选返回，用于兼容旧逻辑 */
+  params_json: string;
+}
+
+function pendingApprovalToRequest(pa: PendingApprovalDto): ApprovalRequest | null {
+  let params: Record<string, unknown> = {};
+  try {
+    params = JSON.parse(pa.params_json) as Record<string, unknown>;
+  } catch {
+    /* invalid JSON — skip */
+  }
+
+  const turnId = typeof params.turnId === 'string' ? params.turnId : pa.turn_id ?? null;
+  const itemId = typeof params.itemId === 'string' ? params.itemId : pa.item_id ?? null;
+  if (!turnId || !itemId || pa.status !== 'pending') return null;
+
+  if (pa.method === 'item/commandExecution/requestApproval') {
     return {
-      requestId: request.requestId,
+      requestId: pa.request_id,
       kind: 'commandExecution',
-      threadId: request.threadId,
+      threadId: pa.thread_id,
       turnId,
       itemId,
       status: 'pending',
       command: (params.command as string) ?? null,
       cwd: (params.cwd as string) ?? null,
       reason: (params.reason as string) ?? null,
-      availableDecisions: parseAvailableDecisions(params.availableDecisions),
-      proposedExecpolicyAmendment: parseStringArray(params.proposedExecpolicyAmendment),
-      proposedNetworkPolicyAmendments: parseNetworkAmendments(params.proposedNetworkPolicyAmendments),
+      availableDecisions: Array.isArray(params.availableDecisions)
+        ? (params.availableDecisions as RawCommandDecision[])
+        : [],
+      proposedExecpolicyAmendment: Array.isArray(params.proposedExecpolicyAmendment)
+        ? (params.proposedExecpolicyAmendment as string[])
+        : [],
+      proposedNetworkPolicyAmendments: Array.isArray(params.proposedNetworkPolicyAmendments)
+        ? (params.proposedNetworkPolicyAmendments as NetworkPolicyAmendment[])
+        : [],
     };
   }
 
-  if (request.method === 'item/fileChange/requestApproval') {
+  if (pa.method === 'item/fileChange/requestApproval') {
     return {
-      requestId: request.requestId,
+      requestId: pa.request_id,
       kind: 'fileChange',
-      threadId: request.threadId,
+      threadId: pa.thread_id,
       turnId,
       itemId,
       status: 'pending',
@@ -99,7 +133,6 @@ export function AuthenticatedLayout() {
 
   const threadCwd = useTimelineStore((s) => s.threadCwd);
   const addApprovalForThread = useTimelineStore((s) => s.addApprovalForThread);
-  const addUserInputRequestForThread = useTimelineStore((s) => s.addUserInputRequestForThread);
   const ensureThreadState = useTimelineStore((s) => s.ensureThreadState);
   const hydrateTimelineForThread = useTimelineStore((s) => s.hydrateTimelineForThread);
   const setLoadingForThread = useTimelineStore((s) => s.setLoadingForThread);
@@ -128,6 +161,13 @@ export function AuthenticatedLayout() {
 
   useCodexSocket(true);
 
+  // 挂载时若尚未拉取当前用户身份(/me),则补拉一次。
+  useEffect(() => {
+    if (!useUserStore.getState().me) {
+      void useUserStore.getState().loadMe();
+    }
+  }, []);
+
   useEffect(() => {
     setMaxIdleSubscriptions(maxIdleSubscriptions);
   }, [maxIdleSubscriptions, setMaxIdleSubscriptions]);
@@ -142,7 +182,7 @@ export function AuthenticatedLayout() {
 
   // Fetch home dir on mount
   useEffect(() => {
-    filesGetRoots({ throwOnError: true })
+    getRoots({ throwOnError: true })
       .then(({ data }) => setHomeDir(data.homeDir))
       .catch(() => undefined);
   }, []);
@@ -152,77 +192,74 @@ export function AuthenticatedLayout() {
     let cancelled = false;
     const socket = getSocket();
 
-    // 1. Discover loaded threads from app-server memory and subscribe them.
+    // 1. Discover loaded threads from multitenant API and subscribe them.
     const discoverLoadedThreads = async () => {
-      const seen = new Set<string>();
-      let cursor: string | undefined;
+      const { currentTeamId, loadTeams } = useTeamStore.getState();
+      let teamId = currentTeamId;
+      if (!teamId) {
+        await loadTeams();
+        teamId = useTeamStore.getState().currentTeamId;
+      }
+      if (!teamId) return; // 无 team，跳过
 
-      // Paginate up to 3 pages (600 threads max — more than enough for a single user).
-      for (let page = 0; page < 3; page += 1) {
-        const { data } = await threadsListLoadedThreads({
-          query: { limit: 200, ...(cursor ? { cursor } : {}) },
-        });
-        if (cancelled || !data) return;
+      // threadsApi.list(teamId) 返回该 team 下所有 thread（数组）
+      const rawThreads: unknown[] = await threadsApi.list(teamId);
 
-        for (const tid of data.data) {
-          if (seen.has(tid)) continue;
-          seen.add(tid);
+      const threadIds: string[] = rawThreads.map((t) =>
+        typeof t === 'string' ? t : (t as { id: string }).id,
+      );
 
-          ensureThreadState({ threadId: tid });
-          setLoadingForThread(tid, true);
-          socket.emit('thread.subscribe', { threadId: tid });
-          useTimelineStore.setState((s) => ({
-            subscribedThreadIds: new Set(s.subscribedThreadIds).add(tid),
-          }));
+      for (const tid of threadIds) {
+        ensureThreadState({ threadId: tid });
+        setLoadingForThread(tid, true);
+        socket.emit('thread.subscribe', { threadId: tid });
+        useTimelineStore.setState((s) => ({
+          subscribedThreadIds: new Set(s.subscribedThreadIds).add(tid),
+        }));
 
-          // Resume to get full thread state (dedup makes this safe).
-          void threadsResumeThread({ path: { threadId: tid } })
-            .then(({ data: resumeData }) => {
-              if (cancelled || !resumeData) return;
-              hydrateTimelineForThread(
-                tid,
-                resumeData.thread.turns ?? [],
-                resumeData.cwd ?? resumeData.thread.cwd,
-              );
-              setThreadTitleForThread(
-                tid,
-                resumeData.thread.name ?? resumeData.thread.preview ?? null,
-              );
-              setThreadStatusForThread(tid, resumeData.thread.status);
-              const activeTurn = resumeData.thread.turns?.find(
-                (turn: { status?: string }) => turn.status === 'inProgress',
-              );
-              setActiveTurnIdForThread(tid, activeTurn?.id ?? null);
-              setLoadingForThread(tid, Boolean(activeTurn));
-            })
-            .catch(() => {
-              if (!cancelled) setLoadingForThread(tid, false);
-            });
-        }
+        // Resume to get full thread state via new invoke endpoint.
+        void threadsApi
+          .invoke(tid, { method: 'thread/resume' })
+          .then((rawResume) => {
+            if (cancelled) return;
+            // 兼容：响应可能是 { data: ThreadState } 或直接 ThreadState
+            const resumeData =
+              rawResume && typeof rawResume === 'object' && 'data' in rawResume
+                ? (rawResume as { data: ResumeThreadResponse }).data
+                : (rawResume as ResumeThreadResponse);
+            if (!resumeData?.thread) return;
+            const th = resumeData.thread;
+            hydrateTimelineForThread(tid, th.turns ?? [], resumeData.cwd ?? th.cwd);
+            setThreadTitleForThread(tid, th.name ?? th.preview ?? null);
+            setThreadStatusForThread(tid, (th.status ?? null) as import('@/types/codex-notifications').ThreadStatusType | null);
+            const activeTurn = th.turns?.find(
+              (turn: { status?: string }) => turn.status === 'inProgress',
+            );
+            setActiveTurnIdForThread(tid, activeTurn?.id ?? null);
+            setLoadingForThread(tid, Boolean(activeTurn));
 
-        if (!data.nextCursor) break;
-        cursor = data.nextCursor;
+            // 2. Hydrate pending approvals for this thread via multitenant API.
+            void approvalsApi
+              .list(tid)
+              .then((approvals) => {
+                if (cancelled) return;
+                for (const pa of approvals) {
+                  const approval = pendingApprovalToRequest(pa as PendingApprovalDto);
+                  if (approval) addApprovalForThread(tid, approval);
+                }
+              })
+              .catch(() => undefined);
+          })
+          .catch(() => {
+            if (!cancelled) setLoadingForThread(tid, false);
+          });
       }
     };
     void discoverLoadedThreads().catch(() => undefined);
 
-    // 2. Hydrate pending approvals and user input requests.
-    void pendingApprovalsListPending()
-      .then(({ data }) => {
-        if (cancelled || !data) return;
-        for (const request of data.requests) {
-          const approval = approvalFromPending(request);
-          if (approval) addApprovalForThread(request.threadId, approval);
-          const userInput = userInputFromPending(request);
-          if (userInput) addUserInputRequestForThread(request.threadId, userInput);
-        }
-      })
-      .catch(() => undefined);
-
     return () => { cancelled = true; };
   }, [
     addApprovalForThread,
-    addUserInputRequestForThread,
     ensureThreadState,
     hydrateTimelineForThread,
     setActiveTurnIdForThread,
@@ -248,6 +285,7 @@ export function AuthenticatedLayout() {
     const handleAuthExpired = () => {
       clearApiToken();
       resetSocket();
+      useUserStore.getState().clearMe();
       void navigate({ to: '/login', search: { redirect: '/' } });
     };
     window.addEventListener('codex-webui:auth-expired', handleAuthExpired);
@@ -261,13 +299,7 @@ export function AuthenticatedLayout() {
       : pathname.startsWith('/t/')
         ? threadCwd
         : null;
-    if (dir) {
-      void filesAddRoot({ body: { root: dir }, throwOnError: true, meta: { silent: true } })
-        .then(() => setRootDir(dir))
-        .catch(() => { /* root rejected */ });
-    } else {
-      setRootDir(null);
-    }
+    setRootDir(dir);
   }, [pathname, threadCwd, homeDir, setRootDir]);
 
   const { t } = useTranslation();
@@ -325,7 +357,8 @@ export function AuthenticatedLayout() {
             onToggleDark={toggleDark}
             onToggleDiagnostics={handleToggleDiagnostics}
           />
-          <CodexStatusBanner />
+          {/* CodexStatusBanner 临时下线:codex 状态提示(服务降级/未知的 Provider 环境变量等)
+              在多租户 BYOK 环境下频繁误报,暂不展示。待 status 检查适配 BYOK 后恢复。 */}
           <Outlet />
         </div>
       </div>

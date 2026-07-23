@@ -1,2 +1,20 @@
-# 运行时日志（logging.rs RollingWriter 10MB×5 滚动 + codex/jsonrpc.rs 的 jsonl）
+# ─────────────────────────────────────────────────────────────
+# backend-rs 子目录 .gitignore
+# (只放 backend-rs 特有的;通用规则在仓库根 .gitignore)
+# ─────────────────────────────────────────────────────────────
+
+# 运行时日志(logging.rs RollingWriter 10MB×5 滚动 + codex/jsonrpc.rs jsonl)
 /logs/
+
+# Rust 编译产物(target/ 在仓库根 .gitignore 也覆盖了)
+/target/
+
+# 运行时临时目录(codex spawn 子进程用)
+/tmp/
+
+# SeaORM / sqlx 调试宏展开
+.expand/
+
+# 嵌入式前端构建产物(若在 backend-rs 下重新构建)
+/public/
+!/public/.gitkeep

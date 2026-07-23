@@ -1,39 +1,34 @@
-# ── Stage 1: Frontend build ──────────────────────────────────────────
+# ── 阶段 1：构建 Rust 后端 ────────────────────────────────────────────
+FROM rust:1-bookworm AS rust-builder
+
+WORKDIR /app
+COPY backend-rs/Cargo.toml backend-rs/Cargo.lock ./
+# 先创建一个占位 main.rs 以缓存依赖编译（依赖不变时后续构建直接命中缓存）。
+RUN mkdir src && echo 'fn main() {}' > src/main.rs && cargo build --release && rm -rf src
+COPY backend-rs/src ./src
+# 前端构建产物（rust-embed 在编译期嵌入二进制，必须在此阶段就位）。
+COPY --from=frontend-builder /app/backend-rs/public ./public
+# 触碰 main.rs，让 cargo 重新编译真正的二进制（而不只是依赖）。
+RUN touch src/main.rs && cargo build --release
+
+# ── 阶段 2：构建前端 ──────────────────────────────────────────────────
 FROM node:22-bookworm-slim AS frontend-builder
-RUN npm install -g pnpm@10.18.3
+
+RUN npm install -g pnpm@10
 WORKDIR /app/web
-COPY web/package.json web/pnpm-lock.yaml* web/pnpm-workspace.yaml ./
+COPY web/package.json web/pnpm-lock.yaml ./
 RUN pnpm install --frozen-lockfile
 COPY web/ ./
 RUN pnpm build
 
-# ── Stage 2: Backend build ───────────────────────────────────────────
-FROM node:22-bookworm-slim AS backend-builder
-RUN apt-get update \
-  && apt-get install -y --no-install-recommends python3 make g++ \
-  && rm -rf /var/lib/apt/lists/*
-RUN npm install -g pnpm@10.18.3
-WORKDIR /app
-COPY package.json pnpm-lock.yaml* ./
-RUN pnpm install --frozen-lockfile
-COPY src/ ./src/
-COPY tsconfig*.json nest-cli.json ./
-# Generate codex schema types (needs codex CLI)
-ARG CODEX_CLI_VERSION=0.123.0
-RUN npm install -g @openai/codex@${CODEX_CLI_VERSION}
-COPY --from=frontend-builder /app/public ./public/
-RUN pnpm build
-
-# ── Stage 3: Runtime ─────────────────────────────────────────────────
-FROM debian:trixie-slim AS runtime
+# ── 阶段 3：运行时镜像 ────────────────────────────────────────────────
+FROM debian:bookworm-slim
 
 ENV DEBIAN_FRONTEND=noninteractive
 ENV HOME=/root
-ENV MISE_YES=1
-ENV NODE_ENV=production
-ENV PATH="/root/.local/bin:/root/.local/share/mise/shims:/usr/local/bin:/usr/local/sbin:/usr/sbin:/usr/bin:/sbin:/bin"
 
-# System dependencies
+# codex CLI（Node.js 工具）所需的系统依赖。
+# Rust 二进制本身只需要 libc + libssl，无需额外运行时。
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates \
     curl \
@@ -47,155 +42,31 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     less \
     file \
     openssh-client \
-    procps \
     p7zip-full \
-    bubblewrap \
-    build-essential \
-    pkg-config \
-    python3 \
-    make \
-    g++ \
-    libssl-dev \
-    zlib1g-dev \
-    libbz2-dev \
-    libreadline-dev \
-    libsqlite3-dev \
-    libffi-dev \
-    liblzma-dev \
-    tk-dev \
-    uuid-dev \
-    xz-utils \
+    unzip \
+    nodejs \
+    npm \
  && rm -rf /var/lib/apt/lists/*
 
-RUN command -v 7za >/dev/null
+# 安装 codex CLI
+ARG CODEX_CLI_VERSION=0.142.5
+RUN npm install -g @openai/codex@${CODEX_CLI_VERSION}
 
-# Install mise + runtimes
-RUN curl -fsSL https://mise.run | sh
-
-RUN grep -q 'mise activate bash' /root/.bashrc 2>/dev/null || \
-    printf '\n# mise\nexport PATH="$HOME/.local/bin:$HOME/.local/share/mise/shims:$PATH"\neval "$(mise activate bash)"\n' >> /root/.bashrc
-
-RUN mise use -g node@22 uv@latest python@3.14
-
-RUN node --version \
- && npm --version \
- && uv --version \
- && python --version \
- && mise --version
-
-# Install global npm tools (codex + MCP utilities)
-ARG CODEX_CLI_VERSION=0.123.0
-ENV CODEX_CLI_VERSION=${CODEX_CLI_VERSION}
-RUN npm install -g \
-    @openai/codex@${CODEX_CLI_VERSION} \
-    mcp-safe-proxy \
-    mcp-remote
-
-# Enable corepack for pnpm (needed for native addon rebuild)
-RUN npm install -g pnpm@10.18.3
-
-# Create app directories
+# 创建应用目录
 RUN mkdir -p /root/.codex /workspaces /app/logs
 
-# Workaround: codex on Linux app-server mode doesn't inject arg0 tools into
-# child process PATH. Create stable symlinks so apply_patch etc. are always
-# available. All arg0 tools are the codex multi-call binary (argv[0] dispatch).
-RUN CODEX_BIN="$(find /root/.local/share/mise -name codex -path '*/vendor/*/codex/codex' -type f 2>/dev/null | head -1)" \
- && if [ -n "$CODEX_BIN" ]; then \
-      for tool in apply_patch applypatch codex-execve-wrapper codex-linux-sandbox; do \
-        ln -sf "$CODEX_BIN" "/usr/local/bin/$tool"; \
-      done; \
-      echo "Linked codex arg0 tools -> $CODEX_BIN"; \
-    else \
-      echo "WARNING: codex vendor binary not found, arg0 tools not linked"; \
-    fi
+# 拷贝 Rust 二进制（单一自包含可执行文件 —— 后端本身不依赖 Node 运行时；
+# 只有 codex CLI 需要 Node.js）。
+COPY --from=rust-builder /app/target/release/codex-webui /usr/local/bin/codex-webui
 
-# ── App installation ─────────────────────────────────────────────────
+# 前端资源已在编译期由 rust-embed 嵌入二进制，运行时无需额外拷贝。
+
 WORKDIR /app
-
-# Install production dependencies and rebuild native addons
-COPY package.json pnpm-lock.yaml* ./
-RUN pnpm install --frozen-lockfile --prod
-RUN npx --yes node-gyp rebuild --directory=node_modules/node-pty || true \
-  && npx --yes node-gyp rebuild --directory=node_modules/better-sqlite3 || true
-
-# Copy built assets and migrations
-COPY --from=backend-builder /app/dist ./dist/
-COPY --from=backend-builder /app/public ./public/
-COPY drizzle/ ./drizzle/
-
-# ── Seed root tarball ────────────────────────────────────────────────
-# Captures mise, node, codex, mcp-tools, bashrc, configs
-RUN tar -C /root -czf /opt/root-seed.tar.gz .
-
-# ── Entrypoint ───────────────────────────────────────────────────────
-RUN cat > /usr/local/bin/entrypoint.sh <<'ENTRYPOINT_EOF'
-#!/usr/bin/env bash
-set -euo pipefail
-
-ROOT_SEED="/opt/root-seed.tar.gz"
-ROOT_MARKER="/root/.codex-webui-initialized"
-VERSION_MARKER="/root/.codex-webui-version"
-
-is_root_empty() {
-  find /root -mindepth 1 -maxdepth 1 -print -quit | grep -q . && return 1
-  return 0
-}
-
-# ── Phase 1: Root seed restore ──────────────────────────────────────
-if is_root_empty; then
-  echo "[entrypoint] /root is empty, restoring seed data..."
-  tar -C /root -xzf "${ROOT_SEED}"
-  touch "${ROOT_MARKER}"
-  echo "${CODEX_CLI_VERSION:-unknown}" > "${VERSION_MARKER}"
-elif [ ! -e "${ROOT_MARKER}" ] && [ ! -d /root/.local/share/mise ]; then
-  echo "[entrypoint] /root has data but mise seed is missing; leaving unchanged."
-  echo "[entrypoint] Clear the host volume and restart if this is unintended."
-else
-  echo "[entrypoint] /root already initialized."
-fi
-
-# ── Phase 2: Codex version upgrade ─────────────────────────────────
-# Compare image-embedded CODEX_CLI_VERSION with installed version.
-# If different, upgrade codex and rebuild arg0 symlinks.
-EXPECTED_VER="${CODEX_CLI_VERSION:-}"
-INSTALLED_VER=""
-if [ -f "${VERSION_MARKER}" ]; then
-  INSTALLED_VER="$(cat "${VERSION_MARKER}" 2>/dev/null || true)"
-fi
-
-if [ -n "${EXPECTED_VER}" ] && [ "${EXPECTED_VER}" != "${INSTALLED_VER}" ]; then
-  echo "[entrypoint] Codex version mismatch: installed=${INSTALLED_VER:-none}, expected=${EXPECTED_VER}"
-  echo "[entrypoint] Upgrading @openai/codex to ${EXPECTED_VER}..."
-  if npm install -g "@openai/codex@${EXPECTED_VER}" 2>&1; then
-    echo "${EXPECTED_VER}" > "${VERSION_MARKER}"
-    echo "[entrypoint] Codex upgraded to ${EXPECTED_VER}"
-
-    # Rebuild arg0 symlinks (codex multi-call binary may have moved)
-    CODEX_BIN="$(find /root/.local/share/mise -name codex -path '*/vendor/*/codex/codex' -type f 2>/dev/null | head -1)"
-    if [ -n "${CODEX_BIN}" ]; then
-      for tool in apply_patch applypatch codex-execve-wrapper codex-linux-sandbox; do
-        ln -sf "${CODEX_BIN}" "/usr/local/bin/${tool}"
-      done
-      echo "[entrypoint] Rebuilt arg0 symlinks -> ${CODEX_BIN}"
-    fi
-  else
-    echo "[entrypoint] WARNING: Codex upgrade failed, continuing with installed version"
-  fi
-fi
-
-# Ensure directories exist (in case volume is pre-populated but partial)
-mkdir -p /root/.codex /workspaces /app/logs
-
-exec "$@"
-ENTRYPOINT_EOF
-
-RUN chmod +x /usr/local/bin/entrypoint.sh
 
 EXPOSE 8172
 
+# 健康探活：打前端首页（rust-embed 静态资源，公开）。/api/status 需多租户 JWT，不能匿名探活。
 HEALTHCHECK --interval=30s --timeout=5s --start-period=15s --retries=3 \
-  CMD curl -sf -H "Authorization: Bearer ${WEBUI_API_KEY}" http://localhost:8172/api/status || exit 1
+  CMD curl -sf http://localhost:8172/ >/dev/null || exit 1
 
-ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]
-CMD ["node", "/app/dist/main.js"]
+CMD ["codex-webui"]

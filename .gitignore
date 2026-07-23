@@ -1,68 +1,138 @@
-# compiled output
-/dist
-/node_modules
-/build
-/public
-/backend-rs/public
+# ─────────────────────────────────────────────────────────────
+# 仓库根 .gitignore
+# 覆盖:运行时数据 / 编译产物 / IDE / 密钥 / 临时文件 / 操作系统
+# ─────────────────────────────────────────────────────────────
 
-# Logs
-/logs
-*.log
-npm-debug.log*
-pnpm-debug.log*
-yarn-debug.log*
-yarn-error.log*
-lerna-debug.log*
+# ── 运行时数据(CODEX_HOME 目录 + runtime artifacts)───────
+test-home/
+backend-rs/test-home/
+.cox_home/
+*.sqlite
+*.sqlite-shm
+*.sqlite-wal
+state_*.sqlite*
 
-# OS
-.DS_Store
+# ── 编译产物────────────────────────────────────────────
+target/
+backend-rs/target/
+**/target/
+**/dist/
+**/build/
+**/*.o
+**/*.so
+**/*.dylib
+**/*.dll
+**/*.exe.bak
 
-# Tests
-/coverage
-/.nyc_output
-
-# IDEs and editors
-/.idea
-.project
-.classpath
-.c9/
-*.launch
-.settings/
-*.sublime-workspace
-
-# IDE - VSCode
-.vscode/*
-!.vscode/settings.json
-!.vscode/tasks.json
-!.vscode/launch.json
-!.vscode/extensions.json
-
-# dotenv environment variable files
-.env
-.env.development.local
-.env.test.local
-.env.production.local
-.env.local
-
-# temp directory
-.temp
-.tmp
-
-# Runtime data
-pids
-*.pid
-*.seed
-*.pid.lock
-
-# Diagnostic reports (https://nodejs.org/api/report.html)
-report.[0-9]*.[0-9]*.[0-9]*.[0-9]*.json
-
-.claude
-.agents
-.codex
-CLAUDE.md
-codex-schema/
-
-# Rust
-/backend-rs/target
+# Rust 增量编译缓存
 **/*.rs.bk
+**/.cargo/
+
+# ── 依赖目录────────────────────────────────────────────
+node_modules/
+**/node_modules/
+.pnpm-store/
+
+# ── 前端构建产物(vite build 输出;backend-rs 静态嵌入)────
+public/
+backend-rs/public/
+web/dist/
+**/.next/
+**/.nuxt/
+**/.svelte-kit/
+
+# ── 密钥 / 凭据 / 本地配置(永远不入库)────────────────────
+.env
+.env.*
+!.env.example
+backend-rs/.env
+backend-rs/.env.*
+!**/.env.example
+*.pem
+*.key
+*.p12
+*.pfx
+auth.json
+config.toml
+!**/config.toml.example
+secrets/
+credentials/
+*.secret
+
+# ── 日志 / 诊断导出─────────────────────────────────────
+*.log
+*.log.*
+backend-rs/logs/
+logs/
+nohup.out
+*.jsonl
+
+# ── 临时文件 / 编辑器备份───────────────────────────────
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+*.bak
+*.tmp
+*.orig
+*.rej
+
+# ── IDE / 编辑器配置───────────────────────────────────
+.idea/
+.vscode/
+*.iml
+.fleet/
+.cursor/
+*.code-workspace
+.idea_modules/
+.classpath
+.project
+.settings/
+
+# ── Claude / AI 工具本地状态(用户私有,不入库)─────────────
+.claude/
+.claude.json
+CLAUDE.local.md
+
+# ── 测试 / 覆盖率报告─────────────────────────────────
+coverage/
+*.lcov
+*.gcda
+*.gcno
+*.prof
+.cache/
+.parcel-cache/
+.eslintcache
+.idea/.cache
+
+# ── 操作系统─────────────────────────────────────────────
+.DS_Store
+.AppleDouble
+.LSOverride
+Icon?
+ehthumbs.db
+Desktop.ini
+$RECYCLE.BIN/
+$RECYCLE.BIN
+*.lnk
+
+# ── Docker / 容器─────────────────────────────────────
+*.pid
+docker-compose.override.yml
+
+# ── CodeX / 工具特定───────────────────────────────────
+codex-home/
+codex-data/
+codex-config/
+.cox/
+
+# ── 用户私有笔记 / 草稿───────────────────────────────
+TODO.local.md
+NOTES.local.md
+scratch/
+.playwright-mcp/
+
+# ── 本地集群测试环境 / 测试截图(不入库)─────────────────
+.superpowers/
+test-conversation-*.png

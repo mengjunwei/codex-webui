@@ -1,0 +1,21 @@
+- generic [ref=f6e2]:
+  - generic [ref=f6e4]:
+    - banner [ref=f6e5]:
+      - button "打开导航" [ref=f6e6]
+      - heading "Codex WebUI" [level=1] [ref=f6e8]
+      - generic [ref=f6e9]: 未连接
+      - button "更多操作" [ref=f6e12]
+    - paragraph [ref=f6e14]: 选择或创建会话以开始聊天。
+  - generic:
+    - alert [ref=f6e15]:
+      - paragraph [ref=f6e19]: Failed to fetch
+      - button [ref=f6e20]
+    - alert [ref=f6e24]:
+      - paragraph [ref=f6e28]: Failed to fetch
+      - button [ref=f6e29]
+    - alert [ref=f6e33]:
+      - paragraph [ref=f6e37]: Failed to fetch
+      - button [ref=f6e38]
+    - alert [ref=f6e42]:
+      - paragraph [ref=f6e46]: Failed to fetch
+      - button [ref=f6e47]

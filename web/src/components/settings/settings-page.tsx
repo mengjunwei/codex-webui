@@ -9,24 +9,17 @@ import { Button } from '@/components/ui/button';
 import { Separator } from '@/components/ui/separator';
 import { useThemeStore } from '@/stores/theme-store';
 import { useTimelineStore } from '@/stores/timeline-store';
+import { useIsPlatformAdmin } from '@/hooks/use-permission';
 import { clearApiToken } from '@/auth-token';
 import { resetSocket } from '@/socket';
 import { sectionLabel } from './setting-helpers';
 import { GeneralSettings } from './general-settings';
 import { AccountSettings } from './account/account-settings';
-import { CodexSettings } from './codex-settings';
-import { TerminalSettings } from './terminal-settings';
-import { FilesSettings } from './files-settings';
-import { SecuritySettings } from './security-settings';
+import { PlatformAdminPanel } from './platform-admin-panel';
+import { TeamMembersDialog } from '../team/team-members';
+import { TeamSettingsDialog } from '../team/team-settings';
 
-const SECTIONS = [
-  'general',
-  'account',
-  'codex',
-  'terminal',
-  'files',
-  'security',
-] as const;
+const SECTIONS = ['general', 'account', 'team', 'platform'] as const;
 
 type SettingsSection = (typeof SECTIONS)[number];
 
@@ -36,7 +29,15 @@ export function SettingsPage() {
   const dark = useThemeStore((s) => s.dark);
   const toggleDark = useThemeStore((s) => s.toggleDark);
   const threadId = useTimelineStore((s) => s.threadId);
+  const isPlatformAdmin = useIsPlatformAdmin();
   const [section, setSection] = useState<SettingsSection>('general');
+  // general/platform 仅平台管理员;当前 section 对用户不可见时,落到首个可见 tab。
+  const visibleSections = SECTIONS.filter(
+    (s) => !((s === 'general' || s === 'platform') && !isPlatformAdmin),
+  );
+  const active = visibleSections.includes(section) ? section : visibleSections[0];
+  const [membersOpen, setMembersOpen] = useState(false);
+  const [teamSettingsOpen, setTeamSettingsOpen] = useState(false);
 
   const navigateBack = () => {
     if (threadId) {
@@ -69,21 +70,25 @@ export function SettingsPage() {
         </div>
 
         <div className="flex flex-wrap gap-2">
-          {SECTIONS.map((s) => (
-            <Button
-              key={s}
-              variant={section === s ? 'default' : 'outline'}
-              size="sm"
-              onClick={() => setSection(s)}
-            >
-              {t(sectionLabel(s))}
-            </Button>
-          ))}
+          {SECTIONS.map((s) => {
+            // general(含全局运行时配置)+ platform(管理员管理) 仅平台管理员可见。
+            if ((s === 'general' || s === 'platform') && !isPlatformAdmin) return null;
+            return (
+              <Button
+                key={s}
+                variant={active === s ? 'default' : 'outline'}
+                size="sm"
+                onClick={() => setSection(s)}
+              >
+                {t(sectionLabel(s))}
+              </Button>
+            );
+          })}
         </div>
 
         <Separator />
 
-        {section === 'general' && (
+        {active === 'general' && (
           <GeneralSettings
             dark={dark}
             toggleDark={toggleDark}
@@ -92,11 +97,29 @@ export function SettingsPage() {
             onLogout={handleLogout}
           />
         )}
-        {section === 'account' && <AccountSettings />}
-        {section === 'codex' && <CodexSettings />}
-        {section === 'terminal' && <TerminalSettings />}
-        {section === 'files' && <FilesSettings />}
-        {section === 'security' && <SecuritySettings />}
+        {active === 'account' && <AccountSettings />}
+        {/* Codex / terminal / files / security tab 临时下线:多租户迁移后这些是全局配置,
+            显示会误导用户以为可 per-team 配置;且 files/terminal 入口与团队 workspace 语义重叠。
+            per-team 配置接口待后续实现后再恢复。 */}
+        {active === 'team' && (
+          <div className="space-y-4">
+            <h2 className="text-lg font-semibold">{t('团队管理')}</h2>
+            <p className="text-sm text-muted-foreground">
+              {t('管理团队成员、邀请和团队设置。')}
+            </p>
+            <div className="flex gap-3">
+              <Button size="sm" onClick={() => setMembersOpen(true)}>
+                {t('成员管理')}
+              </Button>
+              <Button size="sm" variant="outline" onClick={() => setTeamSettingsOpen(true)}>
+                {t('团队设置')}
+              </Button>
+            </div>
+            <TeamMembersDialog open={membersOpen} onClose={() => setMembersOpen(false)} />
+            <TeamSettingsDialog open={teamSettingsOpen} onClose={() => setTeamSettingsOpen(false)} />
+          </div>
+        )}
+        {active === 'platform' && isPlatformAdmin && <PlatformAdminPanel />}
       </div>
     </div>
   );

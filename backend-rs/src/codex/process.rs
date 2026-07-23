@@ -13,7 +13,7 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::process::Command;
-use tokio::sync::{broadcast, Mutex};
+use tokio::sync::{broadcast, Mutex, Semaphore};
 use tokio::time::sleep;
 
 const RESTART_DELAY_MS: u64 = 3000;
@@ -43,11 +43,20 @@ pub struct CodexProcessManager {
     /// 最近一次 initialize 握手结果（原始 JSON），供 CodexStatusService
     /// 暴露为 `initialize.data`。握手失败或进程退出后为 None。
     init_result: Mutex<Option<Value>>,
+    /// 全局并发信号量:单进程模式下所有 thread 的请求共用同一 stdin/stdout
+    /// 管道,必须在 request() 入口 acquire 许可,防止管道过载。
+    /// AcquireError 只在 Semaphore 被 close 时发生 —— 本管理器从不 close 它,
+    /// 故该错误在此等价于"管理器已不可用",映射为 RpcError::Closed。
+    concurrency: Arc<Semaphore>,
 }
 
 impl CodexProcessManager {
     /// 构造但不立即启动（懒加载）。调用 `start()` 才会启动 + 初始化。
-    pub fn new(codex_bin: String, codex_home: Option<String>) -> Self {
+    ///
+    /// `max_concurrent` 为单进程全局并发上限,用于构造内部信号量。
+    /// 每节点只跑一个 codex 进程,N 个 thread 的请求都走同一 stdin/stdout
+    /// 管道,超过该上限的请求会在 acquire 处排队等待(而非打爆管道)。
+    pub fn new(codex_bin: String, codex_home: Option<String>, max_concurrent: usize) -> Self {
         let (notify_tx, _) = broadcast::channel::<Value>(256);
         let (server_request_tx, _) = broadcast::channel::<Value>(1024);
         let (lifecycle_tx, _) = broadcast::channel::<LifecycleEvent>(32);
@@ -63,6 +72,7 @@ impl CodexProcessManager {
             server_request_tx,
             lifecycle_tx,
             init_result: Mutex::new(None),
+            concurrency: Arc::new(Semaphore::new(max_concurrent)),
         }
     }
 
@@ -89,9 +99,18 @@ impl CodexProcessManager {
         }
     }
 
+    /// 当前 codex 二进制路径(spawn `codex plugin add` 等子命令时复用)。
+    ///
+    /// 调用方应配合 `build_codex_command` 构造 Command(自动处理 Windows npm
+    /// 垫片的 node 直启问题),而非 `tokio::process::Command::new` 直接启动。
+    pub fn codex_bin(&self) -> &str {
+        &self.codex_bin
+    }
+
     /// 当前 generation（首次成功初始化之前为 0）。
+    /// 使用 Relaxed:generation 只在日志和事件中使用,不用于同步。
     pub fn generation(&self) -> u64 {
-        self.generation.load(Ordering::SeqCst)
+        self.generation.load(Ordering::Relaxed)
     }
 
     /// 最近一次 initialize 握手结果（原始 JSON），未初始化时为 None。
@@ -100,7 +119,17 @@ impl CodexProcessManager {
     }
 
     /// 向当前 app-server 发送 JSON-RPC 请求，不可用则返回错误。
+    ///
+    /// ## 全局并发限流
+    ///
+    /// 进入实际请求前先 `acquire()` 信号量许可。单进程模式下所有 thread 共用
+    /// 同一 stdin/stdout 管道,无限并发会把管道打爆(写队列满 / 响应乱序);
+    /// 许可数 = `cfg.codex.max_concurrent`(默认 32)。`_permit` 在函数
+    /// 返回前持续持有,drop 时自动归还 —— 故 await 期间许可不会泄漏。
+    /// AcquireError 只在 Semaphore close 时出现,本管理器从不 close,
+    /// 映射为 RpcError::Closed 即可。
     pub async fn request(&self, method: &str, params: Option<Value>) -> Result<Value, RpcError> {
+        let _permit = self.concurrency.acquire().await.map_err(|_| RpcError::Closed)?;
         match self.client().await {
             Some(c) => c.request(method, params).await,
             None => Err(RpcError::Closed),
@@ -124,7 +153,8 @@ impl CodexProcessManager {
     /// - spawn 之后、写 `current` 之前若 destroy 被调用，destroy 会 take 到 None；
     /// - 此刻在锁内重检 destroyed=true → 立即销毁刚刚启动的客户端，避免孤儿进程。
     pub async fn start(self: Arc<Self>) {
-        if self.destroyed.load(Ordering::SeqCst) {
+        // Acquire:确保看到最新的 destroyed 状态。
+        if self.destroyed.load(Ordering::Acquire) {
             return;
         }
 
@@ -133,7 +163,7 @@ impl CodexProcessManager {
             Ok(c) => c,
             Err(e) => {
                 tracing::error!("failed to spawn codex app-server: {}", e);
-                if !self.destroyed.load(Ordering::SeqCst) {
+                if !self.destroyed.load(Ordering::Acquire) {
                     self.clone().restart().await;
                 }
                 return;
@@ -143,7 +173,7 @@ impl CodexProcessManager {
         // 第二阶段：在初始化之前挂载转发器 + 关闭监视器（M1 修复：
         // 关闭监视器竞态 —— 如果子进程在初始化期间退出，监视器必须
         // 已经订阅才能捕获到该事件）。
-        let new_generation = self.generation.load(Ordering::SeqCst) + 1;
+        let new_generation = self.generation.load(Ordering::Relaxed) + 1;
         self.attach_forwarders(&client);
         self.spawn_close_watcher(&client, new_generation);
 
@@ -151,17 +181,18 @@ impl CodexProcessManager {
         match self.initialize_client(&client).await {
             Ok((init, init_value)) => {
                 // 重启成功，重置指数退避计数。
-                self.consecutive_failures.store(0, Ordering::SeqCst);
-                self.generation.fetch_add(1, Ordering::SeqCst);
+                self.consecutive_failures.store(0, Ordering::Relaxed);
+                // AcqRel:增加 generation,确保其他线程看到更新后的值。
+                self.generation.fetch_add(1, Ordering::AcqRel);
                 let restarted = new_generation > 1;
                 // 启动时补齐缺失的默认 codex 配置（环境变量可控，仅缺失键才写，不覆盖用户配置）。
-                crate::codex_status_config::apply_defaults_if_absent(&client).await;
+                crate::services::codex_status_config::apply_defaults_if_absent(&client).await;
                 // M1 修复：复查 destroyed 与写入 current 在同一把锁内原子完成。
                 // spawn 之后、写 current 之前若 destroy 被调用，它 take 到 None；
                 // 此处锁内看到 destroyed=true 就地销毁新 client，避免孤儿子进程。
                 {
                     let mut current = self.current.lock().await;
-                    if self.destroyed.load(Ordering::SeqCst) {
+                    if self.destroyed.load(Ordering::Acquire) {
                         drop(current);
                         client.destroy().await;
                         return;
@@ -185,7 +216,7 @@ impl CodexProcessManager {
                 tracing::error!("failed to initialize codex app-server: {}", e);
                 // 清理半初始化的客户端。
                 client.destroy().await;
-                if !self.destroyed.load(Ordering::SeqCst) {
+                if !self.destroyed.load(Ordering::Acquire) {
                     self.clone().restart().await;
                 }
             }
@@ -196,7 +227,26 @@ impl CodexProcessManager {
     async fn spawn_child(&self) -> Result<Arc<CodexJsonRpcClient>, RpcError> {
         tracing::info!("spawning {} app-server (stdio)", self.codex_bin);
 
+        // 注入 hooks 配置 + audit 表(per-user workspace 实施步骤 11)。
+        // 让 codex 在 tool/skill/plugin/mcp 调用前后回调 /hooks/codex。
+        if let Some(home) = &self.codex_home {
+            let port = std::env::var("CODEX_WEBUI_PORT")
+                .ok()
+                .and_then(|s| s.parse::<u16>().ok())
+                .unwrap_or(8172);
+            if let Err(e) = crate::services::workspace::hooks_config::write_hooks_config(
+                std::path::Path::new(home),
+                port,
+            )
+            .await
+            {
+                tracing::warn!(error = %e, "write_hooks_config failed (non-fatal)");
+            }
+        }
+
         let mut cmd = build_codex_command(&self.codex_bin);
+        // 注: codex 0.142.5 的 `app-server` 子命令不接受 --dangerously-bypass-hook-trust
+        // (那是 TUI 子命令的参数);hooks 通过 $CODEX_HOME/config.toml 自动启用,无需额外参数。
         cmd.args(["app-server", "--listen", "stdio://"]);
         cmd.stdin(Stdio::piped())
             .stdout(Stdio::piped())
@@ -305,7 +355,8 @@ impl CodexProcessManager {
                 generation,
                 message: "codex app-server exited".into(),
             });
-            if !self.destroyed.load(Ordering::SeqCst) {
+            // Acquire:确保看到最新的 destroyed 状态。
+            if !self.destroyed.load(Ordering::Acquire) {
                 self.restart().await;
             }
         }
@@ -326,24 +377,27 @@ impl CodexProcessManager {
     ///   形成 start ↔ restart 的无穷递归（restart → start → fail → restart）。
     ///   用 `Box::pin` 装箱后强制分配到堆上，栈帧不再是无限递归。
     async fn restart(self: Arc<Self>) {
-        if self.restarting.swap(true, Ordering::SeqCst) || self.destroyed.load(Ordering::SeqCst) {
+        // AcqRel:swap 返回旧值,同时确保其他线程看到新的 restarting=true。
+        if self.restarting.swap(true, Ordering::AcqRel) || self.destroyed.load(Ordering::Acquire) {
             return;
         }
         // 指数退避：3s → 6s → 12s → 24s → 48s → 60s（上限），避免持续失败时日志爆炸 + 空转。
-        let attempt = self.consecutive_failures.fetch_add(1, Ordering::SeqCst);
+        // Relaxed:consecutive_failures 只用于计算退避时间,不用于同步。
+        let attempt = self.consecutive_failures.fetch_add(1, Ordering::Relaxed);
         let delay_ms = std::cmp::min(
             RESTART_DELAY_MS.saturating_mul(2u64.saturating_pow(attempt.min(10) as u32)),
             60_000,
         );
-        let generation = self.generation.load(Ordering::SeqCst);
+        let generation = self.generation.load(Ordering::Relaxed);
         tracing::warn!(generation, delay_ms, attempt, "restarting codex app-server");
         let _ = self.lifecycle_tx.send(LifecycleEvent::Restarting {
             generation,
             delay_ms,
         });
         sleep(Duration::from_millis(delay_ms)).await;
-        self.restarting.store(false, Ordering::SeqCst);
-        if !self.destroyed.load(Ordering::SeqCst) {
+        // Release:确保其他线程看到 restarting=false 和之前的修改。
+        self.restarting.store(false, Ordering::Release);
+        if !self.destroyed.load(Ordering::Acquire) {
             // 装箱以打破 start ↔ restart 的异步递归。
             Box::pin(self.start()).await;
         }
@@ -351,7 +405,8 @@ impl CodexProcessManager {
 
     /// 停止管理器：销毁客户端并阻止重启。
     pub async fn destroy(&self) {
-        self.destroyed.store(true, Ordering::SeqCst);
+        // Release:确保其他线程看到 destroyed=true 和之前的修改。
+        self.destroyed.store(true, Ordering::Release);
         // H8 修复：先 take 再释放锁，避免持有 current 锁跨 client.destroy().await
         // （destroy 含 kill 子进程等耗时操作，会长时间阻塞 request/handle_close 等热点路径）。
         let taken = self.current.lock().await.take();
@@ -372,10 +427,32 @@ impl CodexProcessManager {
 /// （使用绝对路径避免在 Git Bash 等进程 PATH 不含 system32 的环境下找不到 cmd.exe）。
 /// 真正的 `.exe` 可执行文件以及非 Windows 平台直接启动。
 #[cfg(windows)]
-fn build_codex_command(bin: &str) -> Command {
+pub(crate) fn build_codex_command(bin: &str) -> Command {
+    // 裸名解析：Windows 上 `Command::new("codex")` 走 CreateProcess，搜 PATH 时
+    // 只自动补 `.exe`、不补 `.cmd`/`.bat`，因此 npm 全局安装的 codex（`codex.cmd`
+    // 垫片，没有 `codex.exe`）会被判为 "program not found"。先用 `where` 把裸名
+    // 解析成带扩展名的绝对路径，让下面的 `.cmd`/`.bat` 分支接管，进而由
+    // `resolve_node_script` 直接启动 `node codex.js`（避免 cmd.exe /c 的 stdio
+    // 孙进程问题）。解析失败则保持原样，交给 CreateProcess（兼容旧行为）。
+    let bin: String = if is_bare_program_name(bin) {
+        match resolve_program_path(bin) {
+            Some(resolved) => {
+                tracing::info!(
+                    original = bin,
+                    resolved = %resolved,
+                    "resolved bare codex bin via where"
+                );
+                resolved
+            }
+            None => bin.to_string(),
+        }
+    } else {
+        bin.to_string()
+    };
     let lower = bin.to_ascii_lowercase();
+
     if lower.ends_with(".cmd") || lower.ends_with(".bat") {
-        if let Some(cmd) = resolve_node_script(bin) {
+        if let Some(cmd) = resolve_node_script(&bin) {
             return cmd;
         }
         // 兜底：使用绝对路径的 cmd.exe，避免 Rust 在 PATH 不含
@@ -385,16 +462,64 @@ fn build_codex_command(bin: &str) -> Command {
             .filter(|s| !s.trim().is_empty())
             .unwrap_or_else(|| "C:\\Windows\\system32\\cmd.exe".to_string());
         tracing::warn!(
-            bin = bin,
+            bin = %bin,
             comspec = %comspec,
             "falling back to cmd.exe /c (could not resolve npm shim to node script)"
         );
         let mut c = Command::new(comspec);
-        c.arg("/c").arg(bin);
+        c.arg("/c").arg(&bin);
         c
     } else {
-        Command::new(bin)
+        Command::new(&bin)
     }
+}
+
+/// 判断是否为"裸程序名"：不含路径分隔符，且没有可执行扩展名。
+///
+/// 这类名字交给 Windows `CreateProcess` 时只会按 `.exe` 搜索 PATH，
+/// 无法命中 npm 的 `.cmd`/`.bat` 垫片，是 `Command::new("codex")` 报
+/// "program not found" 的根因。
+#[cfg(windows)]
+fn is_bare_program_name(name: &str) -> bool {
+    let lower = name.to_ascii_lowercase();
+    if lower.contains('\\') || lower.contains('/') {
+        return false;
+    }
+    !(lower.ends_with(".exe")
+        || lower.ends_with(".cmd")
+        || lower.ends_with(".bat")
+        || lower.ends_with(".ps1"))
+}
+
+/// 用 `where` 将裸名解析为绝对路径：优先 `.exe`，其次 `.cmd`/`.bat`。
+///
+/// 跳过无扩展名项（Git Bash 风格的 shell 垫片，`CreateProcess` 不认）与
+/// `.ps1`（需 PowerShell 解释）。`where codex` 通常返回多行（`codex`、
+/// `codex.cmd`），这里只挑能被直接 spawn 的带扩展名条目。
+#[cfg(windows)]
+fn resolve_program_path(name: &str) -> Option<String> {
+    let out = std::process::Command::new("where").arg(name).output().ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let mut exe: Option<String> = None;
+    let mut cmd_bat: Option<String> = None;
+    for line in stdout.lines() {
+        let line = line.trim();
+        if line.is_empty() {
+            continue;
+        }
+        let low = line.to_ascii_lowercase();
+        if low.ends_with(".exe") {
+            exe = Some(line.to_string());
+            break;
+        }
+        if (low.ends_with(".cmd") || low.ends_with(".bat")) && cmd_bat.is_none() {
+            cmd_bat = Some(line.to_string());
+        }
+    }
+    exe.or(cmd_bat)
 }
 
 /// 将 npm 的 `.cmd` 垫片解析为直接调用 `node <script>` 的 Command。
@@ -436,7 +561,7 @@ fn resolve_node_script(cmd_path: &str) -> Option<Command> {
 }
 
 #[cfg(not(windows))]
-fn build_codex_command(bin: &str) -> Command {
+pub(crate) fn build_codex_command(bin: &str) -> Command {
     Command::new(bin)
 }
 
@@ -523,4 +648,42 @@ fn run_cmd_capture(cmd: &str) -> Option<String> {
         return None;
     }
     Some(String::from_utf8_lossy(&out.stdout).into_owned())
+}
+
+#[cfg(all(test, windows))]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn bare_program_name_detection() {
+        // 裸名：需要 where 解析（CreateProcess 只补 .exe，命中不了 .cmd 垫片）
+        assert!(is_bare_program_name("codex"));
+        assert!(is_bare_program_name("CODEX"));
+        assert!(is_bare_program_name("node"));
+
+        // 带可执行扩展名：无需解析，直接交给对应分支
+        assert!(!is_bare_program_name("codex.exe"));
+        assert!(!is_bare_program_name("codex.cmd"));
+        assert!(!is_bare_program_name("codex.bat"));
+        assert!(!is_bare_program_name("codex.ps1"));
+        assert!(!is_bare_program_name("CODEX.CMD"));
+
+        // 含路径分隔符：已是路径，不应当作裸名解析
+        assert!(!is_bare_program_name(r"C:\Users\me\codex"));
+        assert!(!is_bare_program_name("./codex"));
+        assert!(!is_bare_program_name("bin/codex"));
+    }
+
+    /// 宿主机装了 npm 全局 codex 时，resolve_program_path 应返回带扩展名的路径；
+    /// 未安装时 where 失败返回 None，测试自动跳过（不断言）。
+    #[test]
+    fn resolve_program_path_picks_executable_extension() {
+        if let Some(p) = resolve_program_path("codex") {
+            let low = p.to_ascii_lowercase();
+            assert!(
+                low.ends_with(".exe") || low.ends_with(".cmd") || low.ends_with(".bat"),
+                "expected an .exe/.cmd/.bat path, got {p}"
+            );
+        }
+    }
 }

@@ -3,11 +3,11 @@ import { useMemo, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 import {
-  settingsListSettings,
-  settingsUpdateSetting,
-  settingsResetSetting,
+  list as settingsListSettings,
+  updateOne as settingsUpdateSetting,
+  deleteOne as settingsResetSetting,
 } from '@/generated/api/sdk.gen';
-import { settingsListSettingsQueryKey } from '@/generated/api/@tanstack/react-query.gen';
+import { listQueryKey as settingsListSettingsQueryKey } from '@/generated/api/@tanstack/react-query.gen';
 import type { SettingDto } from '@/generated/api/types.gen';
 import { showSnackbar } from '@/stores/snackbar-store';
 import { formatSettingValue, parseDraftValue } from './setting-helpers';
@@ -39,7 +39,7 @@ export function useCategorySettings(category: SettingCategory) {
 
   const drafts = useMemo(() => {
     const base = Object.fromEntries(
-      settings.map((s) => [s.key, formatSettingValue(s.value)]),
+      settings.map((s: SettingDto) => [s.key, formatSettingValue(s.value)]),
     );
     return { ...base, ...draftOverrides };
   }, [settings, draftOverrides]);

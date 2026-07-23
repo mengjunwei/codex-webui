@@ -1,0 +1,33 @@
+- generic [active]:
+  - generic:
+    - generic:
+      - generic:
+        - banner:
+          - button
+          - generic:
+            - heading [level=1]: Codex WebUI
+          - generic: 已连接
+          - button
+        - generic:
+          - paragraph: 选择或创建会话以开始聊天。
+  - dialog [ref=f6e52]:
+    - heading "导航" [level=2] [ref=f6e53]
+    - generic [ref=f6e54]:
+      - generic [ref=f6e56]:
+        - button "成员" [ref=f6e57]
+        - button "团队设置" [ref=f6e58]
+      - generic [ref=f6e59]:
+        - button "文件" [ref=f6e60] [cursor=pointer]
+        - button "终端" [ref=f6e63] [cursor=pointer]
+        - button "集成" [ref=f6e66] [cursor=pointer]
+        - button "设置" [ref=f6e69] [cursor=pointer]
+      - generic [ref=f6e73]:
+        - generic [ref=f6e74]: 会话
+        - button "新建工作区会话" [ref=f6e75]
+      - generic [ref=f6e79]:
+        - generic [ref=f6e80]:
+          - generic [ref=f6e81]:
+            - button "已归档" [ref=f6e82] [cursor=pointer]
+            - button "查看更多" [ref=f6e88] [cursor=pointer]
+          - paragraph [ref=f6e94]: 暂无归档会话
+        - paragraph [ref=f6e95]: 暂无会话

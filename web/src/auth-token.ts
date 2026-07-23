@@ -1,6 +1,9 @@
-/** Manages the WebUI JWT for REST and WebSocket authentication. */
+/** Manages the WebUI JWT (access + refresh) for REST and WebSocket authentication. */
 
 const STORAGE_KEY = 'codex.webui.jwt';
+const REFRESH_STORAGE_KEY = 'codex.webui.refreshToken';
+
+// ── Access Token ──────────────────────────────────────────────
 
 /** Returns the stored JWT, or null if not yet set. */
 export function getApiToken(): string | null {
@@ -16,6 +19,25 @@ export function setApiToken(token: string): void {
 export function clearApiToken(): void {
   sessionStorage.removeItem(STORAGE_KEY);
 }
+
+// ── Refresh Token ─────────────────────────────────────────────
+
+/** Returns the stored refresh token, or null if not yet set. */
+export function getRefreshToken(): string | null {
+  return sessionStorage.getItem(REFRESH_STORAGE_KEY);
+}
+
+/** Stores the refresh token in session storage. */
+export function setRefreshToken(token: string): void {
+  sessionStorage.setItem(REFRESH_STORAGE_KEY, token);
+}
+
+/** Clears the stored refresh token. */
+export function clearRefreshToken(): void {
+  sessionStorage.removeItem(REFRESH_STORAGE_KEY);
+}
+
+// ── Helpers ───────────────────────────────────────────────────
 
 /** Returns the Authorization header value, or null if no token. */
 export function getAuthorizationHeader(): string | null {

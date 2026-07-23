@@ -33,8 +33,8 @@ import {
   AlertDialogTitle,
 } from '@/components/ui/alert-dialog';
 import {
-  filesGetRootsOptions,
-  filesReadTreeOptions,
+  getRootsOptions,
+  readTreeOptions,
 } from '@/generated/api/@tanstack/react-query.gen';
 import { cn } from '@/lib/utils';
 
@@ -189,7 +189,7 @@ function DirPickerForm({
   const [selectedDir, setSelectedDir] = useState<string | null>(null);
   const [expandedDirs, setExpandedDirs] = useState<Set<string>>(new Set());
 
-  const rootsQuery = useQuery(filesGetRootsOptions());
+  const rootsQuery = useQuery(getRootsOptions());
   const rootDirs = rootsQuery.data
     ? Array.from(new Set([rootsQuery.data.homeDir, ...rootsQuery.data.roots]))
         .filter((d): d is string => Boolean(d))
@@ -338,7 +338,7 @@ function PickerDirChildren({
 }: Omit<PickerDirNodeProps, 'path' | 'name'> & { parentPath: string }) {
   const { t } = useTranslation();
   const { data: entries, isLoading, isError } = useQuery({
-    ...filesReadTreeOptions({ query: { root: parentPath } }),
+    ...readTreeOptions({ query: { root: parentPath } }),
   });
 
   if (isLoading) {

@@ -9,7 +9,7 @@ import {
 } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { Button } from '@/components/ui/button';
-import { pendingApprovalsRespond } from '@/generated/api/sdk.gen';
+import { approvalsApi } from '@/lib/mt-client';
 import { useTimelineStore } from '@/stores/timeline-store';
 import type {
   ApprovalRequest,
@@ -53,10 +53,11 @@ export function ApprovalItem({ approval }: Props) {
   const avail = approval.availableDecisions;
 
   const handleDecision = (decision: ResolvableApprovalDecision) => {
-    void pendingApprovalsRespond({
-      path: { requestId: String(approval.requestId) },
-      body: { result: { decision: toRpcDecision(decision) } },
-    })
+    void approvalsApi
+      .respond(approval.threadId, String(approval.requestId), {
+        approved: decision === 'accepted' || decision === 'acceptedForSession',
+        result: { decision: toRpcDecision(decision) },
+      })
       .then(() => resolveApproval(approval.itemId, decision))
       .catch(() => undefined);
   };
@@ -64,10 +65,11 @@ export function ApprovalItem({ approval }: Props) {
   const handleExecAmendment = () => {
     const patterns = approval.proposedExecpolicyAmendment;
     if (!patterns?.length) return;
-    void pendingApprovalsRespond({
-      path: { requestId: String(approval.requestId) },
-      body: { result: { decision: { acceptWithExecpolicyAmendment: { execpolicy_amendment: patterns } } } },
-    })
+    void approvalsApi
+      .respond(approval.threadId, String(approval.requestId), {
+        approved: true,
+        result: { decision: { acceptWithExecpolicyAmendment: { execpolicy_amendment: patterns } } },
+      })
       .then(() => resolveApproval(approval.itemId, 'accepted'))
       .catch(() => undefined);
   };
@@ -75,10 +77,11 @@ export function ApprovalItem({ approval }: Props) {
   const handleNetworkAmendment = (index: number) => {
     const amendment = approval.proposedNetworkPolicyAmendments?.[index];
     if (!amendment) return;
-    void pendingApprovalsRespond({
-      path: { requestId: String(approval.requestId) },
-      body: { result: { decision: { applyNetworkPolicyAmendment: { network_policy_amendment: amendment } } } },
-    })
+    void approvalsApi
+      .respond(approval.threadId, String(approval.requestId), {
+        approved: true,
+        result: { decision: { applyNetworkPolicyAmendment: { network_policy_amendment: amendment } } },
+      })
       .then(() => resolveApproval(approval.itemId, 'accepted'))
       .catch(() => undefined);
   };

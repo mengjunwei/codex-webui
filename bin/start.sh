@@ -6,8 +6,7 @@
 #   target/codex-webui          backend-rs release 二进制
 #   target/codex                codex CLI 多调用二进制
 #   target/cc-switch            cc-switch-cli
-#   target/public/              前端 vite build 产物
-#   .env                        WEBUI_API_KEY 等配置
+#   config.toml                 后端 TOML 配置（webui_api_key / database / ...）
 #   logs/                       运行日志 + pid 文件
 #
 # 链路：
@@ -41,13 +40,15 @@ DEPLOY_HOME="$(cd "$SCRIPT_DIR/.." && pwd)"
 
 TARGET_DIR="$DEPLOY_HOME/target"
 LOG_DIR="$DEPLOY_HOME/logs"
-ENV_FILE="$DEPLOY_HOME/.env"
+CONFIG_FILE="$DEPLOY_HOME/config.toml"
 
 CODEX_WEBUI_BIN="$TARGET_DIR/codex-webui"
 CODEX_BIN="$TARGET_DIR/codex"
 CC_SWITCH_BIN="$TARGET_DIR/cc-switch"
 
-CODEX_WEBUI_PORT="${PORT:-8172}"
+# 后端监听端口由 config.toml [server].port 决定；此处仅用于端口探活/日志显示，
+# 若改了 config.toml 的 port 请同步修改。
+CODEX_WEBUI_PORT=8172
 CC_SWITCH_PORT=15722
 
 WEBUI_LOG_DIR="$LOG_DIR/codex"
@@ -86,16 +87,6 @@ port_pid() {
     result="$(lsof -ti :"$port" 2>/dev/null | head -1 || true)"
   fi
   echo "$result"
-}
-
-# ── 加载 .env ────────────────────────────────────────────────────────────────
-load_env() {
-  if [[ -f "$ENV_FILE" ]]; then
-    set -a
-    # shellcheck disable=SC1090
-    . "$ENV_FILE"
-    set +a
-  fi
 }
 
 # ── 停止 codex-webui（不动 cc-switch）────────────────────────────────────────
@@ -194,19 +185,11 @@ check_prereqs() {
     fi
   done
 
-  # 前端已嵌入二进制（rust-embed），无需检查 public/。
-
-  # .env
-  if [[ -f "$ENV_FILE" ]]; then
-    load_env
-    if [[ -n "${WEBUI_API_KEY:-}" && "${#WEBUI_API_KEY}" -ge 16 ]]; then
-      ok ".env（WEBUI_API_KEY 长度 ${#WEBUI_API_KEY}）"
-    else
-      err "WEBUI_API_KEY 缺失或 < 16 字符"
-      failed=1
-    fi
+  # config.toml（后端业务配置唯一入口；不读业务环境变量）
+  if [[ -f "$CONFIG_FILE" ]]; then
+    ok "config.toml"
   else
-    err "缺失：$ENV_FILE"
+    err "缺失：$CONFIG_FILE（运行 install.sh 生成，或参考 config.toml.example 手动创建）"
     failed=1
   fi
 
@@ -218,20 +201,16 @@ check_prereqs() {
 
 # ── 启动 codex-webui ────────────────────────────────────────────────────────
 start_codex_webui() {
-  log "启动 codex-webui（cwd=$TARGET_DIR，端口 $CODEX_WEBUI_PORT）"
+  log "启动 codex-webui（config=$CONFIG_FILE，端口 $CODEX_WEBUI_PORT）"
 
-  # cd 到 target/（二进制所在目录）；前端已嵌入二进制，不再依赖 public/ 相对路径。
-  cd "$TARGET_DIR"
+  # 后端定位 config.toml（业务配置只从 TOML 读，不读业务 env）
+  export CODEX_WEBUI_CONFIG="$CONFIG_FILE"
 
-  # 环境变量：从 .env 加载 + 覆盖 cc-switch 代理所需
-  load_env
-  export WEBUI_API_KEY="${WEBUI_API_KEY:-}"
-  export PORT="$CODEX_WEBUI_PORT"
-  export LOG_LEVEL="${LOG_LEVEL:-info}"
+  # 运行时 env（后端辅助 + codex 子进程继承父环境）：
   # 关键：让 codex app-server 子进程走 cc-switch proxy
   export OPENAI_BASE_URL="http://127.0.0.1:${CC_SWITCH_PORT}/v1"
   export OPENAI_API_KEY="PROXY_MANAGED"
-  # 指定 codex 二进制路径（target 目录下）
+  # 指定 codex 二进制路径（target 目录下；后端 codex 子进程 + logs 读取）
   export CODEX_BIN="$CODEX_BIN"
   # 日志统一目录（backend-rs tracing/jsonrpc 日志 + stdout 重定向）
   export WEBUI_LOG_DIR="$WEBUI_LOG_DIR"
@@ -247,11 +226,8 @@ start_codex_webui() {
     sleep 1
     if (echo > "/dev/tcp/127.0.0.1/${CODEX_WEBUI_PORT}") 2>/dev/null; then
       ok "端口 $CODEX_WEBUI_PORT 就绪（${i}s）"
-      # 健康检查
-      if curl -sf -H "Authorization: Bearer ${WEBUI_API_KEY}" \
-           "http://127.0.0.1:${CODEX_WEBUI_PORT}/api/_ping" >/dev/null 2>&1; then
-        ok "/api/_ping 200"
-      fi
+      # 注：/api/status、/api/_ping 已受多租户 JWT 保护，不再用 API key 匿名探活；
+      # TCP 端口就绪即视为启动成功。
       return 0
     fi
     if ! pid_alive "$pid"; then
@@ -339,7 +315,6 @@ print_summary() {
 │  启动完成                                                               │
 │                                                                          │
 │  前端    : http://127.0.0.1:${CODEX_WEBUI_PORT}/                         │
-│  API     : http://127.0.0.1:${CODEX_WEBUI_PORT}/api/_ping               │
 │  Proxy   : http://127.0.0.1:${CC_SWITCH_PORT}/                          │
 │  Provider: ${current:-unknown}                                           │
 │                                                                          │

@@ -1,20 +1,24 @@
-/** Zustand store for realtime Codex account state. */
+/**
+ * Zustand store for realtime Codex account state.
+ *
+ * TODO: AccountRateLimitsResponseDto / AccountReadResponseDto /
+ *       LoginAccountResponseDto / RateLimitSnapshotDto 来自旧 OpenAPI SDK,已下线。
+ *       当前用本地最小 any 别名,待新 mt-client API 注解补全后再恢复强类型。
+ */
 import { create } from 'zustand';
-import type {
-  AccountRateLimitsResponseDto,
-  AccountReadResponseDto,
-  LoginAccountResponseDto,
-  RateLimitSnapshotDto,
-} from '@/generated/api/types.gen';
 import type {
   AccountLoginCompletedNotification,
   AccountUpdatedNotification,
 } from '@/types/account';
 
-type AccountReadResponse = AccountReadResponseDto;
-type LoginAccountResponse = LoginAccountResponseDto;
-type AccountRateLimitsResponse = AccountRateLimitsResponseDto;
-type RateLimitSnapshot = RateLimitSnapshotDto;
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+type AccountReadResponse = any;
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+type LoginAccountResponse = any;
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+type AccountRateLimitsResponse = any;
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+type RateLimitSnapshot = any;
 
 interface LoginState {
   inProgress: boolean;

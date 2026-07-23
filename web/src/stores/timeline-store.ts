@@ -1,12 +1,21 @@
 /**
  * Zustand store for multi-thread chat timeline state.
  * The selected thread only controls visibility; live thread state is isolated by threadId.
+ *
+ * TODO: ThreadDto / TurnDto / FileUpdateChangeDto 来自旧 OpenAPI SDK,已下线。
+ *       当前从 mt-client 返回的 thread/turn 形状是 any,这里用本地 any 别名,
+ *       待后端补全 OpenAPI 注解后再恢复强类型。
  */
 import { create } from 'zustand';
 import { getSocket } from '../socket';
 import type { TimelineEntry, TurnItem, TurnPlanState } from '../types/timeline';
 import type { ApprovalRequest, ResolvableApprovalDecision, UserInputRequest } from '../types/approval';
-import type { ThreadDto, TurnDto, FileUpdateChangeDto } from '../generated/api';
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+type ThreadDto = any;
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+type TurnDto = any;
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+type FileUpdateChangeDto = any;
 import type { ThreadTokenUsage, ThreadStatusType } from '../types/codex-notifications';
 
 const DEFAULT_MAX_IDLE_SUBSCRIPTIONS = 30;
@@ -41,6 +50,10 @@ export interface ThreadRuntimeState {
   tokenUsageByTurn: Record<string, ThreadTokenUsage>;
   latestTokenUsage: ThreadTokenUsage | null;
   threadStatus: ThreadStatusType | null;
+  /** per-thread approval policy('on-request'|'never'|'always'|'untrusted'; null=codex 默认)。 */
+  approvalPolicy: string | null;
+  /** per-thread sandbox mode('read-only'|'workspace-write'|'danger-full-access'; null=codex 默认)。 */
+  sandboxMode: string | null;
   activeTurnId: string | null;
   pendingResolvedRequestIds: Set<string>;
   hydrated: boolean;
@@ -179,6 +192,8 @@ function createRuntime(input: ThreadRuntimeInput): ThreadRuntimeState {
     tokenUsageByTurn: {},
     latestTokenUsage: null,
     threadStatus: null,
+    approvalPolicy: null,
+    sandboxMode: null,
     activeTurnId: null,
     pendingResolvedRequestIds: new Set<string>(),
     hydrated: false,
@@ -201,6 +216,8 @@ function runtimeFromSelected(state: TimelineState): ThreadRuntimeState | null {
     tokenUsageByTurn: state.tokenUsageByTurn,
     latestTokenUsage: state.latestTokenUsage,
     threadStatus: state.threadStatus,
+    approvalPolicy: state.approvalPolicy,
+    sandboxMode: state.sandboxMode,
     activeTurnId: state.activeTurnId,
     pendingResolvedRequestIds: state.pendingResolvedRequestIds,
     hydrated: true,
@@ -228,6 +245,8 @@ function selectedFields(runtime: ThreadRuntimeState | null): Partial<TimelineSta
       tokenUsageByTurn: {},
       latestTokenUsage: null,
       threadStatus: null,
+      approvalPolicy: null,
+      sandboxMode: null,
       activeTurnId: null,
       pendingResolvedRequestIds: new Set<string>(),
       lastActivityAt: 0,
@@ -246,6 +265,8 @@ function selectedFields(runtime: ThreadRuntimeState | null): Partial<TimelineSta
     tokenUsageByTurn: runtime.tokenUsageByTurn,
     latestTokenUsage: runtime.latestTokenUsage,
     threadStatus: runtime.threadStatus,
+    approvalPolicy: runtime.approvalPolicy,
+    sandboxMode: runtime.sandboxMode,
     activeTurnId: runtime.activeTurnId,
     pendingResolvedRequestIds: runtime.pendingResolvedRequestIds,
     lastActivityAt: runtime.lastActivityAt,
@@ -419,6 +440,8 @@ interface TimelineState {
   tokenUsageByTurn: Record<string, ThreadTokenUsage>;
   latestTokenUsage: ThreadTokenUsage | null;
   threadStatus: ThreadStatusType | null;
+  approvalPolicy: string | null;
+  sandboxMode: string | null;
   activeTurnId: string | null;
   pendingResolvedRequestIds: Set<string>;
   lastActivityAt: number;
@@ -468,6 +491,8 @@ interface TimelineState {
   resolveUserInputRequest: (requestId: string | number) => void;
   setTokenUsage: (turnId: string, usage: ThreadTokenUsage) => void;
   setThreadStatus: (status: ThreadStatusType | null) => void;
+  setApprovalPolicy: (policy: string | null) => void;
+  setSandboxMode: (mode: string | null) => void;
   setActiveTurnId: (turnId: string | null) => void;
   clearActiveTurn: () => void;
   hydrateTokenUsage: (turns: Array<{ turnId: string; usage: ThreadTokenUsage }>) => void;
@@ -502,6 +527,8 @@ interface TimelineState {
   resolveUserInputRequestForThread: (threadId: string, requestId: string | number) => void;
   setTokenUsageForThread: (threadId: string, turnId: string, usage: ThreadTokenUsage) => void;
   setThreadStatusForThread: (threadId: string, status: ThreadStatusType | null) => void;
+  setApprovalPolicyForThread: (threadId: string, policy: string | null) => void;
+  setSandboxModeForThread: (threadId: string, mode: string | null) => void;
   setActiveTurnIdForThread: (threadId: string, turnId: string | null) => void;
   clearActiveTurnForThread: (threadId: string) => void;
   addSystemMessageForThread: (threadId: string, message: string, severity?: 'info' | 'warning' | 'error', turnId?: string) => void;
@@ -545,6 +572,8 @@ export const useTimelineStore = create<TimelineState>((set, get) => {
     tokenUsageByTurn: {},
     latestTokenUsage: null,
     threadStatus: null,
+    approvalPolicy: null,
+    sandboxMode: null,
     activeTurnId: null,
     pendingResolvedRequestIds: new Set(),
     lastActivityAt: 0,
@@ -787,6 +816,16 @@ export const useTimelineStore = create<TimelineState>((set, get) => {
       if (threadId) get().setThreadStatusForThread(threadId, status);
     },
 
+    setApprovalPolicy: (policy) => {
+      const threadId = selectedThread();
+      if (threadId) get().setApprovalPolicyForThread(threadId, policy);
+    },
+
+    setSandboxMode: (mode) => {
+      const threadId = selectedThread();
+      if (threadId) get().setSandboxModeForThread(threadId, mode);
+    },
+
     setActiveTurnId: (turnId) => {
       const threadId = selectedThread();
       if (threadId) get().setActiveTurnIdForThread(threadId, turnId);
@@ -1012,6 +1051,14 @@ export const useTimelineStore = create<TimelineState>((set, get) => {
 
     setThreadStatusForThread: (threadId, status) => {
       applyThreadUpdate(threadId, (runtime) => ({ ...runtime, threadStatus: status }));
+    },
+
+    setApprovalPolicyForThread: (threadId, policy) => {
+      applyThreadUpdate(threadId, (runtime) => ({ ...runtime, approvalPolicy: policy }));
+    },
+
+    setSandboxModeForThread: (threadId, mode) => {
+      applyThreadUpdate(threadId, (runtime) => ({ ...runtime, sandboxMode: mode }));
     },
 
     setActiveTurnIdForThread: (threadId, turnId) => {

@@ -6,7 +6,7 @@ import { useCallback, useEffect, useRef } from 'react';
 import { useState } from 'react';
 import { useVirtualizer } from '@tanstack/react-virtual';
 import { Bot, Loader2, Pencil } from 'lucide-react';
-import { useMutation, useQueryClient } from '@tanstack/react-query';
+import { useMutation } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 import {
   AlertDialog,
@@ -23,12 +23,8 @@ import {
   TooltipContent,
   TooltipTrigger,
 } from '@/components/ui/tooltip';
-import {
-  threadsListThreadsQueryKey,
-  threadsRollbackThreadMutation,
-} from '@/generated/api/@tanstack/react-query.gen';
-import { tokenUsageReadThreadTokenUsage, turnDiffReadThreadTurnDiffs } from '@/generated/api/sdk.gen';
 import { useTimelineStore } from '@/stores/timeline-store';
+import { threadsApi, tokenUsageApi, turnDiffApi } from '@/lib/mt-client';
 import type { TimelineEntry } from '@/types/timeline';
 import { TurnBlock } from './turn-block';
 import { UserMessageBubble } from './user-message-bubble';
@@ -65,10 +61,10 @@ export function ChatTimeline({ onEditMessage }: Props) {
     numTurns: number;
     content: string;
   } | null>(null);
-  const queryClient = useQueryClient();
 
   const rollbackThread = useMutation({
-    ...threadsRollbackThreadMutation(),
+    mutationFn: ({ numTurns }: { numTurns: number }) =>
+      threadsApi.invoke(threadId!, { method: "thread/rollback", params: { turns: numTurns } }),
   });
 
   const canRollback = threadMode === 'live' && !loading && !rollbackThread.isPending;
@@ -214,22 +210,50 @@ export function ChatTimeline({ onEditMessage }: Props) {
                 if (!threadId || !rollbackTarget || rollbackTarget.numTurns < 1) return;
                 const editContent = rollbackTarget.content;
                 rollbackThread.mutate(
+                  { numTurns: rollbackTarget.numTurns },
                   {
-                    path: { threadId },
-                    body: { numTurns: rollbackTarget.numTurns },
-                  },
-                  {
-                    onSuccess: (res) => {
+                    onSuccess: (res: any) => {
                       const tid = res.thread.id;
                       hydrateTimeline(res.thread.turns, res.thread.cwd);
-                      void tokenUsageReadThreadTokenUsage({ path: { threadId: tid } })
-                        .then(({ data }) => data && hydrateTokenUsage(data.turns))
+                      void tokenUsageApi
+                        .get(tid)
+                        .then((rows) => {
+                          if (rows.length > 0) {
+                            hydrateTokenUsage(
+                              rows.map((r) => ({
+                                turnId: r.turn_id,
+                                usage: {
+                                  total: {
+                                    totalTokens: r.total_tokens,
+                                    inputTokens: r.input_tokens,
+                                    outputTokens: r.output_tokens,
+                                    cachedInputTokens: r.cached_input_tokens,
+                                    reasoningOutputTokens: r.reasoning_output_tokens,
+                                  },
+                                  last: {
+                                    totalTokens: r.total_tokens,
+                                    inputTokens: r.input_tokens,
+                                    outputTokens: r.output_tokens,
+                                    cachedInputTokens: r.cached_input_tokens,
+                                    reasoningOutputTokens: r.reasoning_output_tokens,
+                                  },
+                                  modelContextWindow: r.model_context_window ?? 0,
+                                } as any,
+                              })),
+                            );
+                          }
+                        })
                         .catch(() => undefined);
-                      void turnDiffReadThreadTurnDiffs({ path: { threadId: tid } })
-                        .then(({ data }) => data && hydrateTurnDiffs(data.turns))
+                      void turnDiffApi
+                        .list(tid)
+                        .then((rows) => {
+                          if (rows.length > 0) {
+                            hydrateTurnDiffs(rows.map((r) => ({ turnId: r.turn_id, diff: r.diff })));
+                          }
+                        })
                         .catch(() => undefined);
                       setRollbackTarget(null);
-                      void queryClient.invalidateQueries({ queryKey: threadsListThreadsQueryKey() });
+                      // 线程列表使用 mt-client 直接调用，此处无需 queryClient 失效
                       if (editContent) onEditMessage?.(editContent);
                     },
                   },

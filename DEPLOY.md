@@ -25,7 +25,8 @@ codex-webui-deploy.tar.gz
 
 ```
 /home/master/Mnet/
-├── .env                          # 配置文件（install.sh 自动生成）
+├── config.toml                   # 后端 TOML 配置（install.sh 自动生成）
+├── config.toml.example           # 完整字段参考（若打包带入）
 ├── bin/
 │   └── start.sh                  # 启动/停止/重启脚本
 ├── target/
@@ -74,7 +75,7 @@ sudo bash /tmp/mnet-deploy/install.sh
 
 # 3. 切换用户、编辑配置
 su - master
-vi ~/Mnet/.env
+vi ~/Mnet/config.toml     # ⚠️ 必改 [database] 为外部 PG 连接
 
 # 4. 启动
 bash ~/Mnet/bin/start.sh
@@ -84,7 +85,7 @@ bash ~/Mnet/bin/start.sh
 - 创建 `master` 用户（如不存在）
 - 配置免密 sudo（`/etc/sudoers.d/master-nopasswd`）
 - 部署文件到 `/home/master/Mnet/`
-- 生成 `.env`（随机 WEBUI_API_KEY）
+- 生成 `config.toml`（随机 webui_api_key / token / worker_id）
 - 设置文件权限（chown master:master）
 
 支持参数：
@@ -94,25 +95,37 @@ sudo bash install.sh --user myuser        # 指定用户
 sudo bash install.sh --prefix /opt/mnet   # 指定安装目录
 ```
 
-## 三、配置说明 (.env)
+## 三、配置说明 (config.toml)
+
+后端**只从 TOML 配置读取**（不读业务环境变量）。`install.sh` 自动生成 `~/Mnet/config.toml`，
+其中 `webui_api_key` / `internal_rpc_token` / `internal_hook_token` / `worker_id` 已随机生成。
+
+**⚠️ 启动前必做**：编辑 `[database]` 为你的外部 PostgreSQL 连接：
 
 ```bash
-# 必填（≥ 16 字符）
-WEBUI_API_KEY=your-secret-key-here
-
-# 可选
-PORT=8172                              # 后端端口，默认 8172
-HOST=0.0.0.0                           # 监听地址，默认 0.0.0.0
-LOG_LEVEL=info                         # debug/info/warn/error
-# CODEX_HOME=                          # 默认 ~/.codex
-# WEBUI_DB_PATH=                       # 默认 CODEX_HOME/codex-webui.sqlite
+vi ~/Mnet/config.toml
 ```
 
-**不需要设置的环境变量**（脚本自动处理）：
-- `CODEX_BIN` → 自动指向 `/home/master/Mnet/target/codex`
-- `CODEX_HOME` → 不设置，默认 `~/.codex`（即 `/home/master/.codex`）
-- `OPENAI_BASE_URL` → 自动指向 cc-switch 代理 `http://127.0.0.1:15722/v1`
-- `OPENAI_API_KEY` → 设为 `PROXY_MANAGED`（由 cc-switch 管理实际 key）
+```toml
+[database]
+host = "your-pg-host"
+port = 5432
+user = "codex"
+password = "your-password"
+name = "codex"
+```
+
+> PostgreSQL / Redis 是**外部依赖**，部署脚本不代管。单机可不配 Redis（`[redis]` 默认注释）；
+> 集群部署需 `enable = true` 并指向外部 Redis。完整字段参考 `config.toml.example`
+> （或仓库 `backend-rs/config.toml.example`）。
+
+**由 start.sh 自动注入的运行时 env**（无需手动设置）：
+
+- `CODEX_WEBUI_CONFIG` → `~/Mnet/config.toml`（后端定位配置）
+- `CODEX_BIN` → `/home/master/Mnet/target/codex`
+- `OPENAI_BASE_URL` → cc-switch 代理 `http://127.0.0.1:15722/v1`（codex 子进程走代理）
+- `OPENAI_API_KEY` → `PROXY_MANAGED`（由 cc-switch 管理实际 key）
+- `WEBUI_LOG_DIR` → `~/Mnet/logs/codex`
 
 ## 四、启停管理
 
@@ -203,8 +216,8 @@ bash ~/Mnet/bin/start.sh status
 # 端口检查
 ss -tlnp | grep -E '(8172|15722)'
 
-# 健康检查
-curl -H "Authorization: Bearer $WEBUI_API_KEY" http://127.0.0.1:8172/api/_ping
+# 前端探活（/api/status 需多租户 JWT，不能匿名 curl）
+curl -sf http://127.0.0.1:8172/ >/dev/null && echo "前端可达"
 
 # 杀残留进程
 pkill -x codex-webui

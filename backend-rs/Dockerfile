@@ -65,7 +65,8 @@ WORKDIR /app
 
 EXPOSE 8172
 
+# 健康探活：打前端首页（rust-embed 静态资源，公开）。/api/status 需多租户 JWT，不能匿名探活。
 HEALTHCHECK --interval=30s --timeout=5s --start-period=15s --retries=3 \
-  CMD curl -sf -H "Authorization: Bearer ${WEBUI_API_KEY}" http://localhost:8172/api/status || exit 1
+  CMD curl -sf http://localhost:8172/ >/dev/null || exit 1
 
 CMD ["codex-webui"]

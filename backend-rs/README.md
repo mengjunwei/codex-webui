@@ -1,23 +1,53 @@
 # backend-rs
 
-codex-webui 后端的 Rust 重写版（替代 `../src` 中的 NestJS 后端）。
+Codex WebUI 的 Rust 后端（替代 `../src` 中的 NestJS 后端）。
 
-## 当前状态
+## 功能
 
-占位说明。Cargo 工作区脚手架在实现计划的 **Phase 0** 落地。
+- **多租户 SaaS**：用户注册/登录/团队管理，per-user workspace 隔离
+- **Codex 进程池**：per-team codex app-server 进程，共享全局 CODEX_HOME，JSON-RPC over stdio
+- **多节点 HA**：Redis/Memberlist 探活 + session 级 rollout 增量复制 + 副本晋升
+- **Hook Webhook**：codex 工具调用前后回调，权限校验 + 审计落库
+- **实时通信**：Socket.IO WebSocket 网关，codex 通知实时推送前端
+- **文件系统**：多根工作区 + 路径安全边界（防 symlink 逃逸）
+- **终端**：共享 PTY 会话（wezterm VT 模拟），支持重连
 
-## 参考资料
+## 快速开始
 
-- 设计规格文档：`../docs/superpowers/specs/2026-07-06-codex-webui-rust-migration-design.md`
-- 现有 TS 后端（迁移期间的参考基准）：`../src`
-- 项目学习文档：`./STUDY.md`
+```bash
+# 1. 复制配置模板
+cp config.toml.example config.toml
+# 编辑 config.toml，填入必要字段
 
-## 目标（依据设计规格）
+# 2. 启动（需要 PG + 可选 Redis）
+cargo run --release
 
-- **A** 性能与资源占用
-- **B** 单一自包含二进制
-- **C** 类型安全 + 长期可维护性
-- 验收标准：可投入生产使用，行为与 TS 后端完全对齐。
+# 3. 带 memberlist 多节点支持
+cargo run --release --features memberlist-backend
+```
 
-API 契约（REST 路由、Socket.IO 命名空间与事件、OpenAPI operationId、错误码字符串）
-逐字保留，因此 `../web` 中的 React 前端无需改动。
+## 配置
+
+纯 TOML，无环境变量回退。详见 `config.toml.example`。
+
+配置文件查找顺序：
+1. `$CODEX_WEBUI_CONFIG`
+2. `$CODEX_HOME/config.toml`
+3. `./config.toml`
+4. `$HOME/.codex-webui/config.toml`
+
+## 文档
+
+- [ARCHITECTURE.md](./ARCHITECTURE.md) — 完整架构文档（基于源码逐模块验证）
+
+## 测试
+
+```bash
+cargo test --lib           # 70 lib 单测
+cargo test --tests         # 6 集成测试
+cargo test --features memberlist-backend  # 带 memberlist
+```
+
+## 技术栈
+
+Rust 2024 · axum 0.8 · SeaORM 1.1（PG/MySQL）· Redis · tokio · memberlist 0.8.5

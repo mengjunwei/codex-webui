@@ -106,6 +106,12 @@ for doc in example_provider.md DEPLOY.md; do
   fi
 done
 
+# config.toml.example（完整字段参考；install.sh 部署到目标机供用户查阅）
+if [[ -f "$SCRIPT_DIR/backend-rs/config.toml.example" ]]; then
+  cp "$SCRIPT_DIR/backend-rs/config.toml.example" "$STAGING/config.toml.example"
+  ok "  config.toml.example"
+fi
+
 # ── 打包 ─────────────────────────────────────────────────────────────────────
 log "打包 → $OUTPUT_FILE"
 tar czf "$OUTPUT_FILE" -C "$STAGING" .
@@ -121,4 +127,4 @@ echo "  文件数: $file_count"
 echo ""
 echo "  部署到目标机器:"
 echo "    scp $OUTPUT_FILE user@target:/tmp/"
-echo "    ssh user@target 'cd /tmp && tar xzf codex-webui-deploy.tar.gz -C /tmp/mnet-deploy && sudo bash /tmp/mnet-deploy/install.sh'"
+echo "    ssh user@target 'mkdir -p /tmp/mnet-deploy && tar xzf /tmp/codex-webui-deploy.tar.gz -C /tmp/mnet-deploy && sudo bash /tmp/mnet-deploy/install.sh'"

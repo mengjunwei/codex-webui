@@ -4,7 +4,7 @@ import { CheckCircle, Loader2, MessageCircleQuestion } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
-import { pendingApprovalsRespond } from '@/generated/api/sdk.gen';
+import { approvalsApi } from '@/lib/mt-client';
 import { useTimelineStore } from '@/stores/timeline-store';
 import type { UserInputQuestion, UserInputRequest } from '@/types/approval';
 import { cn } from '@/lib/utils';
@@ -96,10 +96,11 @@ export function UserInputCard({ request }: Props) {
   const handleSubmit = () => {
     if (!canSubmit) return;
     setSubmitting(true);
-    void pendingApprovalsRespond({
-      path: { requestId: String(request.requestId) },
-      body: { result: { answers } },
-    })
+    void approvalsApi
+      .respond(request.threadId, String(request.requestId), {
+        approved: true,
+        result: { answers },
+      })
       .then(() => resolveUserInputRequest(request.requestId))
       .catch(() => undefined)
       .finally(() => setSubmitting(false));

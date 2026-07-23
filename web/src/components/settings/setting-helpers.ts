@@ -4,6 +4,12 @@ import type { SettingDto } from '@/generated/api/types.gen';
 export type SettingValue = SettingDto['value'];
 export type RuntimeSetting = SettingDto;
 
+interface NumberConstraints {
+  integer?: boolean;
+  min?: number;
+  max?: number;
+}
+
 export function parseDraftValue(
   setting: RuntimeSetting,
   draft: string,
@@ -13,18 +19,19 @@ export function parseDraftValue(
     const value = Number(draft);
     if (!Number.isFinite(value))
       return { ok: false, error: 'Value must be a number' };
-    if (setting.constraints.integer && !Number.isInteger(value)) {
+    const constraints = (setting.constraints ?? {}) as NumberConstraints;
+    if (constraints.integer && !Number.isInteger(value)) {
       return { ok: false, error: 'Value must be an integer' };
     }
     if (
-      setting.constraints.min !== undefined &&
-      value < setting.constraints.min
+      constraints.min !== undefined &&
+      value < constraints.min
     ) {
       return { ok: false, error: 'Value is below the minimum' };
     }
     if (
-      setting.constraints.max !== undefined &&
-      value > setting.constraints.max
+      constraints.max !== undefined &&
+      value > constraints.max
     ) {
       return { ok: false, error: 'Value is above the maximum' };
     }
@@ -59,6 +66,8 @@ export function sectionLabel(section: string): string {
     terminal: 'Terminal',
     files: 'Files',
     security: 'Security',
+    team: 'Team',
+    platform: '平台管理',
   };
   return labels[section] ?? section;
 }

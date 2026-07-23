@@ -4,26 +4,17 @@
  * state, queries, mutations, and view routing.
  */
 import { useMemo, useState } from 'react';
-import { FolderOpen, PanelLeftClose, Puzzle, Plus, Settings, Terminal } from 'lucide-react';
+import { PanelLeftClose, Plus, Settings, Blocks } from 'lucide-react';
 import { useNavigate, useRouterState } from '@tanstack/react-router';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 import { Button } from '@/components/ui/button';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { Separator } from '@/components/ui/separator';
-import {
-  threadsArchiveThreadMutation,
-  threadsCompactThreadMutation,
-  threadsForkThreadMutation,
-  threadsListThreadsOptions,
-  threadsListThreadsQueryKey,
-  threadsResumeThreadMutation,
-  threadsSetThreadNameMutation,
-  threadsStartThreadMutation,
-  threadsUnarchiveThreadMutation,
-} from '@/generated/api/@tanstack/react-query.gen';
-import { tokenUsageReadThreadTokenUsage, turnDiffReadThreadTurnDiffs, turnErrorsReadThreadTurnErrors } from '@/generated/api/sdk.gen';
-import type { ThreadDto } from '@/generated/api';
+import { threadsApi, tokenUsageApi, turnDiffApi, turnErrorApi } from '@/lib/mt-client';
+import { useTeamStore } from '@/stores/team-store';
+import { TeamSelector } from './team-selector';
+import type { ThreadDto } from '@/lib/mt-client';
 import { useTimelineStore } from '@/stores/timeline-store';
 import { useLayoutStore } from '@/stores/layout-store';
 import { cn } from '@/lib/utils';
@@ -32,9 +23,8 @@ import type { ConfirmAction } from './sidebar/sidebar-types';
 import { threadLabel, groupByWorkspace } from './sidebar/sidebar-types';
 import { ThreadRow } from './sidebar/thread-row';
 import { WorkspaceOverview } from './sidebar/workspace-overview';
-import { WorkspaceDetail } from './sidebar/workspace-detail';
 import { RenameDialog, ConfirmDialog } from './sidebar/sidebar-dialogs';
-import { DirectoryPickerDialog } from './sidebar/directory-picker-dialog';
+import { WorkspaceSelectorDialog } from './sidebar/workspace-selector-dialog';
 
 /** Derives the active "view" from the current route path. */
 function useActiveView(): 'chat' | 'files' | 'terminal' | 'diagnostics' | 'settings' | 'integrations' | 'other' {
@@ -71,10 +61,9 @@ export function ThreadSidebar() {
   const setActiveTurnIdForThread = useTimelineStore((s) => s.setActiveTurnIdForThread);
   const addSystemError = useTimelineStore((s) => s.addSystemError);
   const queryClient = useQueryClient();
+  const teams = useTeamStore((s) => s.teams);
 
   // ── Layout store (sidebar view + collapsed groups + collapse) ────────
-  const sidebarView = useLayoutStore((s) => s.sidebarView);
-  const setSidebarView = useLayoutStore((s) => s.setSidebarView);
   const collapsedGroupKeys = useLayoutStore((s) => s.collapsedGroupKeys);
   const toggleCollapsedGroup = useLayoutStore((s) => s.toggleCollapsedGroup);
   const toggleDesktopSidebarCollapsed = useLayoutStore((s) => s.toggleDesktopSidebarCollapsed);
@@ -82,62 +71,53 @@ export function ThreadSidebar() {
   const collapsedGroups = useMemo(() => new Set(collapsedGroupKeys), [collapsedGroupKeys]);
 
   // ── Local UI state (ephemeral) ─────────────────────────────────────
-  const [cursor, setCursor] = useState<string | null>(null);
-  const [cursorStack, setCursorStack] = useState<Array<string | null>>([]);
   const [renameThread, setRenameThread] = useState<ThreadDto | null>(null);
   const [renameValue, setRenameValue] = useState('');
   const [confirmAction, setConfirmAction] = useState<ConfirmAction>(null);
-  const [dirPickerOpen, setDirPickerOpen] = useState(false);
-
+  const [wsSelectorOpen, setWsSelectorOpen] = useState(false);
   // ── Queries ─────────────────────────────────────────────────────────
-  const overviewThreadsQuery = useQuery({
-    ...threadsListThreadsOptions({
-      query: { archived: false, limit: 100, sortKey: 'updated_at' },
-    }),
-  });
-  const overviewArchivedQuery = useQuery({
-    ...threadsListThreadsOptions({
-      query: { archived: true, limit: 5, sortKey: 'updated_at' },
-    }),
-  });
-  const detailQuery = useQuery({
-    ...threadsListThreadsOptions({
-      query:
-        sidebarView.type === 'workspaceDetail'
-          ? { archived: false, cwd: sidebarView.cwd, cursor: cursor ?? undefined, limit: 20, sortKey: 'updated_at' }
-          : { archived: true, cursor: cursor ?? undefined, limit: 20, sortKey: 'updated_at' },
-    }),
-    enabled: sidebarView.type !== 'overview',
+  // 聚合列表:当前用户所有团队 workspace + 个人 workspace 的全部会话(一次拉取)。
+  const myThreadsQuery = useQuery({
+    queryKey: ['threads', 'mine'],
+    queryFn: () => threadsApi.listMine(),
   });
 
-  const activeThreads = useMemo(() => overviewThreadsQuery.data?.data ?? [], [overviewThreadsQuery.data]);
-  const archivedThreads = useMemo(() => overviewArchivedQuery.data?.data ?? [], [overviewArchivedQuery.data]);
-  const workspaceGroups = useMemo(() => groupByWorkspace(activeThreads), [activeThreads]);
-  const detailThreads = detailQuery.data?.data ?? [];
+  const allThreads = useMemo(() => myThreadsQuery.data ?? [], [myThreadsQuery.data]);
+  // 按 workspace 分组(个人/各 team),组内再分 active/archived。
+  const workspaceGroups = useMemo(() => groupByWorkspace(allThreads, teams), [allThreads, teams]);
 
   const invalidateThreads = () => {
-    void queryClient.invalidateQueries({ queryKey: threadsListThreadsQueryKey() });
+    void queryClient.invalidateQueries({ queryKey: ['threads', 'mine'] });
   };
 
   // ── Thread open helpers ─────────────────────────────────────────────
   const resumeThread = useMutation({
-    ...threadsResumeThreadMutation(),
+    mutationFn: (vars: { path: { threadId: string } }) =>
+      threadsApi.invoke(vars.path.threadId, { method: 'thread/resume' }),
     onSuccess: (res) => {
-      const tid = res.thread.id;
-      setThreadTitleForThread(tid, threadLabel(res.thread));
-      hydrateTimelineForThread(tid, res.thread.turns, res.cwd);
-      setThreadStatusForThread(tid, res.thread.status);
-      const activeTurn = res.thread.turns.find((turn) => turn.status === 'inProgress');
-      setActiveTurnIdForThread(tid, activeTurn?.id ?? null);
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const rawResume = res as any;
+      const thread = rawResume.thread ?? {};
+      const tid: string = thread.id;
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const turns: any[] = (thread.turns ?? []) as any[];
+      setThreadTitleForThread(tid, threadLabel(thread));
+      hydrateTimelineForThread(tid, turns, rawResume.cwd ?? thread.cwd);
+      setThreadStatusForThread(tid, thread.status);
+      const activeTurn = turns.find((turn) => (turn as { status?: string }).status === 'inProgress');
+      setActiveTurnIdForThread(tid, (activeTurn as { id?: string } | undefined)?.id ?? null);
       setLoadingForThread(tid, Boolean(activeTurn));
-      void tokenUsageReadThreadTokenUsage({ path: { threadId: tid } })
-        .then(({ data }) => data && hydrateTokenUsageForThread(tid, data.turns))
+      void tokenUsageApi.get(tid)
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        .then((data: unknown) => data && hydrateTokenUsageForThread(tid, data as any))
         .catch(() => undefined);
-      void turnDiffReadThreadTurnDiffs({ path: { threadId: tid } })
-        .then(({ data }) => data && hydrateTurnDiffsForThread(tid, data.turns))
+      void turnDiffApi.list(tid)
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        .then((data: unknown) => data && hydrateTurnDiffsForThread(tid, data as any))
         .catch(() => undefined);
-      void turnErrorsReadThreadTurnErrors({ path: { threadId: tid } })
-        .then(({ data }) => data && hydrateTurnErrorsForThread(tid, data.errors))
+      void turnErrorApi.list(tid)
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        .then((data: unknown) => data && hydrateTurnErrorsForThread(tid, data as any))
         .catch(() => undefined);
     },
     onError: (_err, vars) => setLoadingForThread(vars.path.threadId, false),
@@ -160,27 +140,46 @@ export function ThreadSidebar() {
   const switchAfterArchive = (archivedId: string) => {
     const current = useTimelineStore.getState();
     if (current.threadId !== archivedId || current.threadMode !== 'live') return;
-    const idx = activeThreads.findIndex((th) => th.id === archivedId);
-    const next =
-      activeThreads.slice(idx + 1).find((th) => th.id !== archivedId) ??
-      activeThreads.slice(0, idx).find((th) => th.id !== archivedId);
+    const live = allThreads.filter((th) => th.status !== 'archived' && th.id !== archivedId);
+    const next = live[0];
     if (next) openLiveThread(next);
     else { clearThread(); void navigate({ to: '/' }); }
   };
 
   // ── Mutations ───────────────────────────────────────────────────────
+  // 创建会话:teamId 缺省 → 个人 workspace(后端 is_personal=true);否则团队 workspace。
   const createThread = useMutation({
-    ...threadsStartThreadMutation(),
-    onSuccess: (res) => {
-      setActiveThread(res.thread.id, res.cwd, threadLabel(res.thread));
+    mutationFn: (vars: { body: { teamId?: string; cwd?: string } }) =>
+      threadsApi.create(vars.body),
+    onSuccess: (res: any) => {
+      const tid = res.thread?.thread?.id || res.id || res.thread?.id;
+      const cwd = res.cwd || res.thread?.cwd || '';
+      setActiveThread(tid, cwd, threadLabel(res.thread?.thread || res.thread || res));
       invalidateThreads();
-      void navigate({ to: '/t/$threadId', params: { threadId: res.thread.id } });
+      void navigate({ to: '/t/$threadId', params: { threadId: tid } });
+    },
+    onError: (err) => addSystemError(getApiErrorMessage(err)),
+  });
+
+  // 删除会话(含归档):后端校验权限(个人自删/团队仅创建者) + 清 PG + 删 rollout。
+  const deleteThread = useMutation({
+    mutationFn: (vars: { path: { threadId: string } }) =>
+      threadsApi.remove(vars.path.threadId),
+    onSuccess: (_res, vars) => {
+      useTimelineStore.getState().unsubscribeThread(vars.path.threadId);
+      // 删除的是当前会话 → 切回首页。
+      if (useTimelineStore.getState().threadId === vars.path.threadId) {
+        clearThread();
+        void navigate({ to: '/' });
+      }
+      invalidateThreads();
     },
     onError: (err) => addSystemError(getApiErrorMessage(err)),
   });
 
   const archiveThread = useMutation({
-    ...threadsArchiveThreadMutation(),
+    mutationFn: (vars: { path: { threadId: string } }) =>
+      threadsApi.archive(vars.path.threadId),
     onSuccess: (_res, vars) => {
       useTimelineStore.getState().unsubscribeThread(vars.path.threadId);
       invalidateThreads();
@@ -189,32 +188,45 @@ export function ThreadSidebar() {
   });
 
   const unarchiveThread = useMutation({
-    ...threadsUnarchiveThreadMutation(),
+    mutationFn: (vars: { path: { threadId: string } }) =>
+      threadsApi.invoke(vars.path.threadId, { method: 'thread/unarchive' }),
     onSuccess: (res) => {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const thread = (res as any).thread;
       invalidateThreads();
-      if (threadId === res.thread.id && threadMode === 'readOnly') openLiveThread(res.thread);
+      if (thread && threadId === thread.id && threadMode === 'readOnly') openLiveThread(thread);
     },
   });
 
   const compactThread = useMutation({
-    ...threadsCompactThreadMutation(),
+    mutationFn: (vars: { path: { threadId: string } }) =>
+      threadsApi.invoke(vars.path.threadId, { method: 'thread/compact/start' }),
     onSuccess: () => invalidateThreads(),
   });
 
   const forkThread = useMutation({
-    ...threadsForkThreadMutation(),
+    mutationFn: (vars: { path: { threadId: string } }) =>
+      threadsApi.invoke(vars.path.threadId, { method: 'thread/fork' }),
     onSuccess: (res) => {
-      const tid = res.thread.id;
-      setActiveThread(tid, res.cwd, threadLabel(res.thread));
-      hydrateTimelineForThread(tid, res.thread.turns, res.cwd);
-      void tokenUsageReadThreadTokenUsage({ path: { threadId: tid } })
-        .then(({ data }) => data && hydrateTokenUsageForThread(tid, data.turns))
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const rawFork = res as any;
+      const thread = rawFork.thread ?? {};
+      const tid: string = thread.id;
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const turns: any[] = (thread.turns ?? []) as any[];
+      setActiveThread(tid, rawFork.cwd ?? thread.cwd, threadLabel(thread));
+      hydrateTimelineForThread(tid, turns, rawFork.cwd ?? thread.cwd);
+      void tokenUsageApi.get(tid)
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        .then((data: unknown) => data && hydrateTokenUsageForThread(tid, data as any))
         .catch(() => undefined);
-      void turnDiffReadThreadTurnDiffs({ path: { threadId: tid } })
-        .then(({ data }) => data && hydrateTurnDiffsForThread(tid, data.turns))
+      void turnDiffApi.list(tid)
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        .then((data: unknown) => data && hydrateTurnDiffsForThread(tid, data as any))
         .catch(() => undefined);
-      void turnErrorsReadThreadTurnErrors({ path: { threadId: tid } })
-        .then(({ data }) => data && hydrateTurnErrorsForThread(tid, data.errors))
+      void turnErrorApi.list(tid)
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        .then((data: unknown) => data && hydrateTurnErrorsForThread(tid, data as any))
         .catch(() => undefined);
       invalidateThreads();
       void navigate({ to: '/t/$threadId', params: { threadId: tid } });
@@ -222,7 +234,8 @@ export function ThreadSidebar() {
   });
 
   const updateThreadName = useMutation({
-    ...threadsSetThreadNameMutation(),
+    mutationFn: (vars: { path: { threadId: string }; body: { name: string } }) =>
+      threadsApi.rename(vars.path.threadId, { name: vars.body.name }),
     onSuccess: (_res, vars) => {
       if (vars.path.threadId === threadId) setThreadTitle(vars.body.name.trim());
       setRenameThread(null);
@@ -232,20 +245,6 @@ export function ThreadSidebar() {
   });
 
   // ── View navigation helpers ─────────────────────────────────────────
-
-  const resetDetailPagination = () => { setCursor(null); setCursorStack([]); };
-
-  const openWorkspaceDetail = (cwd: string) => { resetDetailPagination(); setSidebarView({ type: 'workspaceDetail', cwd }); };
-  const openArchivedDetail = () => { resetDetailPagination(); setSidebarView({ type: 'archivedDetail' }); };
-
-  const goNext = () => {
-    if (!detailQuery.data?.nextCursor) return;
-    setCursorStack((s) => [...s, cursor]);
-    setCursor(detailQuery.data.nextCursor);
-  };
-  const goPrevious = () => {
-    setCursorStack((s) => { const ns = s.slice(0, -1); setCursor(s.at(-1) ?? null); return ns; });
-  };
 
   // ── Rename / Confirm ────────────────────────────────────────────────
   const startRename = (thread: ThreadDto) => { setRenameThread(thread); setRenameValue(threadLabel(thread)); };
@@ -259,6 +258,7 @@ export function ThreadSidebar() {
     if (!confirmAction) return;
     if (confirmAction.type === 'archive') archiveThread.mutate({ path: { threadId: confirmAction.thread.id } });
     if (confirmAction.type === 'compact') compactThread.mutate({ path: { threadId: confirmAction.thread.id } });
+    if (confirmAction.type === 'delete') deleteThread.mutate({ path: { threadId: confirmAction.thread.id } });
     setConfirmAction(null);
   };
 
@@ -291,7 +291,7 @@ export function ThreadSidebar() {
         archived={archived}
         isActive={thread.id === threadId && activeView === 'chat'}
         destructiveDisabled={isRunning}
-        actionPending={forkThread.isPending || unarchiveThread.isPending}
+        actionPending={forkThread.isPending || unarchiveThread.isPending || deleteThread.isPending}
         running={generating || isRunning}
         pendingApproval={waitingOnApproval}
         pendingApprovalCount={pendingApprovalCount}
@@ -302,6 +302,7 @@ export function ThreadSidebar() {
         onUnarchive={() => unarchiveThread.mutate({ path: { threadId: thread.id } })}
         onCompact={() => setConfirmAction({ type: 'compact', thread })}
         onFork={() => forkThread.mutate({ path: { threadId: thread.id } })}
+        onDelete={() => setConfirmAction({ type: 'delete', thread })}
       />
     );
   };
@@ -309,47 +310,16 @@ export function ThreadSidebar() {
   // ── Render ──────────────────────────────────────────────────────────
   return (
     <div className="flex h-full flex-col bg-card/80">
+      {/* Team selector + management */}
+      <div className="px-2 py-2 space-y-1">
+        <TeamSelector />
+      </div>
+      <Separator />
       {/* Global actions */}
       <div className="space-y-0.5 px-2 py-2">
-        <button
-          type="button"
-          onClick={() => void navigate({ to: '/files' })}
-          className={cn(
-            'flex w-full cursor-pointer items-center gap-2 rounded-lg px-2.5 py-2 text-left text-sm transition-colors',
-            activeView === 'files'
-              ? 'bg-accent text-accent-foreground'
-              : 'text-muted-foreground hover:bg-accent/50 hover:text-foreground',
-          )}
-        >
-          <FolderOpen className="h-4 w-4 shrink-0" />
-          {t('Files')}
-        </button>
-        <button
-          type="button"
-          onClick={() => void navigate({ to: '/terminal' })}
-          className={cn(
-            'flex w-full cursor-pointer items-center gap-2 rounded-lg px-2.5 py-2 text-left text-sm transition-colors',
-            activeView === 'terminal'
-              ? 'bg-accent text-accent-foreground'
-              : 'text-muted-foreground hover:bg-accent/50 hover:text-foreground',
-          )}
-        >
-          <Terminal className="h-4 w-4 shrink-0" />
-          {t('Terminal')}
-        </button>
-        <button
-          type="button"
-          onClick={() => void navigate({ to: '/integrations', search: { tab: 'plugins' } })}
-          className={cn(
-            'flex w-full cursor-pointer items-center gap-2 rounded-lg px-2.5 py-2 text-left text-sm transition-colors',
-            activeView === 'integrations'
-              ? 'bg-accent text-accent-foreground'
-              : 'text-muted-foreground hover:bg-accent/50 hover:text-foreground',
-          )}
-        >
-          <Puzzle className="h-4 w-4 shrink-0" />
-          {t('Integrations')}
-        </button>
+        {/* 文件/终端全局菜单临时下线:多租户迁移后 files/terminal 的 cwd 校验与
+            per-thread 隔离未完全就绪,入口与团队 workspace 语义重叠。
+            会话内的文件树/终端(session-panel)不受影响;全局入口待后续恢复。 */}
         <button
           type="button"
           onClick={() => void navigate({ to: '/settings' })}
@@ -362,6 +332,23 @@ export function ThreadSidebar() {
         >
           <Settings className="h-4 w-4 shrink-0" />
           {t('Settings')}
+        </button>
+        {/* 集成入口:集群扩展分发(skill/plugin/mcp)管理页。
+            列表登录可读,添加/删除仅平台管理员可见(extensions-tab 内部守卫)。 */}
+        <button
+          type="button"
+          onClick={() =>
+            void navigate({ to: '/integrations', search: { tab: 'extensions' } })
+          }
+          className={cn(
+            'flex w-full cursor-pointer items-center gap-2 rounded-lg px-2.5 py-2 text-left text-sm transition-colors',
+            activeView === 'integrations'
+              ? 'bg-accent text-accent-foreground'
+              : 'text-muted-foreground hover:bg-accent/50 hover:text-foreground',
+          )}
+        >
+          <Blocks className="h-4 w-4 shrink-0" />
+          {t('Integrations')}
         </button>
       </div>
 
@@ -376,38 +363,25 @@ export function ThreadSidebar() {
           className="h-6 w-6"
           aria-label={t('New workspace thread')}
           title={t('New workspace thread')}
-          onClick={() => setDirPickerOpen(true)}
+          onClick={() => setWsSelectorOpen(true)}
         >
           <Plus className="h-3.5 w-3.5" />
         </Button>
       </div>
 
       <ScrollArea className="min-h-0 flex-1 px-2 [&_[data-slot=scroll-area-viewport]>div]:block!">
-        {sidebarView.type === 'overview' ? (
-          <WorkspaceOverview
-            archivedThreads={archivedThreads}
-            workspaceGroups={workspaceGroups}
-            collapsedGroups={collapsedGroups}
-            isLoading={overviewThreadsQuery.isLoading || overviewArchivedQuery.isLoading}
-            onToggleCollapse={toggleCollapsedGroup}
-            onOpenArchivedDetail={openArchivedDetail}
-            onOpenWorkspaceDetail={openWorkspaceDetail}
-            onCreateInWorkspace={(cwd) => createThread.mutate({ body: { cwd } })}
-            renderThreadRow={renderThreadRow}
-          />
-        ) : (
-          <WorkspaceDetail
-            sidebarView={sidebarView}
-            threads={detailThreads}
-            isLoading={detailQuery.isLoading}
-            hasPrevious={cursorStack.length > 0}
-            hasNext={!!detailQuery.data?.nextCursor}
-            onBack={() => setSidebarView({ type: 'overview' })}
-            onPrevious={goPrevious}
-            onNext={goNext}
-            renderThreadRow={renderThreadRow}
-          />
-        )}
+        <WorkspaceOverview
+          workspaceGroups={workspaceGroups}
+          collapsedGroups={collapsedGroups}
+          isLoading={myThreadsQuery.isLoading}
+          onToggleCollapse={toggleCollapsedGroup}
+          onCreateInWorkspace={(group) =>
+            createThread.mutate({
+              body: { teamId: group.workspace_type === 'team' ? group.key : undefined },
+            })
+          }
+          renderThreadRow={renderThreadRow}
+        />
       </ScrollArea>
 
       {/* Desktop collapse toggle (hidden in mobile Sheet) */}
@@ -432,14 +406,20 @@ export function ThreadSidebar() {
       />
       <ConfirmDialog
         action={confirmAction}
-        pending={archiveThread.isPending || compactThread.isPending}
+        pending={archiveThread.isPending || compactThread.isPending || deleteThread.isPending}
         onConfirm={confirmCurrentAction}
         onClose={() => setConfirmAction(null)}
       />
-      <DirectoryPickerDialog
-        open={dirPickerOpen}
-        onClose={() => setDirPickerOpen(false)}
-        onSelect={(cwd) => createThread.mutate({ body: { cwd } })}
+      <WorkspaceSelectorDialog
+        open={wsSelectorOpen}
+        onClose={() => setWsSelectorOpen(false)}
+        onSelect={(ws) => {
+          // 个人 workspace:不传 teamId(后端 is_personal=true);团队:传 teamId。
+          createThread.mutate({
+            body: { teamId: ws.type === 'team' ? ws.teamId : undefined },
+          });
+          setWsSelectorOpen(false);
+        }}
       />
     </div>
   );

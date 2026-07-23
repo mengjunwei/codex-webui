@@ -10,13 +10,16 @@ import {
   MoreHorizontal,
   Pencil,
   ShieldAlert,
+  Trash2,
+  User,
+  Users,
 } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { Button } from '@/components/ui/button';
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
-import type { ThreadDto } from '@/generated/api';
+import type { ThreadDto } from './sidebar-types';
 import { cn } from '@/lib/utils';
-import { threadLabel } from './sidebar-types';
+import { threadLabel, timeAgo } from './sidebar-types';
 
 interface Props {
   thread: ThreadDto;
@@ -39,6 +42,7 @@ interface Props {
   onUnarchive: () => void;
   onCompact: () => void;
   onFork: () => void;
+  onDelete: () => void;
 }
 
 export function ThreadRow({
@@ -57,6 +61,7 @@ export function ThreadRow({
   onUnarchive,
   onCompact,
   onFork,
+  onDelete,
 }: Props) {
   const { t } = useTranslation();
 
@@ -69,6 +74,18 @@ export function ThreadRow({
     <Loader2 className="h-3 w-3 shrink-0 animate-spin" />
   ) : (
     <MessageSquare className="h-3 w-3 shrink-0" />
+  );
+
+  // Workspace 类型徽章:个人 = User(琥珀色)、团队 = Users(蓝色)。
+  const isPersonal = thread.workspace_type === 'personal';
+  const wsBadge = isPersonal ? (
+    <span title={t('Personal workspace')} aria-label={t('Personal workspace')}>
+      <User className="h-3 w-3 shrink-0 text-amber-500/80" />
+    </span>
+  ) : (
+    <span title={t('Team workspace')} aria-label={t('Team workspace')}>
+      <Users className="h-3 w-3 shrink-0 text-sky-500/70" />
+    </span>
   );
 
   // Badge text: show count only when > 1 (single approval already indicated by icon)
@@ -89,7 +106,16 @@ export function ThreadRow({
         )}
       >
         {statusIcon}
+        {wsBadge}
         <span className="truncate">{threadLabel(thread)}</span>
+        {thread.last_activity_at > 0 && (
+          <span
+            className="ml-auto shrink-0 pl-1 text-[10px] text-muted-foreground/50"
+            title={new Date(thread.last_activity_at).toLocaleString()}
+          >
+            {timeAgo(thread.last_activity_at)}
+          </span>
+        )}
         {pendingApprovalCount > 1 && (
           <span className="ml-auto rounded-full bg-yellow-500/15 px-1.5 py-0.5 text-[10px] font-medium leading-none text-yellow-600 dark:text-yellow-400">
             {badgeText}
@@ -139,15 +165,29 @@ export function ThreadRow({
               {t('Compact')}
             </Button>
           )}
-          <Button
-            variant="ghost"
-            className="h-7 w-full justify-start gap-2 px-2 text-xs"
-            disabled={destructiveDisabled || actionPending}
-            onClick={onFork}
-          >
-            {actionPending ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <GitFork className="h-3.5 w-3.5" />}
-            {t('Fork')}
-          </Button>
+          {/* 分叉功能暂隐藏:fork 后新会话访问异常,待完整修复后恢复(代码保留)。*/}
+          {false && (
+            <Button
+              variant="ghost"
+              className="h-7 w-full justify-start gap-2 px-2 text-xs"
+              disabled={destructiveDisabled || actionPending}
+              onClick={onFork}
+            >
+              {actionPending ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <GitFork className="h-3.5 w-3.5" />}
+              {t('Fork')}
+            </Button>
+          )}
+          {archived && (
+            <Button
+              variant="ghost"
+              className="h-7 w-full justify-start gap-2 px-2 text-xs text-destructive hover:bg-destructive/10 hover:text-destructive"
+              disabled={actionPending}
+              onClick={onDelete}
+            >
+              {actionPending ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Trash2 className="h-3.5 w-3.5" />}
+              {t('Delete')}
+            </Button>
+          )}
         </PopoverContent>
       </Popover>
     </div>

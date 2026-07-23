@@ -18,8 +18,8 @@ import {
 import { Button } from '@/components/ui/button';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import {
-  filesGetRootsOptions,
-  filesReadTreeOptions,
+  getRootsOptions,
+  readTreeOptions,
 } from '@/generated/api/@tanstack/react-query.gen';
 import { cn } from '@/lib/utils';
 
@@ -42,7 +42,7 @@ function DirectoryPickerContent({ onClose, onSelect }: Omit<Props, 'open'>) {
   const [selectedDir, setSelectedDir] = useState<string | null>(null);
   const [expandedDirs, setExpandedDirs] = useState<Set<string>>(new Set());
 
-  const rootsQuery = useQuery(filesGetRootsOptions());
+  const rootsQuery = useQuery(getRootsOptions());
   const rootDirs = rootsQuery.data
     ? Array.from(new Set([rootsQuery.data.homeDir, ...rootsQuery.data.roots]))
         .filter((d): d is string => Boolean(d))
@@ -198,7 +198,7 @@ function DirChildren({
 }: DirChildrenProps) {
   const { t } = useTranslation();
   const { data: entries, isLoading, isError } = useQuery({
-    ...filesReadTreeOptions({ query: { root: parentPath } }),
+    ...readTreeOptions({ query: { root: parentPath } }),
   });
 
   if (isLoading) {

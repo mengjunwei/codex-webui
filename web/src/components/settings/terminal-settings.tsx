@@ -1,5 +1,6 @@
 /** Terminal category runtime settings. */
 import { useTranslation } from 'react-i18next';
+import { useIsPlatformAdmin } from '@/hooks/use-permission';
 import { SettingEditor } from './setting-editor';
 import { useCategorySettings } from './use-category-settings';
 import { useTerminalStore } from '@/stores/terminal-store';
@@ -8,6 +9,8 @@ export function TerminalSettings() {
   const { t } = useTranslation();
   const refreshTerminalConfig = useTerminalStore((s) => s.refreshConfig);
   const ctx = useCategorySettings('terminal');
+  // 全局 terminal 配置写仅平台管理员;非管理员只读(后端 PATCH /api/settings 已守卫)。
+  const readOnly = !useIsPlatformAdmin();
 
   const handleSave = (setting: Parameters<typeof ctx.handleSave>[0]) => {
     ctx.handleSave(setting);
@@ -44,6 +47,7 @@ export function TerminalSettings() {
           setting={setting}
           draft={ctx.drafts[setting.key] ?? ''}
           disabled={ctx.isSaving}
+          readOnly={readOnly}
           onDraftChange={ctx.handleDraftChange}
           onSave={handleSave}
           onReset={handleReset}

@@ -1,5 +1,13 @@
-/** Account-related notification payload types (server-push, not in generated SDK). */
-import type { AccountDto } from '@/generated/api/types.gen';
+/**
+ * Account-related notification payload types (server-push, not in generated SDK).
+ *
+ * TODO: AccountDto 来自旧 OpenAPI SDK,已下线。当前用本地最小形状替代。
+ */
+
+/** 账户 DTO 的本地最小形状。 */
+interface AccountDto {
+  planType?: string | null;
+}
 
 export type PlanType = NonNullable<AccountDto['planType']>;
 export type AuthMode = 'apikey' | 'chatgpt' | 'chatgptAuthTokens';

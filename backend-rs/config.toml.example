@@ -1,0 +1,130 @@
+# ─────────────────────────────────────────────────────────────
+# codex-webui 配置文件模板
+# ─────────────────────────────────────────────────────────────
+# 配置**只从 TOML 文件读取**,无环境变量回退路径。
+# 必填字段缺失则启动失败。
+#
+# 设计约定:**所有可选段/字段用 enable 显式开关**(默认 false)。
+# enable=false → 整段/字段完全忽略(即使填了 host 等也无效)。
+# enable=true  → 才校验该段其他必填字段并启用功能。
+# 这样配置最直观:看一眼 enable 就知道哪些功能开了。
+#
+# 配置文件查找:仅通过 $CODEX_WEBUI_CONFIG 精确路径，未设置则启动失败。
+# ─────────────────────────────────────────────────────────────
+
+[server]
+# HTTP 监听地址
+host = "0.0.0.0"
+port = 8172
+# 日志级别(debug/info/warn/error,逗号分隔模块过滤如 "info,codex_webui=debug")
+log_level = "info"
+
+[server.api]
+# WebUI API/WebSocket 访问密钥(≥16 字节)
+# 例: openssl rand -hex 32
+# 也作为 master_key 未显式启用时的兜底。
+webui_api_key = "REPLACE_WITH_RANDOM_SECRET_AT_LEAST_16_CHARS"
+
+[cluster]
+# 注:每个节点都是 ingress + worker 一体(同时跑 HTTP 路由 + 内网 RPC + codex 单进程 +
+# memberlist/redis 探活),无角色分流。多机部署时所有节点配同一份 config.toml。
+# 内网 RPC 监听地址(对外暴露给其它节点转发调用)
+internal_rpc_host = "127.0.0.1"
+# 内网 RPC 监听端口(默认 = server.port + 1)
+internal_rpc_port = 8173
+# 本节点稳定 ID(≥16 字节;多机部署每节点唯一,推荐 hostname 或 k8s pod uid)
+worker_id = "REPLACE_WITH_NODE_ID_AT_LEAST_16_BYTES"
+
+# 多机部署 worker_rpc_url(可选,显式 enable=true 才生效;否则由 internal_rpc_host:port 推导)
+# worker_rpc_url_enabled = true
+# worker_rpc_url = "http://10.0.0.5:8173"
+
+[database]
+# 驱动: pg | postgres | postgresql(默认) / mysql | mariadb
+# driver = "pg"
+# 结构化连接参数(运维侧可拆开注入,便于 secret 单独走 secret manager)
+host = "127.0.0.1"
+port = 5432
+user = "codex"
+password = "REPLACE_WITH_DB_PASSWORD"
+name = "codex"
+# 可选: ssl_mode = "disable" | "require" | "verify-full"
+# ssl_mode = "disable"
+
+# Redis(可选;整段省略或 enable=false → 跨节点功能禁用,单节点模式)
+# [redis]
+# enable = true
+# host = "127.0.0.1"
+# port = 6379
+# password = "REPLACE_WITH_REDIS_PASSWORD"
+# db = 0
+
+[codex]
+# Codex CLI 可执行文件
+bin = "codex"
+
+# 自定义 CODEX_HOME(可选;enable=true 才生效;否则默认 $HOME/.codex-webui/home)
+# [codex.home]
+# enable = true
+# path = "D:\\code\\rust\\codex-webui\\test-home"
+
+# 全局 OpenAI key(可选;enable=true 才用,覆盖 team BYOK)
+# [codex.openai_api_key]
+# enable = true
+# key = "sk-..."
+
+# webui 文件工作区根(users/ teams/ 的父目录;files 浏览/终端 cwd/chat 上传的根)。
+# 可选;enable=true 才生效;默认与 [codex.home] 相同(向后兼容,无需显式配置)。
+# [workspace]
+# enable = true
+# path = "/var/lib/codex-webui/workspace"
+
+# 主密钥(可选;enable=true 才用,否则回退用 server.api.webui_api_key)
+# [auth.master_key]
+# enable = true
+# value = "REPLACE_WITH_MASTER_KEY"
+
+# 上一代主密钥(可选;用于 M6 密钥轮转)
+# [auth.master_key_previous]
+# enable = true
+# value = "OLD_KEY"
+
+[security]
+# 内网 RPC 鉴权 token(≥32 字节;生成: openssl rand -hex 32)
+internal_rpc_token = "REPLACE_WITH_TOKEN_AT_LEAST_32_BYTES"
+# Hook webhook 鉴权 token(≥32 字节)
+internal_hook_token = "REPLACE_WITH_TOKEN_AT_LEAST_32_BYTES"
+
+# Memberlist gossip 探活(可选;enable=true 才启用,非空 seeds 启用 gossip)
+# 整段省略或 enable=false → 走 Redis/单机 cluster(默认)
+# [cluster]
+# enable = true
+# memberlist_seeds = ["node-b:7946", "node-c:7946"]
+# memberlist_bind = "0.0.0.0:7946"
+
+[snapshot]
+# 快照周期秒(RPO;默认 300 = 5min)
+interval_secs = 300
+
+# 自定义快照根目录(可选;enable=true 才生效;否则默认 ~/.codex-webui-snapshots)
+# [snapshot.root]
+# enable = true
+# path = "/var/snapshots"
+
+[quota]
+# 每 team 每小时 turn 配额(0 = 不限;注册 team 时写入 team_quotas 默认值)
+default_turn_quota_hourly = 0
+
+# OTLP 导出(可选;enable=true 才导出,否则不开 OTLP)
+# [otel]
+# enable = true
+# endpoint = "http://localhost:4317"
+
+# 集群扩展分发(skill/mcp/plugin)
+# 注:enable=false(默认)→ 不启动同步循环;enable=true 才按周期分发。
+[extensions]
+enable = false
+sync_interval_secs = 30
+max_extension_bytes = 10485760   # 单扩展上限 10MB
+max_file_bytes = 1048576         # 单文件上限 1MB
+plugin_enabled = false           # plugin 分发开关(阶段3开启)
