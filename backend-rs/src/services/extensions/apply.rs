@@ -1,6 +1,7 @@
 use crate::error::AppError;
 use crate::services::extensions::config_merge;
 use std::collections::HashMap;
+use std::io::Read;
 use std::path::{Path, PathBuf};
 
 /// 本地状态文件名：id → 本地扩展条目(name+hash) 映射，用于集群扩展同步对齐。
@@ -149,6 +150,115 @@ pub async fn write_file_safe(root: &Path, rel: &str, content: &[u8]) -> Result<(
         .await
         .map_err(|e| AppError::internal(format!("write {}: {e}", path.display())))?;
     Ok(())
+}
+
+/// 解压 zip 字节流到 dest 目录。
+///
+/// - 自动剥单一顶层目录:所有文件 entry 共享同一 `topdir/` 前缀时剥掉,扁平化,
+///   避免落盘成 `skills/{name}/{topdir}/...` 多一层(与前端"选目录打包"语义对齐)。
+/// - 防 zip-slip:每个 entry 的 rel_path 经 `write_file_safe` → `safe_join_local` 校验,
+///   含 `..` / 绝对路径 / 反斜杠一律拒绝(与原 files 数组分支同口径)。
+/// - zip bomb 安全阀:解压前按 `entry.size()`(zip 元数据)累计未压缩总字节 + 文件数,
+///   超上限即报错,防止恶意小包解出超大目录撑爆磁盘。
+/// - 返回落盘后的文件指纹(`scan_dir`),供调用方算 `aggregate_hash`。
+///
+/// 调用方须自行保证 `dest` 路径合法(name 段无穿越),本函数只校验 zip 内 entry 路径。
+pub async fn unzip_to_dest(
+    zip_bytes: &[u8],
+    dest: &Path,
+) -> Result<Vec<crate::services::extensions::fingerprint::FileFingerprint>, AppError> {
+    let cursor = std::io::Cursor::new(zip_bytes);
+    let mut archive = zip::ZipArchive::new(cursor)
+        .map_err(|e| AppError::internal(format!("zip parse: {e}")))?;
+
+    // 第一遍:收集所有文件 entry 名(跳过目录 entry),用于检测单一顶层目录。
+    let mut names: Vec<String> = Vec::new();
+    for i in 0..archive.len() {
+        if let Ok(e) = archive.by_index(i) {
+            if !e.is_dir() {
+                names.push(e.name().to_string());
+            }
+        }
+    }
+    let strip = detect_common_topdir(&names);
+
+    // 清 dest(若存在)+ 建目录,准备解压。同名重传走全量替换语义。
+    if dest.exists() {
+        let _ = tokio::fs::remove_dir_all(dest).await;
+    }
+    tokio::fs::create_dir_all(dest)
+        .await
+        .map_err(|e| AppError::internal(format!("mkdir {}: {e}", dest.display())))?;
+
+    // zip bomb 安全阀:解压后总字节 / 文件数上限(与原 skill 上传 50MB 总量 + 200 文件同量级)。
+    const MAX_UNCOMPRESSED_TOTAL: u64 = 50 * 1024 * 1024; // 50 MB
+    const MAX_ENTRY_COUNT: usize = 200;
+
+    let mut total_uncompressed: u64 = 0;
+    let mut file_count: usize = 0;
+
+    // 第二遍:逐文件解压落盘。entry 在内层块结束时 drop,避免跨 await 借用 archive。
+    for i in 0..archive.len() {
+        let rel;
+        let buf: Vec<u8>;
+        {
+            let mut entry = match archive.by_index(i) {
+                Ok(e) => e,
+                Err(_) => continue,
+            };
+            if entry.is_dir() {
+                continue;
+            }
+            rel = apply_strip(entry.name(), strip.as_deref());
+            // 元数据级 zip bomb 防护:解压前按 entry.size() 累计,超限立即报错。
+            total_uncompressed = total_uncompressed.saturating_add(entry.size());
+            if total_uncompressed > MAX_UNCOMPRESSED_TOTAL {
+                return Err(AppError::internal(format!(
+                    "解压后总字节数 {total_uncompressed} 超过上限 {MAX_UNCOMPRESSED_TOTAL}"
+                )));
+            }
+            file_count += 1;
+            if file_count > MAX_ENTRY_COUNT {
+                return Err(AppError::internal(format!(
+                    "zip 内文件数 {file_count} 超过上限 {MAX_ENTRY_COUNT}"
+                )));
+            }
+            let mut v = Vec::with_capacity(entry.size() as usize);
+            entry
+                .read_to_end(&mut v)
+                .map_err(|e| AppError::internal(format!("zip read: {e}")))?;
+            buf = v;
+        }
+        write_file_safe(dest, &rel, &buf).await?;
+    }
+
+    crate::services::extensions::fingerprint::scan_dir(dest).await
+}
+
+/// 检测所有文件是否共享单一顶层目录;返回该顶层(含尾 `/`)或 None。
+///
+/// 仅当所有 entry 都以同一 `topdir/` 开头(即都含 `/`)时才剥 —— 避免误剥无公共顶层
+/// 的扁平包(那种情况下首段是文件名而非目录名,剥了会丢前缀)。
+fn detect_common_topdir(names: &[String]) -> Option<String> {
+    let tops: Vec<&str> = names.iter().filter_map(|n| n.split('/').next()).collect();
+    if tops.is_empty() {
+        return None;
+    }
+    let first = tops[0];
+    if tops.iter().all(|t| *t == first) && names.iter().all(|n| n.contains('/')) {
+        Some(format!("{first}/"))
+    } else {
+        None
+    }
+}
+
+/// 剥掉顶层前缀(若有);并归一化反斜杠为正斜杠(跨平台稳定,与 scan_dir 口径一致)。
+fn apply_strip(name: &str, strip: Option<&str>) -> String {
+    let n = name.replace('\\', "/");
+    match strip {
+        Some(p) if n.starts_with(p) => n[p.len()..].to_string(),
+        _ => n,
+    }
 }
 
 /// 删除 root/{name} 整个目录（skill 卸载）。目录不存在视为成功。

@@ -1,14 +1,14 @@
 //! 集群扩展分发 —— skill 上传/plugin 上传/mcp 上传/列表/删除 REST API(Task 6 + plugin Task 5 + mcp Task 4)。
 //!
 //! 这是"单一安装入口":
-//! - skill:用户上传文件树(JSON base64),系统落盘本节点 + 入库 + 发事件触发集群同步。
+//! - skill:用户上传 zip 压缩包(base64),后端解压落盘本节点 + 入库 + 发事件触发集群同步。
 //! - plugin:后端 spawn `codex plugin add <name>@<market>` 装好,再指纹化 cache + 入库 +
 //!   发事件(其他节点订阅 "extensions:changed" 后走 Task 7 下载 + Task 8 应用)。
 //! - mcp:用户上传 `config_text`(MCP 段内容),后端合并进 config.toml `[mcp_servers.<name>]` +
 //!   入库(config_form=config,无文件指纹)+ 发事件。
 //!
 //! 路由(挂载在 mt_protected,受 require_user_auth 保护):
-//! - POST   /api/mt/extensions        上传 skill 文件树 / 装 plugin / 合并 mcp 配置段
+//! - POST   /api/mt/extensions        上传 skill 压缩包 / 装 plugin / 合并 mcp 配置段
 //! - GET    /api/mt/extensions        列出 enabled 扩展
 //! - DELETE /api/mt/extensions/{id}   删除扩展(清本地目录/段 + 删 DB 行 + 发事件)
 
@@ -31,18 +31,25 @@ pub struct UploadFile {
 
 /// 上传请求体。
 ///
-/// - skill 分支:`kind="skill"` + `files`(必填,JSON base64 文件树)。
+/// - skill 分支:`kind="skill"` + `zip_base64`(必填,zip 压缩包 base64;后端解压 +
+///   自动剥单一顶层目录 + 防 zip-slip)。旧 `files` 字段已弃用(skill 分支不再读取),
+///   保留仅为不破坏旧请求反序列化。
 /// - plugin 分支:`kind="plugin"` + `marketplace`(可选,默认 openai-api-curated),
-///   无 `files`(后端 spawn codex 装好后自己扫描 cache)。
+///   无 `zip_base64`(后端 spawn codex 装好后自己扫描 cache)。
 /// - mcp 分支:`kind="mcp"` + `config_text`(必填,MCP 段内容原文,如 `command="node"\nargs=[...]`),
-///   无 `files`(配置段直接合并进 config.toml)。
+///   无 `zip_base64`(配置段直接合并进 config.toml)。
 #[derive(Deserialize)]
 pub struct UploadBody {
     pub kind: String,
     pub name: String,
-    /// skill 必填;plugin 用不到(`#[serde(default)]` 让 plugin 请求可省略该字段)。
+    /// skill 旧字段(文件数组,已弃用,改用 zip_base64)。保留字段以免旧前端请求被 serde 拒,
+    /// skill 分支不再读取。plugin/mcp 本就不填。
     #[serde(default)]
     pub files: Vec<UploadFile>,
+    /// skill 的 zip 压缩包 base64(整包,后端解压 + 自动剥顶层目录)。
+    /// 缺省让 plugin/mcp 请求可省略,skill 分支取值时校验非空。
+    #[serde(default)]
+    pub zip_base64: Option<String>,
     /// plugin 的市场名(skill 不用);缺省时取 "openai-api-curated"。
     #[serde(default)]
     pub marketplace: Option<String>,
@@ -72,10 +79,11 @@ pub struct ListItem {
 /// POST /api/mt/extensions —— 统一上传入口(kind 分发)。
 ///
 /// - kind="plugin" → 转发 `upload_plugin`(spawn codex plugin add + 指纹化 cache)。
-/// - kind="skill"  → 走本函数剩余流程:校验 name/files → base64 解码每文件(校验单文件
-///   大小上限)→ 写临时目录算指纹(scan_dir + aggregate_hash)→ 清旧同名目录 → 写
-///   skills/{name}/ → 入库 upsert_extension + add_holder(本节点)→ 更新本地状态文件
-///   → 发 "extensions:changed" 事件。
+/// - kind="skill"  → 走本函数剩余流程:校验 name 合法性(防目录穿越)→ base64 解码
+///   `zip_base64`(校验整包字节上限)→ 解压到 skills/{name}/(`unzip_to_dest`:清旧同名
+///   目录 + 剥单一顶层目录 + 防 zip-slip + zip bomb 安全阀)→ 算指纹(aggregate_hash)
+///   → 入库 upsert_extension + add_holder(本节点)→ 更新本地状态文件 → 发
+///   "extensions:changed" 事件。
 pub async fn upload_extension(
     State(state): State<AppState>,
     crate::error::Json(body): crate::error::Json<UploadBody>,
@@ -97,81 +105,65 @@ pub async fn upload_extension(
             None,
         ));
     }
-    if body.name.is_empty() || body.files.is_empty() {
+    // skill name 合法性校验:防 skills_dir.join(name) 穿越到 skills 根之外。
+    //   与 safe_join_local 口径一致:非空、无 `..`、无反斜杠、无正斜杠段分隔。
+    if body.name.is_empty()
+        || body.name.contains("..")
+        || body.name.contains('\\')
+        || body.name.contains('/')
+    {
         return Err(AppError::business(
             ErrorCode::HttpBadRequest,
             StatusCode::BAD_REQUEST,
-            "name 和 files 不能为空".into(),
+            "skill name 非法".into(),
             None,
         ));
     }
-    // 上传总量上限:防滥用。解码后内容全驻内存,仅限制单文件不足以阻挡超大上传,
-    // 故追加文件数上限与解码后总字节数上限。
-    const MAX_FILE_COUNT: usize = 200;
-    const MAX_TOTAL_BYTES: usize = 50 * 1024 * 1024; // 50 MB
-    if body.files.len() > MAX_FILE_COUNT {
+    // zip_base64 必填(skill 压缩包,替代旧的 files 数组)。
+    let zip_b64 = match body.zip_base64.as_deref() {
+        Some(s) if !s.trim().is_empty() => s,
+        _ => {
+            return Err(AppError::business(
+                ErrorCode::HttpBadRequest,
+                StatusCode::BAD_REQUEST,
+                "skill 需要 zip_base64".into(),
+                None,
+            ));
+        }
+    };
+    // zip 原始字节上限:防过大上传(解压后的总量/文件数由 unzip_to_dest 内部再限)。
+    const MAX_ZIP_BYTES: usize = 50 * 1024 * 1024; // 50 MB
+    let zip_bytes = base64_decode(zip_b64).map_err(|e| {
+        AppError::business(
+            ErrorCode::HttpBadRequest,
+            StatusCode::BAD_REQUEST,
+            format!("zip_base64 解码失败: {e}"),
+            None,
+        )
+    })?;
+    if zip_bytes.len() > MAX_ZIP_BYTES {
         return Err(AppError::business(
             ErrorCode::HttpBadRequest,
             StatusCode::BAD_REQUEST,
-            format!("文件数 {} 超过上限 {}", body.files.len(), MAX_FILE_COUNT),
+            format!(
+                "zip 字节数 {} 超过上限 {}",
+                zip_bytes.len(),
+                MAX_ZIP_BYTES
+            ),
             None,
         ));
     }
 
-    let max_file_bytes = state.cfg_extensions_max_file_bytes;
-
-    // 1. base64 解码每文件,校验单文件大小,写临时目录。
+    // 1. 解压到正式 skills/{name}/(unzip_to_dest 内部:清旧同名目录 + 剥单一顶层 +
+    //    防 zip-slip + zip bomb 安全阀,一步到位,无需临时目录中转)。
     let skills_root = apply::skills_dir(&state.codex_home);
     tokio::fs::create_dir_all(&skills_root)
         .await
         .map_err(|e| AppError::internal(format!("mkdir skills root: {e}")))?;
-    let tmp = tempfile::tempdir().map_err(|e| AppError::internal(format!("tmp: {e}")))?;
-    // 预先把所有文件内容解码好(校验 + 供后续正式落盘复用,避免二次解码)。
-    let mut decoded: Vec<(String, Vec<u8>)> = Vec::with_capacity(body.files.len());
-    let mut total_bytes: usize = 0;
-    for f in &body.files {
-        let bytes = base64_decode(&f.content_base64).map_err(|e| {
-            AppError::business(
-                ErrorCode::HttpBadRequest,
-                StatusCode::BAD_REQUEST,
-                format!("base64 解码失败: {e}"),
-                None,
-            )
-        })?;
-        if bytes.len() as u64 > max_file_bytes {
-            return Err(AppError::business(
-                ErrorCode::HttpBadRequest,
-                StatusCode::BAD_REQUEST,
-                format!("文件 {} 超过单文件上限", f.rel_path),
-                None,
-            ));
-        }
-        // 累计解码后总字节,超上限即拒绝(防止内存被超大上传耗尽)。
-        total_bytes = total_bytes.saturating_add(bytes.len());
-        if total_bytes > MAX_TOTAL_BYTES {
-            return Err(AppError::business(
-                ErrorCode::HttpBadRequest,
-                StatusCode::BAD_REQUEST,
-                format!(
-                    "上传总字节数 {} 超过上限 {}",
-                    total_bytes, MAX_TOTAL_BYTES
-                ),
-                None,
-            ));
-        }
-        apply::write_file_safe(tmp.path(), &f.rel_path, &bytes).await?;
-        decoded.push((f.rel_path.clone(), bytes));
-    }
-
-    // 2. 扫描临时目录算指纹 + 聚合 hash(与遍历顺序无关)。
-    let fps = fingerprint::scan_dir(tmp.path()).await?;
+    let dest = skills_root.join(&body.name);
+    let fps = apply::unzip_to_dest(&zip_bytes, &dest).await?;
+    // 2. 聚合 hash(与遍历顺序无关)。
     let content_hash = fingerprint::aggregate_hash(&fps);
-
-    // 3. 落盘到正式 skills/{name}/(先清旧同名目录,全量替换)。
-    apply::remove_dir_safe(&skills_root, &body.name).await?;
-    for (rel_path, bytes) in &decoded {
-        apply::write_file_safe(&skills_root.join(&body.name), rel_path, bytes).await?;
-    }
 
     // 4. 入库 + 本节点登记 holder。
     //    同名重传复用现有 id:命中 → upsert 走 update 分支(created_at 保留、content_hash + files 全量替换);
