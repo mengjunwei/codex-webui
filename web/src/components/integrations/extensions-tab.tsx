@@ -44,11 +44,13 @@ function kindBadgeVariant(kind: string): 'default' | 'secondary' | 'outline' {
   return 'outline';
 }
 
-/**
- * 分块 base64 编码(防大文件 call stack 溢出)。
+/** 分块 base64 编码(防大文件 call stack 溢出)。
  * 以 32KB 为一段循环 String.fromCharCode.apply 再拼接,避免单次 apply 参数过多爆栈;
  * 最后对整体二进制串 btoa 一次。
  */
+// zip 原始字节上限:后端 body limit 50MB 限 base64 编码后请求体(膨胀 4/3),
+// 故 zip 原始字节 ≤ ~37.5MB;取 37MB 留余量,前端预检超此直接拦截。
+const MAX_ZIP_BYTES = 37 * 1024 * 1024;
 function bytesToBase64(bytes: Uint8Array): string {
   const CHUNK = 0x8000; // 32KB,远低于引擎 call stack 上限
   let binary = '';
@@ -128,6 +130,15 @@ export function ExtensionsTab() {
     if (!f) {
       setZipFile(null);
       setZipBase64('');
+      return;
+    }
+    // zip 原始字节预检:后端 body limit 50MB 限制的是 base64 编码后的请求体(base64 膨胀系数 4/3),
+    // 故 zip 原始字节需 ≤ 50MB*3/4 ≈ 37.5MB;取 37MB 留余量,超此前端直接拦截,避免编码完才 413。
+    if (f.size > MAX_ZIP_BYTES) {
+      showSnackbar(t('Zip file too large (max 37MB)'), 'error');
+      setZipFile(null);
+      setZipBase64('');
+      if (fileInputRef.current) fileInputRef.current.value = '';
       return;
     }
     try {
