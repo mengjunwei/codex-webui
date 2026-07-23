@@ -364,12 +364,14 @@ export interface UploadFile {
   content_base64: string;
 }
 
-/** 上传请求体(kind 分发;skill 必填 files,plugin 可选 marketplace,mcp 必填 config_text)。 */
+/** 上传请求体(kind 分发;skill 必填 zip_base64,plugin 可选 marketplace,mcp 必填 config_text)。 */
 export interface UploadExtensionBody {
   kind: 'skill' | 'plugin' | 'mcp';
   name: string;
-  /** skill 必填(JSON base64 文件树)。 */
+  /** skill 旧字段(文件数组,已弃用,改用 zip_base64)。保留以兼容旧请求,skill 分支不再发送。 */
   files?: UploadFile[];
+  /** skill 必填(zip 压缩包 base64;后端解压 + 自动剥单一顶层目录 + 防 zip-slip)。 */
+  zip_base64?: string;
   /** plugin 可选,默认 openai-api-curated。 */
   marketplace?: string;
   /** mcp 必填(MCP 段内容,无段头)。 */

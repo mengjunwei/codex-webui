@@ -3,7 +3,7 @@
  *
  * - 列表:GET /api/mt/extensions(登录可读),每项展示 kind Badge + name + enabled + 删除。
  * - 添加(仅 platform admin):POST /api/mt/extensions,按 kind 分三态表单:
- *   - skill:目录上传,FileReader 读 ArrayBuffer → 分块 base64(防大文件 call stack 溢出)。
+ *   - skill:zip 压缩包上传,FileReader 读 ArrayBuffer → 分块 base64(防大文件 call stack 溢出)。
  *   - plugin:marketplace 安装(默认 openai-api-curated)。
  *   - mcp:内联配置段合并(段内键值,无段头)。
  *
@@ -31,7 +31,6 @@ import {
   extensionsApi,
   type ExtensionListItem,
   type UploadExtensionBody,
-  type UploadFile,
 } from '@/lib/mt-client';
 import { showSnackbar } from '@/stores/snackbar-store';
 import { useIsPlatformAdmin } from '@/hooks/use-permission';
@@ -74,9 +73,6 @@ function readFileArrayBuffer(file: File): Promise<ArrayBuffer> {
   });
 }
 
-/** 目录选择 input 的非标准属性(webkitdirectory),React TS 类型未收录,需 cast 透传。 */
-const directoryInputProps = { webkitdirectory: '' } as Record<string, string>;
-
 export function ExtensionsTab() {
   const { t } = useTranslation();
   const isPlatformAdmin = useIsPlatformAdmin();
@@ -94,7 +90,9 @@ export function ExtensionsTab() {
   const [name, setName] = useState('');
   const [marketplace, setMarketplace] = useState('');
   const [configText, setConfigText] = useState('');
-  const [files, setFiles] = useState<File[]>([]);
+  // skill:选中的 zip File + 预编码好的 base64(上传时直接用,避免提交时重复编码)。
+  const [zipFile, setZipFile] = useState<File | null>(null);
+  const [zipBase64, setZipBase64] = useState<string>('');
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const loadList = useCallback(async () => {
@@ -117,8 +115,32 @@ export function ExtensionsTab() {
     setName('');
     setMarketplace('');
     setConfigText('');
-    setFiles([]);
+    setZipFile(null);
+    setZipBase64('');
     if (fileInputRef.current) fileInputRef.current.value = '';
+  };
+
+  /**
+   * skill 选 zip 后:读 ArrayBuffer → 分块 base64 → 缓存 zip_base64。
+   * 选中即编码,避免上传时重复编码;编码失败清空并提示。
+   */
+  const handleZipSelected = async (f: File | null) => {
+    if (!f) {
+      setZipFile(null);
+      setZipBase64('');
+      return;
+    }
+    try {
+      const buf = await readFileArrayBuffer(f);
+      const b64 = bytesToBase64(new Uint8Array(buf));
+      setZipFile(f);
+      setZipBase64(b64);
+    } catch (e: unknown) {
+      showSnackbar(String(e), 'error');
+      setZipFile(null);
+      setZipBase64('');
+      if (fileInputRef.current) fileInputRef.current.value = '';
+    }
   };
 
   const handleUpload = async () => {
@@ -130,26 +152,12 @@ export function ExtensionsTab() {
     const body: UploadExtensionBody = { kind, name: trimmedName };
 
     if (kind === 'skill') {
-      if (files.length === 0) {
-        showSnackbar(t('Select a directory'), 'error');
+      // skill 改为整包 zip 上传:zip_base64 已在选文件时编码好,这里只校验非空。
+      if (!zipFile || !zipBase64) {
+        showSnackbar(t('Select a zip file'), 'error');
         return;
       }
-      const uploaded: UploadFile[] = [];
-      try {
-        for (const f of files) {
-          const buf = await readFileArrayBuffer(f);
-          const content_base64 = bytesToBase64(new Uint8Array(buf));
-          // rel_path = webkitRelativePath 去掉首层目录名(目录选择器会带顶层目录名)。
-          const rel =
-            (f.webkitRelativePath || f.name).split('/').slice(1).join('/') ||
-            f.name;
-          uploaded.push({ rel_path: rel, content_base64 });
-        }
-      } catch (e: unknown) {
-        showSnackbar(String(e), 'error');
-        return;
-      }
-      body.files = uploaded;
+      body.zip_base64 = zipBase64;
     } else if (kind === 'plugin') {
       if (marketplace.trim()) body.marketplace = marketplace.trim();
     } else {
@@ -290,19 +298,21 @@ export function ExtensionsTab() {
           {kind === 'skill' && (
             <div className="space-y-1">
               <label className="text-xs text-muted-foreground">
-                {t('Directory')}
+                {t('Zip archive')}
               </label>
               <input
                 ref={fileInputRef}
                 type="file"
-                multiple
-                {...directoryInputProps}
-                onChange={(e) => setFiles(Array.from(e.target.files ?? []))}
+                accept=".zip,application/zip"
+                onChange={(e) => {
+                  const f = e.target.files?.[0] ?? null;
+                  void handleZipSelected(f);
+                }}
                 className="block w-full text-sm text-muted-foreground file:mr-3 file:rounded file:border-0 file:bg-primary file:px-3 file:py-1.5 file:text-primary-foreground hover:file:bg-primary/80"
               />
-              {files.length > 0 && (
+              {zipFile && (
                 <p className="text-xs text-muted-foreground">
-                  {t('{{count}} files selected', { count: files.length })}
+                  {t('{{name}} selected', { name: zipFile.name })}
                 </p>
               )}
             </div>
