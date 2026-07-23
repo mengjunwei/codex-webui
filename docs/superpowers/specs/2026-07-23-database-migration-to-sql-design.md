@@ -140,7 +140,7 @@ COMMENT ON TABLE users IS '...';
 
 ## 6. 验证策略
 
-1. 拉一个干净 PG 库（`createdb codex_webui_test`），跑 `psql -f backend-rs/sql/pg/init.sql`，用 `\dt` 列出表，对照 §3 涉及的所有表名一一核对（共 19+1+1+3 = 24 张表）。
+1. 拉一个干净 PG 库（`createdb codex_webui_test`），跑 `psql -f backend-rs/sql/pg/init.sql`，用 `\dt` 列出表，对照 §3 涉及的所有表名一一核对（共 19 张独立表：19 张来自 combined_schema，其余 6 个迁移为 ALTER/INDEX/或同表覆盖，session_replicas 表名复用）。
 2. 拉一个干净 MySQL 库（`CREATE DATABASE codex_webui_test`），跑 `mysql < backend-rs/sql/mysql/init.sql`，`SHOW TABLES` 同核对。
 3. 幂等测试：连跑同一份 SQL 确认无错误。
 4. `cargo build` 确认无未使用导入、无悬挂引用。
