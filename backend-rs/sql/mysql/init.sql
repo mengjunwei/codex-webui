@@ -197,9 +197,9 @@ CREATE TABLE IF NOT EXISTS pending_server_requests (
     thread_id VARCHAR(36) NOT NULL COMMENT '所属会话 ID',
     team_id VARCHAR(36) COMMENT '所属团队 ID',
     turn_id VARCHAR(64) COMMENT '轮次 ID',
-    item_id VARCHAR(128),
-    method VARCHAR(64) NOT NULL,
-    params_json TEXT NOT NULL,
+    item_id VARCHAR(128) COMMENT '审批项 ID(如 shell 命令 ID,可空)',
+    method VARCHAR(64) NOT NULL COMMENT '请求方法(如 ApplyPatch/ExecuteCommand)',
+    params_json TEXT NOT NULL COMMENT '请求参数(JSON 文本)',
     status VARCHAR(32) NOT NULL COMMENT '状态:pending / approved / denied',
     resolved_by VARCHAR(128) COMMENT '处理者用户 ID',
     created_at BIGINT NOT NULL COMMENT '创建时间戳(毫秒)',
@@ -336,35 +336,35 @@ CREATE TABLE IF NOT EXISTS cluster_extensions (
     id VARCHAR(36) PRIMARY KEY NOT NULL COMMENT '主键 UUIDv7',
     kind VARCHAR(32) NOT NULL COMMENT '扩展类型:skill / plugin / mcp',
     name VARCHAR(128) NOT NULL COMMENT '扩展名',
-    display_name VARCHAR(256),
-    description TEXT,
-    version VARCHAR(64),
-    content_form VARCHAR(16) NOT NULL,
-    config_text TEXT,
-    content_hash VARCHAR(128) NOT NULL,
-    enabled BOOLEAN NOT NULL DEFAULT TRUE,
-    created_at BIGINT NOT NULL,
-    updated_at BIGINT NOT NULL,
-    created_by VARCHAR(36)
+    display_name VARCHAR(256) COMMENT '显示名',
+    description TEXT COMMENT '描述',
+    version VARCHAR(64) COMMENT '版本',
+    content_form VARCHAR(16) NOT NULL COMMENT '内容形态',
+    config_text TEXT COMMENT '配置文本',
+    content_hash VARCHAR(128) NOT NULL COMMENT '内容哈希',
+    enabled BOOLEAN NOT NULL DEFAULT TRUE COMMENT '是否启用',
+    created_at BIGINT NOT NULL COMMENT '创建时间戳(毫秒)',
+    updated_at BIGINT NOT NULL COMMENT '更新时间戳(毫秒)',
+    created_by VARCHAR(36) COMMENT '创建者用户 ID'
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 ALTER TABLE cluster_extensions COMMENT = '集群扩展分发清单';
 
 -- 4.2 cluster_extension_files
 CREATE TABLE IF NOT EXISTS cluster_extension_files (
-    id BIGINT PRIMARY KEY NOT NULL,
-    extension_id VARCHAR(36) NOT NULL,
-    rel_path VARCHAR(512) NOT NULL,
-    size_bytes BIGINT NOT NULL,
-    content_hash VARCHAR(128) NOT NULL,
-    is_binary BOOLEAN NOT NULL DEFAULT FALSE
+    id BIGINT PRIMARY KEY NOT NULL COMMENT '文件记录 ID',
+    extension_id VARCHAR(36) NOT NULL COMMENT '所属扩展 ID',
+    rel_path VARCHAR(512) NOT NULL COMMENT '扩展包内相对路径',
+    size_bytes BIGINT NOT NULL COMMENT '文件大小(字节)',
+    content_hash VARCHAR(128) NOT NULL COMMENT '内容哈希',
+    is_binary BOOLEAN NOT NULL DEFAULT FALSE COMMENT '是否二进制文件'
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 ALTER TABLE cluster_extension_files COMMENT = '扩展文件指纹(无内容)';
 
 -- 4.3 cluster_extension_holders
 CREATE TABLE IF NOT EXISTS cluster_extension_holders (
-    extension_id VARCHAR(36) NOT NULL,
-    node_id VARCHAR(36) NOT NULL,
-    held_since BIGINT NOT NULL
+    extension_id VARCHAR(36) NOT NULL COMMENT '扩展 ID',
+    node_id VARCHAR(36) NOT NULL COMMENT '持有节点 ID',
+    held_since BIGINT NOT NULL COMMENT '持有开始时间戳(毫秒)'
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 ALTER TABLE cluster_extension_holders COMMENT = '扩展持有节点(去单点)';
 
