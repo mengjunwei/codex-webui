@@ -14,7 +14,7 @@
 - 重跑**不会**更新已存在表的列/索引，详见下方 MySQL 方言限制。
 - 启动顺序变化：`Db connect → bootstrap platform admins → ...`，**不再有 `Migrator::up`**。
 - 启动后端进程前必须先在 DB 上跑此脚本，否则连接正常但所有查询失败。
-- MySQL 推荐加 `--single-transaction` 让整批在单事务中执行。
+- `mysql` 客户端不支持 `--single-transaction`；本脚本也不保证整批原子执行，执行失败时可能只创建部分表，请修复问题后重跑。
 - 来源迁移位于 `backend-rs/src/db/migration/`（即将删除），保留追溯。
 
 ## MySQL 方言限制
