@@ -13,7 +13,7 @@ import { clearApiToken, clearRefreshToken } from '@/auth-token';
 import { showSnackbar } from '@/stores/snackbar-store';
 import { useUserStore } from '@/stores/user-store';
 import { useNavigate } from '@tanstack/react-router';
-import { mtFetch } from '@/lib/mt-client';
+import { mtFetch, loginTokensApi, type LoginToken } from '@/lib/mt-client';
 
 interface UserInfo {
   id: string;
@@ -47,8 +47,20 @@ export function AccountSettings() {
   const [apiKey, setApiKey] = useState('');
   const [showKey, setShowKey] = useState(false);
   const [provider, setProvider] = useState('openai');
+  const [tokenName, setTokenName] = useState('');
+  const [tokenExpires, setTokenExpires] = useState('');
+  const [newToken, setNewToken] = useState('');
+  const tokensQuery = useQuery({ queryKey: ['user', 'login-tokens'], queryFn: loginTokensApi.list });
 
-  // 获取用户个人 API key 列表
+  const createTokenMutation = useMutation({
+    mutationFn: () => loginTokensApi.create({ name: tokenName.trim(), expiresAt: new Date(tokenExpires).getTime() }),
+    onSuccess: (data) => { setNewToken(data.token); setTokenName(''); void queryClient.invalidateQueries({ queryKey: ['user', 'login-tokens'] }); },
+    onError: (err: Error) => showSnackbar(err.message, 'error'),
+  });
+  const revokeTokenMutation = useMutation({
+    mutationFn: loginTokensApi.revoke,
+    onSuccess: () => void queryClient.invalidateQueries({ queryKey: ['user', 'login-tokens'] }),
+  });
   const keysQuery = useQuery({
     queryKey: ['user', 'api-keys'],
     queryFn: () => mtFetch<ApiKeyResp[]>('/user/api-key'),
@@ -96,7 +108,13 @@ export function AccountSettings() {
         <Badge variant="secondary" className="ml-auto">{t('Active')}</Badge>
       </div>
 
-      {/* 个人 API Key 管理 */}
+      {/* 登录 Token 管理 */}
+      <div className="space-y-3 border-t pt-4">
+        <div className="flex items-center gap-2"><Key className="h-4 w-4" /><span className="text-sm font-medium">{t('Login tokens')}</span></div>
+        <div className="flex gap-2"><Input placeholder={t('Token name')} value={tokenName} onChange={(e) => setTokenName(e.target.value)} /><Input type="datetime-local" value={tokenExpires} onChange={(e) => setTokenExpires(e.target.value)} /><Button disabled={!tokenName.trim() || !tokenExpires || createTokenMutation.isPending} onClick={() => createTokenMutation.mutate()}>{t('Create')}</Button></div>
+        {newToken && <div className="rounded bg-muted p-3 text-sm"><p className="mb-2">{t('Copy this token now. It will not be shown again.')}</p><code className="break-all">{newToken}</code><Button size="sm" className="ml-2" onClick={() => void navigator.clipboard.writeText(newToken)}>{t('Copy')}</Button></div>}
+        {(tokensQuery.data ?? []).map((token: LoginToken) => <div key={token.id} className="flex items-center gap-2 text-sm"><span>{token.name}</span><code>{token.token_prefix}...</code><span className="text-xs text-muted-foreground">{new Date(token.expires_at).toLocaleString()}</span>{!token.revoked_at && <Button size="sm" variant="destructive" className="ml-auto" onClick={() => revokeTokenMutation.mutate(token.id)}>{t('Revoke')}</Button>}</div>)}
+      </div>
       <div className="space-y-3 border-t pt-4">
         <div className="flex items-center gap-2">
           <Key className="h-4 w-4" />

@@ -308,6 +308,8 @@ pub async fn build_router(state: AppState) -> Router {
             "/teams/{teamId}/members/{userId}/role",
             axum::routing::patch(mt::set_member_role_handler),
         )
+        .route("/user/login-tokens", get(mt::list_login_tokens).post(mt::create_login_token))
+        .route("/user/login-tokens/{id}", delete(mt::revoke_login_token))
         .route("/user/api-key", post(mt::set_user_api_key).get(mt::list_user_api_keys))
         // ── 集群扩展分发(Task 6):skill 上传/列表/删除(单一安装入口)──
         // 鉴权收紧(spec §8):skill 是集群级共享资源,POST(上传)/DELETE(删除)收紧为平台管理员专属;
@@ -359,6 +361,7 @@ pub async fn build_router(state: AppState) -> Router {
     let mt_router: Router<AppState> = Router::new()
         .route("/auth/register", post(mt::register))
         .route("/auth/login", post(mt::login))
+        .route("/auth/token", post(mt::login_with_token))
         .route("/auth/refresh", post(mt::refresh))
         .merge(mt_protected);
 

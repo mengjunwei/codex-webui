@@ -1,7 +1,4 @@
-/**
- * Login route — multi-tenant email + password auth.
- * Reads ?redirect= search param to return to the original page after login.
- */
+/** 多租户登录路由：密码、Token 登录和注册。 */
 import { useCallback } from 'react';
 import { useNavigate, useSearch } from '@tanstack/react-router';
 import { LoginPage } from '@/components/login';
@@ -14,41 +11,20 @@ import { useUserStore } from '@/stores/user-store';
 export function LoginRoute() {
   const navigate = useNavigate();
   const { redirect } = useSearch({ from: '/login' });
-
-  const handleLogin = useCallback(async (email: string, password: string): Promise<boolean> => {
-    try {
-      const data = await authApi.login({ email, password }) as { accessToken: string; refreshToken: string };
-      setApiToken(data.accessToken);
-      setRefreshToken(data.refreshToken);
-      resetSocket();
-      void useUserStore.getState().loadMe();
-      void navigate({ to: redirect });
-      return true;
-    } catch {
-      clearApiToken();
-      clearRefreshToken();
-      useUserStore.getState().clearMe();
-      return false;
-    }
+  const finish = useCallback((data: { accessToken: string; refreshToken: string }) => {
+    setApiToken(data.accessToken); setRefreshToken(data.refreshToken); resetSocket(); void useUserStore.getState().loadMe(); void navigate({ to: redirect });
   }, [navigate, redirect]);
-
-  const handleRegister = useCallback(async (email: string, password: string): Promise<boolean> => {
-    try {
-      const data = await authApi.register({ email, password }) as { accessToken: string; refreshToken: string };
-      setApiToken(data.accessToken);
-      setRefreshToken(data.refreshToken);
-      resetSocket();
-      void navigate({ to: redirect });
-      return true;
-    } catch {
-      return false;
-    }
-  }, [navigate, redirect]);
-
-  return (
-    <>
-      <LoginPage onLogin={handleLogin} onRegister={handleRegister} />
-      <SnackbarContainer />
-    </>
-  );
+  const handleLogin = useCallback(async (identifier: string, password: string) => {
+    try { finish(await authApi.login({ identifier, password })); return true; }
+    catch { clearApiToken(); clearRefreshToken(); useUserStore.getState().clearMe(); return false; }
+  }, [finish]);
+  const handleTokenLogin = useCallback(async (token: string) => {
+    try { finish(await authApi.loginWithToken(token)); return true; }
+    catch { clearApiToken(); clearRefreshToken(); return false; }
+  }, [finish]);
+  const handleRegister = useCallback(async (username: string, email: string, password: string) => {
+    try { finish(await authApi.register({ username, email, password })); return true; }
+    catch { return false; }
+  }, [finish]);
+  return <><LoginPage onLogin={handleLogin} onTokenLogin={handleTokenLogin} onRegister={handleRegister} /><SnackbarContainer /></>;
 }

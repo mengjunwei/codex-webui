@@ -5,7 +5,7 @@
 //! 用 claims.typ="mt_access" 与旧 token 区分;refresh token 为随机串,仅存 SHA-256 哈希。
 
 use crate::error::{AppError, ErrorCode};
-use crate::db::entities::{refresh_token, user};
+use crate::db::entities::{auth_token, refresh_token, user};
 use crate::services::multitenant::{new_id, now_ms};
 use argon2::password_hash::{PasswordHash, PasswordHasher, PasswordVerifier, SaltString};
 use argon2::Argon2;
@@ -13,9 +13,10 @@ use axum::http::StatusCode;
 use jsonwebtoken::{decode, encode, Algorithm, DecodingKey, EncodingKey, Header, Validation};
 use rand::rngs::OsRng;
 use sea_orm::entity::prelude::*;
-use sea_orm::{ActiveModelTrait, DatabaseConnection, EntityTrait, QueryFilter, Set};
+use sea_orm::{ActiveModelTrait, Condition, DatabaseConnection, EntityTrait, QueryFilter, QueryOrder, Set};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
+use uuid::Uuid;
 
 /// access token 有效期:15 分钟。
 const ACCESS_TTL_SECS: i64 = 15 * 60;
@@ -142,9 +143,19 @@ pub async fn issue_tokens(
 /// 注册新用户(邮箱 + 密码)。邮箱冲突 → 409,参数非法 → 400。
 pub async fn register_user(
     db: &DatabaseConnection,
+    username: &str,
     email: &str,
     password: &str,
 ) -> Result<user::Model, AppError> {
+    let username = username.trim().to_ascii_lowercase();
+    if !is_valid_username(&username) {
+        return Err(AppError::business(
+            ErrorCode::ValidationFieldInvalid,
+            StatusCode::BAD_REQUEST,
+            "invalid username".into(),
+            None,
+        ));
+    }
     let email = email.trim().to_lowercase();
     if !is_valid_email(&email) {
         return Err(AppError::business(
@@ -165,7 +176,7 @@ pub async fn register_user(
 
     // 查重:邮箱已注册则返回 409。
     let existing = user::Entity::find()
-        .filter(user::Column::Email.eq(email.clone()))
+        .filter(Condition::any().add(user::Column::Email.eq(email.clone())).add(user::Column::Username.eq(username.clone())))
         .one(db)
         .await
         .map_err(|e| AppError::internal(format!("query existing user: {e}")))?;
@@ -183,6 +194,7 @@ pub async fn register_user(
     let id = new_id();
     let am = user::ActiveModel {
         id: Set(id.clone()),
+        username: Set(username.clone()),
         email: Set(email.clone()),
         password_hash: Set(hash),
         email_verified_at: Set(None),
@@ -221,12 +233,12 @@ pub async fn register_user(
 pub async fn login(
     db: &DatabaseConnection,
     secret: &str,
-    email: &str,
+    identifier: &str,
     password: &str,
 ) -> Result<(user::Model, AuthTokens), AppError> {
-    let email = email.trim().to_lowercase();
+    let identifier = identifier.trim().to_ascii_lowercase();
     let user = user::Entity::find()
-        .filter(user::Column::Email.eq(email))
+        .filter(Condition::any().add(user::Column::Email.eq(identifier.clone())).add(user::Column::Username.eq(identifier)))
         .one(db)
         .await
         .map_err(|e| AppError::internal(format!("query user: {e}")))?;
@@ -303,7 +315,115 @@ pub async fn refresh_tokens(
     issue_tokens(&rt.user_id, db, secret).await
 }
 
-// ── 辅助 ─────────────────────────────────────────────────────────────────
+/// 确保内置平台管理员存在；密码仅用于启动时生成 Argon2 哈希，不写入数据库。
+pub async fn ensure_builtin_admin(db: &DatabaseConnection) -> Result<(), AppError> {
+    let now = now_ms();
+    let password_hash = hash_password("Codex@Agent+-")?;
+    if let Some(existing) = user::Entity::find()
+        .filter(user::Column::Username.eq("admin"))
+        .one(db)
+        .await
+        .map_err(|e| AppError::internal(format!("query builtin admin: {e}")))?
+    {
+        let mut model: user::ActiveModel = existing.into();
+        model.email = Set("admin@codex.local".into());
+        model.password_hash = Set(password_hash);
+        model.is_platform_admin = Set(true);
+        model.updated_at = Set(now);
+        model.update(db).await.map_err(|e| AppError::internal(format!("update builtin admin: {e}")))?;
+        return Ok(());
+    }
+    let model = user::ActiveModel {
+        id: Set(new_id()),
+        username: Set("admin".into()),
+        email: Set("admin@codex.local".into()),
+        password_hash: Set(password_hash),
+        email_verified_at: Set(Some(now)),
+        display_name: Set(Some("内置管理员".into())),
+        created_at: Set(now),
+        updated_at: Set(now),
+        is_platform_admin: Set(true),
+    };
+    model.insert(db).await.map_err(|e| AppError::internal(format!("create builtin admin: {e}")))?;
+    Ok(())
+}
+
+fn is_valid_username(s: &str) -> bool {
+    (3..=64).contains(&s.len())
+        && s.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || ".-_".contains(c))
+}
+
+/// Token 摘要，用于数据库查询。
+fn hash_login_token(token: &str) -> String {
+    hex::encode(Sha256::digest(token.as_bytes()))
+}
+
+/// 创建个人登录 Token，明文只返回一次。
+pub async fn create_login_token(
+    db: &DatabaseConnection,
+    user_id: &str,
+    name: &str,
+    expires_at: i64,
+) -> Result<(auth_token::Model, String), AppError> {
+    let now = now_ms();
+    let name = name.trim();
+    if name.is_empty() || name.len() > 128 || expires_at <= now || expires_at > now + 365 * 24 * 60 * 60 * 1000 {
+        return Err(AppError::business(ErrorCode::ValidationFieldInvalid, StatusCode::BAD_REQUEST, "invalid token name or expiration".into(), None));
+    }
+    let raw = format!("cwx_{}", Uuid::new_v4().simple());
+    let model = auth_token::ActiveModel {
+        id: Set(new_id()),
+        user_id: Set(user_id.to_string()),
+        name: Set(name.to_string()),
+        token_hash: Set(hash_login_token(&raw)),
+        token_prefix: Set(raw.chars().take(12).collect()),
+        created_at: Set(now),
+        expires_at: Set(expires_at),
+        revoked_at: Set(None),
+        last_used_at: Set(None),
+    };
+    let saved = model.insert(db).await.map_err(|e| AppError::internal(format!("create auth token: {e}")))?;
+    Ok((saved, raw))
+}
+
+/// 通过个人登录 Token 签发标准 JWT 会话。
+pub async fn login_with_token(
+    db: &DatabaseConnection,
+    secret: &str,
+    raw: &str,
+) -> Result<(user::Model, AuthTokens), AppError> {
+    let now = now_ms();
+    let token = auth_token::Entity::find()
+        .filter(auth_token::Column::TokenHash.eq(hash_login_token(raw)))
+        .one(db).await.map_err(|e| AppError::internal(format!("query auth token: {e}")))?;
+    let token = token.filter(|t| t.revoked_at.is_none() && t.expires_at > now).ok_or_else(|| AppError::unauthorized(ErrorCode::AuthInvalidToken, "invalid authentication token"))?;
+    let mut active: auth_token::ActiveModel = token.clone().into();
+    active.last_used_at = Set(Some(now));
+    active.update(db).await.map_err(|e| AppError::internal(format!("update auth token: {e}")))?;
+    let user = user::Entity::find_by_id(token.user_id).one(db).await.map_err(|e| AppError::internal(format!("query token user: {e}")))?.ok_or_else(|| AppError::unauthorized(ErrorCode::AuthInvalidToken, "invalid authentication token"))?;
+    let tokens = issue_tokens(&user.id, db, secret).await?;
+    Ok((user, tokens))
+}
+
+/// 列出用户登录 Token 元数据。
+pub async fn list_login_tokens(db: &DatabaseConnection, user_id: &str) -> Result<Vec<auth_token::Model>, AppError> {
+    auth_token::Entity::find().filter(auth_token::Column::UserId.eq(user_id.to_string())).order_by_desc(auth_token::Column::CreatedAt).all(db).await.map_err(|e| AppError::internal(format!("list auth tokens: {e}")))
+}
+/// 撤销登录 Token。
+pub async fn revoke_login_token(db: &DatabaseConnection, user_id: &str, id: &str) -> Result<(), AppError> {
+    use sea_orm::sea_query::Expr;
+    auth_token::Entity::update_many()
+        .col_expr(auth_token::Column::RevokedAt, Expr::value(now_ms()))
+        .filter(auth_token::Column::Id.eq(id))
+        .filter(auth_token::Column::UserId.eq(user_id))
+        .filter(auth_token::Column::RevokedAt.is_null())
+        .exec(db)
+        .await
+        .map_err(|e| AppError::internal(format!("revoke auth token: {e}")))?;
+    Ok(())
+}
+
+
 
 /// 邮箱校验(M1 起步够用;后续可换更严格规则)。
 /// 验证规则:
@@ -383,5 +503,38 @@ mod tests {
         assert!(!is_valid_email("a@b.c.")); // 域名以 . 结尾
         assert!(!is_valid_email("a@b")); // TLD 太短
         assert!(!is_valid_email("a@@b.co")); // 多个 @
+    }
+}
+
+#[cfg(test)]
+mod auth_extra_tests {
+    use super::*;
+
+    #[test]
+    fn username_validation() {
+        assert!(is_valid_username("admin"));
+        assert!(is_valid_username("alice.dev"));
+        assert!(is_valid_username("user_name-1"));
+        assert!(!is_valid_username("ab"));
+        assert!(!is_valid_username("Admin"));
+        assert!(!is_valid_username("has space"));
+        assert!(!is_valid_username(""));
+    }
+
+    #[test]
+    fn login_token_hash_stable_and_no_leak() {
+        let raw = "cwx_aaaaaaaaaaaa111111111111";
+        let h1 = hash_login_token(raw);
+        let h2 = hash_login_token(raw);
+        assert_eq!(h1, h2);
+        assert!(!h1.contains(raw));
+        assert_eq!(h1.len(), 64);
+    }
+
+    #[test]
+    fn login_token_prefix_length() {
+        let raw = "cwx_0123456789abcdef";
+        let prefix: String = raw.chars().take(12).collect();
+        assert_eq!(prefix, "cwx_01234567");
     }
 }

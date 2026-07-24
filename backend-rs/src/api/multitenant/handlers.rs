@@ -8,6 +8,7 @@
 //! 业务 entity 直接读 `entity::thread::*` 等子模块,不再依赖旧 `models::FromRow`。
 
 use crate::error::{AppError, ErrorCode};
+use crate::db::entities::auth_token;
 use crate::db::entities::thread::{ActiveModel as ThreadActiveModel, Column as ThreadColumn, Entity as ThreadEntity};
 use crate::db::entities::role_permission::{Column as RolePermissionColumn, Entity as RolePermissionEntity};
 use crate::db::entities::team_api_key::Model as TeamApiKey;
@@ -46,14 +47,28 @@ fn require_db(state: &AppState) -> &DatabaseConnection {
 
 #[derive(Deserialize)]
 pub struct RegisterBody {
+    pub username: String,
     pub email: String,
     pub password: String,
 }
 
 #[derive(Deserialize)]
 pub struct LoginBody {
-    pub email: String,
+    #[serde(alias = "email")]
+    pub identifier: String,
     pub password: String,
+}
+
+#[derive(Deserialize)]
+pub struct TokenLoginBody {
+    pub token: String,
+}
+
+#[derive(Deserialize)]
+pub struct CreateLoginTokenBody {
+    pub name: String,
+    #[serde(rename = "expiresAt")]
+    pub expires_at: i64,
 }
 
 #[derive(Deserialize)]
@@ -85,6 +100,7 @@ pub struct CreateInvitationBody {
 #[derive(Serialize)]
 pub struct UserResp {
     pub id: String,
+    pub username: String,
     pub email: String,
     pub display_name: Option<String>,
 }
@@ -93,6 +109,7 @@ impl From<User> for UserResp {
     fn from(u: User) -> Self {
         Self {
             id: u.id,
+            username: u.username,
             email: u.email,
             display_name: u.display_name,
         }
@@ -140,7 +157,7 @@ pub async fn register(
     }
     metrics::counter!("mt_registrations_total").increment(1);
     let secret = state.auth.jwt_secret();
-    let user = auth::register_user(db, &body.email, &body.password).await?;
+    let user = auth::register_user(db, &body.username, &body.email, &body.password).await?;
     let tokens = auth::issue_tokens(&user.id, db, secret).await?;
     // 注册即创建个人 workspace(per-user workspace 实施步骤 3)。
     if let Err(e) = crate::services::workspace::ensure_user_personal(&state, &user.id).await {
@@ -172,7 +189,7 @@ pub async fn login(
     }
     metrics::counter!("mt_logins_total").increment(1);
     let (user, tokens) =
-        auth::login(db, state.auth.jwt_secret(), &body.email, &body.password).await?;
+        auth::login(db, state.auth.jwt_secret(), &body.identifier, &body.password).await?;
     Ok(Json(AuthResp {
         user: user.into(),
         access_token: tokens.access_token,
@@ -181,6 +198,34 @@ pub async fn login(
     }))
 }
 
+pub async fn login_with_token(
+    State(state): State<AppState>,
+    crate::error::Json(body): crate::error::Json<TokenLoginBody>,
+) -> Result<Json<AuthResp>, AppError> {
+    let (user, tokens) = auth::login_with_token(require_db(&state), state.auth.jwt_secret(), &body.token).await?;
+    Ok(Json(AuthResp { user: user.into(), access_token: tokens.access_token, refresh_token: tokens.refresh_token, expires_in: tokens.expires_in }))
+}
+
+pub async fn list_login_tokens(
+    State(state): State<AppState>, Extension(uid): Extension<UserId>,
+) -> Result<Json<Vec<auth_token::Model>>, AppError> {
+    Ok(Json(auth::list_login_tokens(require_db(&state), &uid.0).await?))
+}
+
+pub async fn create_login_token(
+    State(state): State<AppState>, Extension(uid): Extension<UserId>,
+    crate::error::Json(body): crate::error::Json<CreateLoginTokenBody>,
+) -> Result<Json<serde_json::Value>, AppError> {
+    let (model, token) = auth::create_login_token(require_db(&state), &uid.0, &body.name, body.expires_at).await?;
+    Ok(Json(serde_json::json!({ "token": token, "metadata": model })))
+}
+
+pub async fn revoke_login_token(
+    State(state): State<AppState>, Extension(uid): Extension<UserId>, Path((id,)): Path<(String,)>,
+) -> Result<StatusCode, AppError> {
+    auth::revoke_login_token(require_db(&state), &uid.0, &id).await?;
+    Ok(StatusCode::NO_CONTENT)
+}
 pub async fn refresh(
     State(state): State<AppState>,
     crate::error::Json(body): crate::error::Json<RefreshBody>,
@@ -746,7 +791,7 @@ pub async fn mt_me(
         }));
     }
     Ok(Json(serde_json::json!({
-        "user": { "id": user.id, "email": user.email, "display_name": user.display_name },
+        "user": { "id": user.id, "username": user.username, "email": user.email, "display_name": user.display_name },
         "is_platform_admin": is_admin,
         "teams": teams,
     })))

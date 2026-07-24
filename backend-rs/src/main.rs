@@ -53,6 +53,9 @@ async fn main() -> anyhow::Result<()> {
     let db: DatabaseConnection = sea_orm::Database::connect(&db_url)
         .await
         .map_err(|e| anyhow::anyhow!("connect database: {e}"))?;
+    codex_webui::services::multitenant::auth::ensure_builtin_admin(&db)
+        .await
+        .map_err(|e| anyhow::anyhow!("ensure builtin admin: {e}"))?;
     // 平台管理员 bootstrap:把 config [security] admin_emails 里的用户置 admin。
     let bootstrapped = codex_webui::services::multitenant::permissions::bootstrap_platform_admins(
         &db,

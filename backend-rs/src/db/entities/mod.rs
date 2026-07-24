@@ -9,6 +9,8 @@ pub mod user {
     pub struct Model {
         #[sea_orm(primary_key, column_type = "String(StringLen::N(36))")]
         pub id: String,
+        #[sea_orm(column_type = "String(StringLen::N(64))", unique)]
+        pub username: String,
         #[sea_orm(column_type = "String(StringLen::N(255))")]
         pub email: String,
         #[sea_orm(column_type = "String(StringLen::N(255))")]
@@ -25,7 +27,34 @@ pub mod user {
     impl ActiveModelBehavior for ActiveModel {}
 }
 
-/// team:多租户隔离边界 + codex 账号共用单元(BYOK)。
+/// 用户登录 Token，仅保存哈希。
+pub mod auth_token {
+    use sea_orm::entity::prelude::*;
+    #[derive(Clone, Debug, PartialEq, DeriveEntityModel, serde::Serialize)]
+    #[sea_orm(table_name = "auth_tokens")]
+    pub struct Model {
+        #[sea_orm(primary_key, column_type = "String(StringLen::N(36))")]
+        pub id: String,
+        #[sea_orm(column_type = "String(StringLen::N(36))")]
+        pub user_id: String,
+        #[sea_orm(column_type = "String(StringLen::N(128))")]
+        pub name: String,
+        #[serde(skip_serializing)]
+        #[sea_orm(column_type = "String(StringLen::N(64))")]
+        pub token_hash: String,
+        #[sea_orm(column_type = "String(StringLen::N(16))")]
+        pub token_prefix: String,
+        pub created_at: i64,
+        pub expires_at: i64,
+        pub revoked_at: Option<i64>,
+        pub last_used_at: Option<i64>,
+    }
+    #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]
+    pub enum Relation {}
+    impl ActiveModelBehavior for ActiveModel {}
+}
+
+
 pub mod team {
     use sea_orm::entity::prelude::*;
     #[derive(Clone, Debug, PartialEq, DeriveEntityModel, serde::Serialize)]

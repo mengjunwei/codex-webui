@@ -16,6 +16,7 @@
 -- 1.1 users
 CREATE TABLE IF NOT EXISTS users (
     id VARCHAR(36) PRIMARY KEY COMMENT '主键 UUIDv7',
+    username VARCHAR(64) NOT NULL UNIQUE COMMENT '用户名',
     email VARCHAR(255) NOT NULL UNIQUE COMMENT '登录邮箱(全局唯一约束)',
     password_hash VARCHAR(255) NOT NULL COMMENT 'bcrypt 哈希后的密码',
     email_verified_at BIGINT COMMENT '邮箱验证时间戳(未验证为 NULL)',
@@ -78,7 +79,22 @@ CREATE TABLE IF NOT EXISTS refresh_tokens (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 ALTER TABLE refresh_tokens COMMENT = 'JWT 刷新令牌:存哈希,支持撤销与一次性轮转';
 
--- 1.6 threads
+-- 1.5b auth_tokens
+CREATE TABLE IF NOT EXISTS auth_tokens (
+    id VARCHAR(36) PRIMARY KEY,
+    user_id VARCHAR(36) NOT NULL,
+    name VARCHAR(128) NOT NULL,
+    token_hash VARCHAR(64) NOT NULL UNIQUE,
+    token_prefix VARCHAR(16) NOT NULL,
+    created_at BIGINT NOT NULL,
+    expires_at BIGINT NOT NULL,
+    revoked_at BIGINT,
+    last_used_at BIGINT,
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+CREATE INDEX idx_auth_tokens_user ON auth_tokens (user_id, created_at);
+
+
 CREATE TABLE IF NOT EXISTS threads (
     id VARCHAR(36) PRIMARY KEY COMMENT '主键 UUIDv7',
     team_id VARCHAR(36) NOT NULL COMMENT '归属标识:团队 workspace 存 teamId,个人 workspace 存 userId',

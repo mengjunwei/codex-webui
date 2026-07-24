@@ -16,6 +16,7 @@ BEGIN;
 -- 1.1 users
 CREATE TABLE IF NOT EXISTS users (
     id VARCHAR(36) PRIMARY KEY,
+    username VARCHAR(64) NOT NULL UNIQUE,
     email VARCHAR(255) NOT NULL UNIQUE,
     password_hash VARCHAR(255) NOT NULL,
     email_verified_at BIGINT,
@@ -100,7 +101,21 @@ COMMENT ON COLUMN refresh_tokens.token_hash IS 'token SHA256 哈希(唯一约束
 COMMENT ON COLUMN refresh_tokens.revoked IS '是否已撤销';
 COMMENT ON COLUMN refresh_tokens.expires_at IS '过期时间戳(毫秒)';
 
--- 1.6 threads
+-- 1.5b auth_tokens
+CREATE TABLE IF NOT EXISTS auth_tokens (
+    id VARCHAR(36) PRIMARY KEY,
+    user_id VARCHAR(36) NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    name VARCHAR(128) NOT NULL,
+    token_hash VARCHAR(64) NOT NULL UNIQUE,
+    token_prefix VARCHAR(16) NOT NULL,
+    created_at BIGINT NOT NULL,
+    expires_at BIGINT NOT NULL,
+    revoked_at BIGINT,
+    last_used_at BIGINT
+);
+CREATE INDEX IF NOT EXISTS idx_auth_tokens_user ON auth_tokens (user_id, created_at DESC);
+
+
 CREATE TABLE IF NOT EXISTS threads (
     id VARCHAR(36) PRIMARY KEY,
     team_id VARCHAR(36) NOT NULL,

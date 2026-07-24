@@ -230,8 +230,9 @@ export interface MeResponse {
 
 // ── 请求 Body 类型 ────────────────────────────────────────────
 
-export interface RegisterBody { email: string; password: string; }
-export interface LoginBody { email: string; password: string; }
+export interface RegisterBody { username: string; email: string; password: string; }
+export interface LoginBody { identifier: string; password: string; }
+export interface LoginToken { id: string; user_id: string; name: string; token_prefix: string; created_at: number; expires_at: number; revoked_at: number | null; last_used_at: number | null; }
 export interface CreateTeamBody { name: string; }
 export interface JoinBody { code: string; }
 export interface CreateInvitationBody { expiresAt?: number; maxUses?: number; }
@@ -249,10 +250,18 @@ export const authApi = {
     mtFetch<AuthResponse>('/auth/register', 'POST', body),
   login: (body: LoginBody) =>
     mtFetch<AuthResponse>('/auth/login', 'POST', body),
+  loginWithToken: (token: string) =>
+    mtFetch<AuthResponse>('/auth/token', 'POST', { token }),
   refresh: (body: { refreshToken: string }) =>
     mtFetch<AuthResponse>('/auth/refresh', 'POST', body),
   /** 当前登录用户身份(含 is_platform_admin 与各 team 角色/权限)。 */
   getMe: () => mtFetch<MeResponse>('/me'),
+};
+
+export const loginTokensApi = {
+  list: () => mtFetch<LoginToken[]>('/user/login-tokens'),
+  create: (body: { name: string; expiresAt: number }) => mtFetch<{ token: string; metadata: LoginToken }>('/user/login-tokens', 'POST', body),
+  revoke: (id: string) => mtFetch<void>(`/user/login-tokens/${id}`, 'DELETE'),
 };
 
 // ── Team API（列表返回直接数组）──────────────────────────────
