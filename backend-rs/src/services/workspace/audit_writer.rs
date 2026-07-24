@@ -106,7 +106,7 @@ async fn flush(db: &DatabaseConnection, buf: &mut Vec<AuditEvent>) {
                 now.into(),
             ],
         );
-        if let Err(e) = db.execute(stmt).await {
+        if let Err(e) = db.execute_raw(stmt).await {
             tracing::error!(error = %e, "audit insert failed (dropped)");
         }
     }

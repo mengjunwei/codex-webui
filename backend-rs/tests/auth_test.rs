@@ -4,7 +4,7 @@
 //! wrong key rejects, validate_api_key timing-safe, authenticate_token flows.
 
 use codex_webui::auth::AuthService;
-use hmac::{Hmac, Mac};
+use hmac::{Hmac, KeyInit, Mac};
 use sha2::Sha256;
 
 fn expected_secret(api_key: &str) -> String {

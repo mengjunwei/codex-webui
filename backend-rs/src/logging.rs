@@ -10,14 +10,12 @@
 //!
 //! 对齐 pino-roll：按大小滚动（10MB × 5 个文件），由自建 `RollingWriter` 实现
 //! （tracing-appender 仅支持按时间滚动）。参见 spec §6.7。
-
 use std::fs::OpenOptions;
 use std::io::{self, Write};
 use std::path::PathBuf;
 use tracing_appender::non_blocking::WorkerGuard;
 use tracing_subscriber::fmt::format::{self, JsonFields};
 use tracing_subscriber::{filter::EnvFilter, fmt, prelude::*};
-
 /// tracing 各层 worker guard 的集合 —— **必须持有**到进程退出，
 /// 否则非阻塞写入器的后台线程会被丢弃，导致日志丢失。
 pub struct Guards {
@@ -25,7 +23,6 @@ pub struct Guards {
     pub _file: WorkerGuard,
     pub _otel: Option<OtelGuard>,
 }
-
 /// 初始化 tracing：stdout（人类可读）+ 滚动文件（JSON）+ 可选 OTLP 导出。
 ///
 /// stdout 与 file 均走 `non_blocking` —— 慢 stdout（如 `docker logs` 滞后）
@@ -41,14 +38,11 @@ pub fn log_dir() -> PathBuf {
         .map(PathBuf::from)
         .unwrap_or_else(|| PathBuf::from("logs"))
 }
-
 pub fn init(level: &str, otlp_endpoint: Option<&str>) -> Guards {
     let file_appender = RollingWriter::new(log_dir().join("app"), 10 * 1024 * 1024, 5);
     let (file_nb, file_guard) = tracing_appender::non_blocking(file_appender);
     let (stdout_nb, stdout_guard) = tracing_appender::non_blocking(std::io::stdout());
-
     let filter = EnvFilter::try_new(level).unwrap_or_else(|_| EnvFilter::new("info"));
-
     // 每条 subscriber 链必须从头完整构建 —— fmt/OTLP layer 的 S 参数会被各自
     // 的合成类型推断，无法预先抽出复用。按是否启用 OTLP 分两路构造。
     let otel = match otlp_endpoint.map(str::trim).filter(|s| !s.is_empty()) {
@@ -82,14 +76,12 @@ pub fn init(level: &str, otlp_endpoint: Option<&str>) -> Guards {
             None
         }
     };
-
     Guards {
         _stdout: stdout_guard,
         _file: file_guard,
         _otel: otel,
     }
 }
-
 /// 无 OTLP 的标准初始化路径（stdout + 滚动 JSON 文件，均走 non_blocking）。
 fn init_plain(
     filter: EnvFilter,
@@ -107,37 +99,32 @@ fn init_plain(
         )
         .init();
 }
-
 /// 构建 OTLP gRPC tracer provider（对齐 opentelemetry 0.27 API）。
 fn build_tracer_provider(
     endpoint: &str,
-) -> Result<opentelemetry_sdk::trace::TracerProvider, Box<dyn std::error::Error + Send + Sync>> {
+) -> Result<opentelemetry_sdk::trace::SdkTracerProvider, Box<dyn std::error::Error + Send + Sync>> {
     use opentelemetry_otlp::{SpanExporter, WithExportConfig};
-
     let exporter = SpanExporter::builder()
         .with_tonic()
         .with_endpoint(endpoint)
         .build()?;
-
-    Ok(opentelemetry_sdk::trace::TracerProvider::builder()
-        .with_batch_exporter(exporter, opentelemetry_sdk::runtime::Tokio)
-        .with_resource(opentelemetry_sdk::Resource::new(vec![
-            opentelemetry::KeyValue::new("service.name", "codex-webui"),
-        ]))
+    Ok(opentelemetry_sdk::trace::SdkTracerProvider::builder()
+        .with_batch_exporter(exporter)
+        .with_resource(
+            opentelemetry_sdk::Resource::builder()
+                .with_service_name("codex-webui")
+                .build(),
+        )
         .build())
 }
-
 /// OTLP tracer provider 的 RAII guard —— drop 时触发 global tracer provider 的
 /// shutdown（flush 未完成 span）。不再额外调用本地 provider 的 shutdown，避免与
 /// `global::shutdown_tracer_provider` 双重 shutdown 产生冗余错误日志。
 pub struct OtelGuard;
-
 impl Drop for OtelGuard {
     fn drop(&mut self) {
-        opentelemetry::global::shutdown_tracer_provider();
     }
 }
-
 /// 按大小滚动的日志 writer（对齐 spec §6.7：10MB × 5 个文件 / logs/app）。
 /// 写入 `base`；累计字节超过 `max_size` 时滚动：base→base.1→…→base.(max_files-1)，
 /// 最老的删除。tracing 的 non_blocking 仅由单后台线程写入，故无需额外同步。
@@ -148,7 +135,6 @@ struct RollingWriter {
     max_size: u64,
     max_files: usize,
 }
-
 impl RollingWriter {
     fn new(base: PathBuf, max_size: u64, max_files: usize) -> Self {
         let _ = std::fs::create_dir_all(base.parent().unwrap_or(std::path::Path::new(".")));
@@ -160,7 +146,6 @@ impl RollingWriter {
             .ok();
         Self { base, file, written, max_size, max_files }
     }
-
     /// 滚动一次：删除 base.(n-1)，base.i → base.(i+1)，base → base.1，再新建 base。
     fn rotate(&mut self) {
         if let Some(f) = self.file.take() {
@@ -182,14 +167,12 @@ impl RollingWriter {
         self.file = OpenOptions::new().create(true).append(true).open(&self.base).ok();
     }
 }
-
 fn rotated_path(base: &std::path::Path, n: usize) -> PathBuf {
     let mut s = base.to_string_lossy().into_owned();
     s.push('.');
     s.push_str(&n.to_string());
     PathBuf::from(s)
 }
-
 impl Write for RollingWriter {
     fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
         if self.written >= self.max_size {
@@ -211,7 +194,6 @@ impl Write for RollingWriter {
         }
     }
 }
-
 /// 将 URL 中的 `access_token=...` 查询参数值替换为 `[Redacted]`。
 /// 对齐 `app.module.ts:sanitizeUrl`（保留参数名 + 脱敏标记，与"原本没有该参数"区分）。
 pub fn sanitize_url(url: &str) -> String {
@@ -236,11 +218,9 @@ pub fn sanitize_url(url: &str) -> String {
     }
     out
 }
-
 #[cfg(test)]
 mod tests {
     use super::*;
-
     #[test]
     fn redacts_access_token_at_start() {
         assert_eq!(
@@ -248,7 +228,6 @@ mod tests {
             "/api/files/serve?access_token=[Redacted]&x=1",
         );
     }
-
     #[test]
     fn redacts_access_token_in_middle() {
         assert_eq!(
@@ -256,7 +235,6 @@ mod tests {
             "/api/files/serve?x=1&access_token=[Redacted]&y=2",
         );
     }
-
     #[test]
     fn redacts_access_token_when_only_param() {
         assert_eq!(
@@ -264,12 +242,10 @@ mod tests {
             "/api/files/serve?access_token=[Redacted]",
         );
     }
-
     #[test]
     fn keeps_url_without_token() {
         assert_eq!(sanitize_url("/api/health"), "/api/health");
     }
-
     #[test]
     fn keeps_url_with_non_token_params() {
         assert_eq!(

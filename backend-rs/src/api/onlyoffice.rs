@@ -158,7 +158,7 @@ pub async fn get_config(
     //（避免相对/绝对/符号链接等不同表示导致 key 不一致 → OO 缓存陈旧）。
     let mut hasher = Sha256::new();
     hasher.update(format!("{}:{}:{}", resolved.display(), mtime, size).as_bytes());
-    let key = format!("{:x}", hasher.finalize());
+    let key = hex::encode(hasher.finalize());
     let key = key[..key.len().min(48)].to_string();
 
     // 7. 公共 base URL（对齐 TS 的 publicBaseUrl 设置或 host 请求头）。

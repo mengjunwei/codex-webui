@@ -194,7 +194,7 @@ mod tests {
         }
     }
 
-    fn input(tool_name: &str, tool_input: Option<&Value>) -> PolicyInput {
+    fn input<'a>(tool_name: &'a str, tool_input: Option<&'a Value>) -> PolicyInput<'a> {
         PolicyInput {
             team_id: "t1",
             user_id: "u1",
@@ -218,7 +218,7 @@ mod tests {
         let tool_input = serde_json::json!({"command": "rm -rf /"});
         let decision = engine.evaluate(input("shell", Some(&tool_input)), |_, _, _| true);
         assert!(
-            matches!(decision, PolicyDecision::Deny { rule_id, .. } if rule_id == "r1"),
+            matches!(&decision, PolicyDecision::Deny { rule_id, .. } if rule_id == "r1"),
             "expected deny, got {:?}",
             decision
         );
@@ -237,7 +237,7 @@ mod tests {
         )]);
         let tool_input = serde_json::json!({"args": ["mysql", "-e", "DROP TABLE users"]});
         let decision = engine.evaluate(input("shell", Some(&tool_input)), |_, _, _| true);
-        assert!(matches!(decision, PolicyDecision::Deny { .. }));
+        assert!(matches!(&decision, PolicyDecision::Deny { .. }));
     }
 
     #[test]
@@ -279,7 +279,7 @@ mod tests {
             100,
         )]);
         let decision = engine.evaluate(input("shell.exec", None), |_, _, _| true);
-        assert!(matches!(decision, PolicyDecision::Deny { .. }));
+        assert!(matches!(&decision, PolicyDecision::Deny { .. }));
         let decision = engine.evaluate(input("shell.read", None), |_, _, _| true);
         assert!(matches!(decision, PolicyDecision::Allow));
     }
@@ -333,7 +333,7 @@ mod tests {
             ),
         ]);
         let decision = engine.evaluate(input("x", None), |_, _, _| true);
-        assert!(matches!(decision, PolicyDecision::Deny { rule_id, .. } if rule_id == "high"));
+        assert!(matches!(&decision, PolicyDecision::Deny { rule_id, .. } if rule_id == "high"));
     }
 
     #[test]
@@ -367,7 +367,7 @@ mod tests {
         r.role = Some("admin".to_string());
         let engine = PolicyEngine::new(vec![r]);
         let decision = engine.evaluate(input("x", None), |_, _, role| role == "admin");
-        assert!(matches!(decision, PolicyDecision::Deny { .. }));
+        assert!(matches!(&decision, PolicyDecision::Deny { .. }));
         let decision = engine.evaluate(input("x", None), |_, _, role| role == "member");
         assert!(matches!(decision, PolicyDecision::Allow));
     }

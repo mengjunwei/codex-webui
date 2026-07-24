@@ -9,7 +9,7 @@ use crate::error::{AppError, ErrorCode};
 use crate::services::multitenant::now_ms;
 use axum::http::StatusCode;
 use chrono::Utc;
-use sea_orm::{ActiveModelTrait, ColumnTrait, DatabaseConnection, EntityTrait, QueryFilter, Set};
+use sea_orm::{ActiveModelTrait, ColumnTrait, DatabaseConnection, EntityTrait, ExprTrait, QueryFilter, Set};
 
 const HOUR_SECS: i64 = 3600;
 

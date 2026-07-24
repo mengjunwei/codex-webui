@@ -10,7 +10,7 @@
 //! `LoginResponse` / `LoginRequest` 也定义于此（DTO 与 `auth/dto/auth.dto.ts` 对齐）。
 
 use crate::error::AppError;
-use hmac::{Hmac, Mac};
+use hmac::{Hmac, KeyInit, Mac};
 use jsonwebtoken::{decode, encode, Algorithm, DecodingKey, EncodingKey, Header, Validation};
 use serde::{Deserialize, Serialize};
 use sha2::Sha256;

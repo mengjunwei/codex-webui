@@ -144,7 +144,7 @@ pub fn build(rt_state: RealtimeState) -> (socketioxide::layer::SocketIoLayer, So
 /// JS socket.io 会自动把 socket 加入以自身 SID 命名的房间；socketioxide 不会。
 /// 必须显式 `s.join(s.id)`，否则终端 output/exit/closed 事件按单 socket emit
 /// 时会指向空房间并被静默丢弃。
-fn on_connect(
+async fn on_connect(
     s: SocketRef,
     State(state): State<RealtimeState>,
     SocketData(auth): SocketData<Value>,
@@ -209,7 +209,7 @@ fn on_connect(
     let active = state.active_threads.clone();
     let users = state.socket_users.clone();
     let sid = s.id.clone();
-    s.on_disconnect(move || {
+    s.on_disconnect(move |_: SocketRef| async move {
         active.remove_socket(sid.as_str());
         users.lock().unwrap().remove(sid.as_str());
         term.detach(sid.as_str(), None);
@@ -251,7 +251,7 @@ async fn on_thread_subscribe(
     tracing::debug!(socket = %s.id, room = %room, "subscribed");
 }
 
-fn on_thread_unsubscribe(s: SocketRef, State(state): State<RealtimeState>, SocketData(data): SocketData<Value>) {
+async fn on_thread_unsubscribe(s: SocketRef, State(state): State<RealtimeState>, SocketData(data): SocketData<Value>) {
     let thread_id = data
         .get("threadId")
         .and_then(Value::as_str)
@@ -268,14 +268,14 @@ fn on_thread_unsubscribe(s: SocketRef, State(state): State<RealtimeState>, Socke
 }
 
 /// files 网关占位:以 `{ok:true}` 回应(TS 中已移除 chokidar 监视器)。
-fn on_ack(_: SocketRef, ack: AckSender) {
+async fn on_ack(_: SocketRef, ack: AckSender) {
     let _ = ack.send(&json!({ "ok": true }));
 }
 
 /// 旧版 WS 审批响应路径(仅记录日志,不再转发)。权威路径为 REST 端点
 /// POST /pending-approvals/:requestId/respond(CAS + 转发,见
 /// sqlite_handlers::respond_to_request);此处保留 socket 事件仅为向后兼容。
-fn on_server_response(s: SocketRef, SocketData(data): SocketData<Value>) {
+async fn on_server_response(s: SocketRef, SocketData(data): SocketData<Value>) {
     tracing::info!(
         socket = %s.id,
         id = ?data.get("id"),
@@ -285,11 +285,11 @@ fn on_server_response(s: SocketRef, SocketData(data): SocketData<Value>) {
 
 // ── Terminal 处理器 ────────────────────────────────────────────────────────
 
-fn on_term_config(_s: SocketRef, State(state): State<RealtimeState>, ack: AckSender) {
+async fn on_term_config(_s: SocketRef, State(state): State<RealtimeState>, ack: AckSender) {
     let _ = ack.send(&json!({ "ok": true, "config": state.terminal.get_config_json() }));
 }
 
-fn on_term_list(s: SocketRef, State(state): State<RealtimeState>, SocketData(data): SocketData<Value>, ack: AckSender) {
+async fn on_term_list(s: SocketRef, State(state): State<RealtimeState>, SocketData(data): SocketData<Value>, ack: AckSender) {
     let ctx = data.get("contextKey").and_then(Value::as_str).unwrap_or("global");
     match state.terminal.list(ctx) {
         Ok(terminals) => {
@@ -332,7 +332,7 @@ async fn on_term_open(s: SocketRef, State(state): State<RealtimeState>, SocketDa
     }
 }
 
-fn on_term_reconnect(s: SocketRef, State(state): State<RealtimeState>, SocketData(data): SocketData<Value>, ack: AckSender) {
+async fn on_term_reconnect(s: SocketRef, State(state): State<RealtimeState>, SocketData(data): SocketData<Value>, ack: AckSender) {
     let ctx = data.get("contextKey").and_then(Value::as_str).unwrap_or("").to_string();
     let tid = data.get("terminalId").and_then(Value::as_str).unwrap_or("").to_string();
     match state.terminal.reconnect(s.id.as_str(), &ctx, &tid) {
@@ -344,7 +344,7 @@ fn on_term_reconnect(s: SocketRef, State(state): State<RealtimeState>, SocketDat
     }
 }
 
-fn on_term_input(s: SocketRef, State(state): State<RealtimeState>, SocketData(data): SocketData<Value>, ack: AckSender) {
+async fn on_term_input(s: SocketRef, State(state): State<RealtimeState>, SocketData(data): SocketData<Value>, ack: AckSender) {
     let ctx = data.get("contextKey").and_then(Value::as_str).unwrap_or("").to_string();
     let tid = data.get("terminalId").and_then(Value::as_str).unwrap_or("").to_string();
     let input = data.get("data").and_then(Value::as_str).unwrap_or("");
@@ -354,7 +354,7 @@ fn on_term_input(s: SocketRef, State(state): State<RealtimeState>, SocketData(da
     }
 }
 
-fn on_term_resize(s: SocketRef, State(state): State<RealtimeState>, SocketData(data): SocketData<Value>, ack: AckSender) {
+async fn on_term_resize(s: SocketRef, State(state): State<RealtimeState>, SocketData(data): SocketData<Value>, ack: AckSender) {
     let ctx = data.get("contextKey").and_then(Value::as_str).unwrap_or("").to_string();
     let tid = data.get("terminalId").and_then(Value::as_str).unwrap_or("").to_string();
     let cols = data.get("cols").and_then(Value::as_u64).unwrap_or(80) as u16;
@@ -365,13 +365,13 @@ fn on_term_resize(s: SocketRef, State(state): State<RealtimeState>, SocketData(d
     }
 }
 
-fn on_term_detach(s: SocketRef, State(state): State<RealtimeState>, SocketData(data): SocketData<Value>, ack: AckSender) {
+async fn on_term_detach(s: SocketRef, State(state): State<RealtimeState>, SocketData(data): SocketData<Value>, ack: AckSender) {
     let tid = data.get("terminalId").and_then(Value::as_str).map(|s| s.to_string());
     state.terminal.detach(s.id.as_str(), tid.as_deref());
     let _ = ack.send(&json!({ "ok": true }));
 }
 
-fn on_term_rename(s: SocketRef, State(state): State<RealtimeState>, SocketData(data): SocketData<Value>, ack: AckSender) {
+async fn on_term_rename(s: SocketRef, State(state): State<RealtimeState>, SocketData(data): SocketData<Value>, ack: AckSender) {
     let ctx = data.get("contextKey").and_then(Value::as_str).unwrap_or("").to_string();
     let tid = data.get("terminalId").and_then(Value::as_str).unwrap_or("").to_string();
     let title = data.get("title").and_then(Value::as_str).unwrap_or("");
@@ -381,7 +381,7 @@ fn on_term_rename(s: SocketRef, State(state): State<RealtimeState>, SocketData(d
     }
 }
 
-fn on_term_download(s: SocketRef, State(state): State<RealtimeState>, SocketData(data): SocketData<Value>, ack: AckSender) {
+async fn on_term_download(s: SocketRef, State(state): State<RealtimeState>, SocketData(data): SocketData<Value>, ack: AckSender) {
     let ctx = data.get("contextKey").and_then(Value::as_str).unwrap_or("").to_string();
     let tid = data.get("terminalId").and_then(Value::as_str).unwrap_or("").to_string();
     match state.terminal.download(s.id.as_str(), &ctx, &tid) {
@@ -390,7 +390,7 @@ fn on_term_download(s: SocketRef, State(state): State<RealtimeState>, SocketData
     }
 }
 
-fn on_term_close(s: SocketRef, State(state): State<RealtimeState>, SocketData(data): SocketData<Value>, ack: AckSender) {
+async fn on_term_close(s: SocketRef, State(state): State<RealtimeState>, SocketData(data): SocketData<Value>, ack: AckSender) {
     let ctx = data.get("contextKey").and_then(Value::as_str).unwrap_or("").to_string();
     let tid = data.get("terminalId").and_then(Value::as_str).unwrap_or("").to_string();
     match state.terminal.close(s.id.as_str(), &ctx, &tid) {

@@ -21,7 +21,7 @@ use axum::extract::{Extension, Path, Query, State};
 use axum::http::StatusCode;
 use axum::Json;
 use sea_orm::entity::prelude::*;
-use sea_orm::{DatabaseConnection, QueryOrder, Set};
+use sea_orm::{DatabaseConnection, ExprTrait, QueryOrder, Set};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
