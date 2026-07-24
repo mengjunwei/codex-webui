@@ -560,6 +560,134 @@ pub async fn require_thread_team(
 ///
 /// 关键:thread_id 在本地预生成(UUIDv7),全系统(DB/sticky/session_replicas/cwd)统一用该 id,
 /// 并通过 rest.threadId 传给 codex(参见 Step 4 codex threadId 行为验证,部署后任务)。
+/// POST /api/mt/ephemeral-turn — 临时会话：不落盘，一次请求一次会话。
+///
+/// 流程：
+/// 1. 生成临时 thread_id + 临时 workspace 目录
+/// 2. codex thread/start（persistExtendedHistory=false）
+/// 3. thread/invoke 同步发送消息并等待完整响应
+/// 4. codex thread/delete 清理会话
+/// 5. 删除临时目录
+/// 6. 返回 invoke 响应（包含 LLM 输出）
+pub async fn ephemeral_turn(
+    State(state): State<AppState>,
+    Extension(_uid): Extension<UserId>,
+    crate::error::Json(body): crate::error::Json<EphemeralTurnBody>,
+) -> Result<Json<Value>, AppError> {
+    if body.message.trim().is_empty() {
+        return Err(AppError::business(
+            ErrorCode::ValidationFieldInvalid,
+            StatusCode::BAD_REQUEST,
+            "message is required".into(),
+            None,
+        ));
+    }
+    let thread_id = uuid::Uuid::now_v7().to_string();
+    let cwd = body.cwd.unwrap_or_else(|| {
+        let tmp = std::env::temp_dir().join("codex-ephemeral").join(&thread_id);
+        tmp.to_string_lossy().to_string()
+    });
+    let _ = tokio::fs::create_dir_all(&cwd).await;
+
+    // 1. thread/start（临时会话，不持久化）
+    let start_params = serde_json::json!({
+        "cwd": cwd,
+        "persistExtendedHistory": false,
+        "experimentalRawEvents": false,
+    });
+    let start_resp = state
+        .codex
+        .request("thread/start", Some(start_params))
+        .await
+        .map_err(|e| AppError::internal(format!("codex thread/start: {e}")))?;
+
+    let codex_tid = extract_codex_tid(&start_resp).unwrap_or_else(|| thread_id.clone());
+
+    // 2. turn/start — 启动 turn
+    let start_turn_params = serde_json::json!({
+        "threadId": codex_tid,
+        "input": [{ "type": "text", "text": body.message, "text_elements": [] }],
+    });
+    let turn_start_resp = state
+        .codex
+        .request("turn/start", Some(start_turn_params))
+        .await
+        .map_err(|e| AppError::internal(format!("codex turn/start: {e}")))?;
+
+    // 3. 等待 turn/completed 通知（最多 120 秒）
+    let mut notify_rx = state.codex.subscribe_notifications();
+    let mut turn_result: Option<Value> = None;
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(300);
+    loop {
+        if tokio::time::Instant::now() >= deadline {
+            break;
+        }
+        match tokio::time::timeout(deadline - tokio::time::Instant::now(), notify_rx.recv()).await {
+            Ok(Ok(msg)) => {
+                if let Some(method) = msg.get("method").and_then(serde_json::Value::as_str) {
+                    if method == "turn/completed" {
+                        // 检查是否属于我们的 thread
+                        let msg_tid = msg.get("params")
+                            .and_then(|p| p.get("threadId"))
+                            .and_then(serde_json::Value::as_str)
+                            .or_else(|| msg.get("params").and_then(|p| p.get("id")).and_then(serde_json::Value::as_str));
+                        if msg_tid == Some(codex_tid.as_str()) || msg_tid.is_none() {
+                            turn_result = Some(msg);
+                            break;
+                        }
+                    }
+                    // turn/error 也终止
+                    if method == "turn/error" {
+                        turn_result = Some(msg);
+                        break;
+                    }
+                }
+            }
+            Ok(Err(_)) => break, // channel closed
+            Err(_) => break,     // timeout
+        }
+    }
+
+    // 4. 获取 turn 输出（turn 完成后、删除会话前）
+    let mut turns_data: Option<Value> = None;
+    if turn_result.is_some() {
+        match state
+            .codex
+            .request("thread/turns/list", Some(serde_json::json!({ "threadId": codex_tid })))
+            .await
+        {
+            Ok(resp) => turns_data = Some(resp),
+            Err(e) => tracing::warn!(error = %e, "ephemeral: turns/list failed"),
+        }
+    }
+
+    // 5. 清理
+    let _ = state
+        .codex
+        .request("thread/delete", Some(serde_json::json!({ "threadId": codex_tid })))
+        .await;
+    let _ = tokio::fs::remove_dir_all(&cwd).await;
+
+    match turn_result {
+        Some(mut resp) => {
+            normalize_thread_id_for_client(&mut resp, &thread_id);
+            Ok(Json(serde_json::json!({
+                "threadId": thread_id,
+                "turn": turn_start_resp.get("turn"),
+                "notification": resp,
+                "turns": turns_data,
+            })))
+        }
+        None => Ok(Json(serde_json::json!({
+            "threadId": thread_id,
+            "turn": turn_start_resp.get("turn"),
+            "notification": null,
+            "turns": null,
+            "message": "turn started but no completion notification received within timeout",
+        }))),
+    }
+}
+
 pub async fn mt_create_thread(
     State(state): State<AppState>,
     Extension(uid): Extension<UserId>,
@@ -1448,6 +1576,14 @@ pub async fn mt_rename_thread(
 pub struct InvokeThreadBody {
     pub method: String,
     pub params: Option<Value>,
+}
+
+#[derive(Deserialize)]
+pub struct EphemeralTurnBody {
+    pub message: String,
+    #[serde(rename = "teamId")]
+    pub team_id: Option<String>,
+    pub cwd: Option<String>,
 }
 
 /// 通用 codex 会话方法转发(fork / rollback / resume 等经路由到目标 worker)。

@@ -274,6 +274,7 @@ pub async fn build_router(state: AppState) -> Router {
     use crate::api::multitenant::extensions as mt_ext;
     let mt_protected: Router<AppState> = Router::new()
         .route("/me", get(mt::mt_me))
+        .route("/ephemeral-turn", post(mt::ephemeral_turn))
         .route("/teams", post(mt::create_team).get(mt::list_teams))
         .route("/teams/join", post(mt::join_team))
         .route("/teams/{teamId}/members", get(mt::list_members))
