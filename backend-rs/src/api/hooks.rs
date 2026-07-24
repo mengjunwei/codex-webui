@@ -144,6 +144,7 @@ async fn handle_inner(state: &AppState, payload: HookPayload) -> Result<HookResp
         ) {
             PolicyDecision::Allow => {}
             PolicyDecision::Deny { rule_id, reason } => {
+                tracing::info!(rule_id=%rule_id, team=%team, user=%user, role=%role, tool=%tool_name, "policy engine DENY");
                 policy_block = Some((rule_id, reason));
             }
         }
